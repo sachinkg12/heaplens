@@ -38,5 +38,4 @@ Thumbs.db
 .gitignore
 
 # Node dev dependencies are excluded by vsce automatically
-# but be explicit about node_modules just in case
-node_modules/
+# (do NOT add node_modules/ here — it would also strip production deps like @vscode/extension-telemetry)
