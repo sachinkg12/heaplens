@@ -150,18 +150,19 @@ jobs:
           pattern: vsix-*
           merge-multiple: true
 
-      - name: Remove stale universal build from Marketplace
-        run: |
-          curl -sf -X DELETE \
-            -H "Authorization: Basic $(echo -n "PAT:${VSCE_PAT}" | base64)" \
-            "https://marketplace.visualstudio.com/_apis/gallery/publishers/guptasachinn/extensions/heaplens/versions/0.1.3" \
-            && echo "Removed stale universal v0.1.3" \
-            || echo "No stale version to remove (this is fine)"
+      - name: Publish platform-specific builds to VS Code Marketplace
+        run: npx @vscode/vsce publish --packagePath *.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
-      - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath *.vsix
+      - name: Publish universal build to keep it in sync
+        run: |
+          mkdir -p universal-build && cd universal-build
+          git clone --depth 1 --branch "${GITHUB_REF_NAME}" https://github.com/${GITHUB_REPOSITORY}.git .
+          npm ci
+          mkdir -p bin && touch bin/hprof-server
+          npx @vscode/vsce package
+          npx @vscode/vsce publish --packagePath heaplens-*.vsix
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
 
