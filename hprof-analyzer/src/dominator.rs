@@ -255,6 +255,10 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
 
     let mut top_50: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
+    // Drop the petgraph to free node/edge memory before leak detection
+    drop(petgraph);
+    log::info!("Dropped petgraph to free memory");
+
     let mut class_histogram: Vec<ClassHistogramEntry> = histogram_map
         .into_iter()
         .map(|(class_name, (instance_count, shallow_size, retained_size))| {
@@ -354,7 +358,8 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
             .iter().filter_map(|s| id_to_node.get(&s.object_id).copied()).collect();
 
         let mut other_candidates: Vec<(NodeIndex, u64, f64)> = Vec::new();
-        for node_idx in petgraph.node_indices() {
+        for i in 0..node_count {
+            let node_idx = NodeIndex::new(i);
             if classloader_suspect_nodes.contains(&node_idx) {
                 continue;
             }
