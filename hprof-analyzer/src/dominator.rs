@@ -81,34 +81,33 @@ pub fn calculate_dominators(graph: &HeapGraph) -> Result<Vec<ObjectReport>> {
         }
     }
 
-    let mut reports: Vec<ObjectReport> = Vec::new();
+    // Use BinaryHeap to find top 50 without allocating for all nodes.
+    // ObjectReport Ord is reversed (largest retained_size = smallest in Ord),
+    // so BinaryHeap (max-heap) naturally keeps the largest retained sizes
+    // and lets us pop the smallest.
+    use std::collections::BinaryHeap;
+    let mut heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
 
     for node_idx in petgraph.node_indices() {
         let node_data = &petgraph[node_idx];
         let i = node_idx.index();
-        let shallow = shallow_sizes[i];
         let retained = retained_sizes[i];
 
+        // Skip non-object nodes (0 retained size, never in top 50)
         let (object_id, node_type, class_name) = match node_data {
-            NodeData::SuperRoot => (0, "SuperRoot".to_string(), String::new()),
-            NodeData::Root => (0, "Root".to_string(), String::new()),
-            NodeData::Class => (0, "Class".to_string(), String::new()),
+            NodeData::SuperRoot | NodeData::Root | NodeData::Class => continue,
             NodeData::Instance { id, class_name, .. } => (*id, "Instance".to_string(), class_name.clone()),
             NodeData::Array { id, class_name, .. } => (*id, "Array".to_string(), class_name.clone()),
         };
 
-        reports.push(ObjectReport::new(
-            object_id,
-            node_type,
-            class_name,
-            shallow,
-            retained,
-            node_idx,
-        ));
+        let report = ObjectReport::new(object_id, node_type, class_name, shallow_sizes[i], retained, node_idx);
+        heap.push(report);
+        if heap.len() > 50 {
+            heap.pop(); // Remove smallest retained_size
+        }
     }
 
-    reports.sort();
-    let top_50: Vec<ObjectReport> = reports.into_iter().take(50).collect();
+    let mut top_50: Vec<ObjectReport> = heap.into_sorted_vec();
 
     Ok(top_50)
 }
@@ -209,7 +208,9 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     for _ in 0..node_count {
         node_data_map.push((0, "Unknown", empty_class.clone()));
     }
-    let mut reports: Vec<ObjectReport> = Vec::with_capacity(node_count);
+    // Use BinaryHeap to track top 50 without allocating for all nodes.
+    use std::collections::BinaryHeap;
+    let mut top_heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
     let mut histogram_map: HashMap<String, (u64, u64, u64)> = HashMap::new();
 
     for node_idx in petgraph.node_indices() {
@@ -254,18 +255,20 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
 
         node_data_map[node_idx.index()] = (object_id, node_type, class_name_arc.clone());
 
-        reports.push(ObjectReport::new(
-            object_id,
-            node_type.to_string(),
-            class_name_arc.to_string(),
-            shallow,
-            retained,
-            node_idx,
-        ));
+        // Only track Instance/Array in top-50 heap (SuperRoot/Root/Class have 0 retained)
+        if retained > 0 {
+            let report = ObjectReport::new(
+                object_id, node_type.to_string(), class_name_arc.to_string(),
+                shallow, retained, node_idx,
+            );
+            top_heap.push(report);
+            if top_heap.len() > 50 {
+                top_heap.pop();
+            }
+        }
     }
 
-    reports.sort();
-    let top_50: Vec<ObjectReport> = reports.into_iter().take(50).collect();
+    let mut top_50: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
     let mut class_histogram: Vec<ClassHistogramEntry> = histogram_map
         .into_iter()
