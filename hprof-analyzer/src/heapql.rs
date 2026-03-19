@@ -1631,7 +1631,7 @@ impl AnalysisState {
             SpecialCommand::Refs(id) => {
                 let node_idx = self.id_to_node.get(&id)
                     .ok_or_else(|| HeapQlError::Execution(format!("Object {} not found", id)))?;
-                let referrers = self.reverse_refs.get(node_idx)
+                let referrers = self.get_reverse_refs().get(node_idx)
                     .map(|refs| {
                         refs.iter()
                             .filter_map(|&(idx, _)| self.node_to_report(idx))
@@ -1652,7 +1652,7 @@ impl AnalysisState {
                     .ok_or_else(|| HeapQlError::Execution(format!("Could not build report for object {}", id)))?;
 
                 let child_count = self.children_map.get(&node_idx).map(|c| c.len()).unwrap_or(0);
-                let ref_count = self.reverse_refs.get(&node_idx).map(|r| r.len()).unwrap_or(0);
+                let ref_count = self.get_reverse_refs().get(&node_idx).map(|r| r.len()).unwrap_or(0);
 
                 let columns = vec![
                     "object_id".into(), "node_type".into(), "class_name".into(),
@@ -1820,7 +1820,7 @@ mod tests {
     #[allow(unused_imports)]
     use crate::{ClassHistogramEntry, EdgeLabel, LeakSuspect, HeapSummary, WasteAnalysis};
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     /// Build a synthetic AnalysisState for testing (no .hprof needed).
     fn build_test_state() -> AnalysisState {
@@ -1853,11 +1853,12 @@ mod tests {
         // ArrayList -> byte[]
         children_map.insert(NodeIndex::new(3), vec![NodeIndex::new(4)]);
 
-        let mut reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::new();
-        reverse_refs.insert(NodeIndex::new(2), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
-        reverse_refs.insert(NodeIndex::new(3), vec![(NodeIndex::new(2), EdgeLabel::Unknown)]);
-        reverse_refs.insert(NodeIndex::new(4), vec![(NodeIndex::new(3), EdgeLabel::Unknown)]);
-        reverse_refs.insert(NodeIndex::new(5), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
+        let forward_edges: Vec<(u32, u32, EdgeLabel)> = vec![
+            (1, 2, EdgeLabel::Unknown),
+            (2, 3, EdgeLabel::Unknown),
+            (3, 4, EdgeLabel::Unknown),
+            (1, 5, EdgeLabel::Unknown),
+        ];
 
         let class_histogram = vec![
             ClassHistogramEntry {
@@ -1911,7 +1912,8 @@ mod tests {
             class_histogram,
             leak_suspects,
             summary,
-            reverse_refs,
+            forward_edges,
+            reverse_refs: OnceLock::new(),
             waste_analysis: WasteAnalysis {
                 total_wasted_bytes: 0,
                 waste_percentage: 0.0,

@@ -4,7 +4,7 @@
 use crate::{AnalysisState, ClassHistogramEntry, EdgeLabel, LeakSuspect, HeapSummary, WasteAnalysis};
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Build a synthetic AnalysisState for testing (no .hprof needed).
 /// Contains 4 instances: HashMap, ArrayList, byte[], CacheManager.
@@ -32,11 +32,13 @@ pub fn build_test_state() -> AnalysisState {
     children_map.insert(NodeIndex::new(2), vec![NodeIndex::new(3)]);
     children_map.insert(NodeIndex::new(3), vec![NodeIndex::new(4)]);
 
-    let mut reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::new();
-    reverse_refs.insert(NodeIndex::new(2), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(3), vec![(NodeIndex::new(2), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(4), vec![(NodeIndex::new(3), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(5), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
+    // Forward edges: (source, target, label) — reverse_refs built lazily
+    let forward_edges: Vec<(u32, u32, EdgeLabel)> = vec![
+        (1, 2, EdgeLabel::Unknown),
+        (2, 3, EdgeLabel::Unknown),
+        (3, 4, EdgeLabel::Unknown),
+        (1, 5, EdgeLabel::Unknown),
+    ];
 
     let class_histogram = vec![
         ClassHistogramEntry {
@@ -90,7 +92,8 @@ pub fn build_test_state() -> AnalysisState {
         class_histogram,
         leak_suspects,
         summary,
-        reverse_refs,
+        forward_edges,
+        reverse_refs: OnceLock::new(),
         waste_analysis: WasteAnalysis {
             total_wasted_bytes: 0,
             waste_percentage: 0.0,
@@ -134,11 +137,12 @@ pub fn build_second_test_state() -> AnalysisState {
     children_map.insert(NodeIndex::new(1), vec![NodeIndex::new(2), NodeIndex::new(4), NodeIndex::new(5)]);
     children_map.insert(NodeIndex::new(2), vec![NodeIndex::new(3)]);
 
-    let mut reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::new();
-    reverse_refs.insert(NodeIndex::new(2), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(3), vec![(NodeIndex::new(2), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(4), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
-    reverse_refs.insert(NodeIndex::new(5), vec![(NodeIndex::new(1), EdgeLabel::Unknown)]);
+    let forward_edges: Vec<(u32, u32, EdgeLabel)> = vec![
+        (1, 2, EdgeLabel::Unknown),
+        (2, 3, EdgeLabel::Unknown),
+        (1, 4, EdgeLabel::Unknown),
+        (1, 5, EdgeLabel::Unknown),
+    ];
 
     let class_histogram = vec![
         ClassHistogramEntry {
@@ -205,7 +209,8 @@ pub fn build_second_test_state() -> AnalysisState {
         class_histogram,
         leak_suspects,
         summary,
-        reverse_refs,
+        forward_edges,
+        reverse_refs: OnceLock::new(),
         waste_analysis: WasteAnalysis {
             total_wasted_bytes: 0,
             waste_percentage: 0.0,

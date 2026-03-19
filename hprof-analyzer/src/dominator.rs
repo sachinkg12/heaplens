@@ -5,7 +5,7 @@ use anyhow::Result;
 use petgraph::algo::dominators;
 use petgraph::graph::NodeIndex;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::{
     NodeData, EdgeLabel, HeapGraph, HeapGraphParts, ObjectReport,
@@ -123,15 +123,18 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     let doms = dominators::simple_fast(&petgraph, super_root);
     log::info!("Dominator tree computed successfully");
 
-    // Step 1b: Build reverse reference adjacency list
-    let mut reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::with_capacity(petgraph.node_count());
+    // Step 1b: Extract compact forward edges for lazy reverse_refs
+    let edge_count = petgraph.edge_count();
+    let mut forward_edges: Vec<(u32, u32, EdgeLabel)> = Vec::with_capacity(edge_count);
     for edge in petgraph.edge_indices() {
         if let Some((source, target)) = petgraph.edge_endpoints(edge) {
             let label = petgraph[edge];
-            reverse_refs.entry(target).or_insert_with(Vec::new).push((source, label));
+            forward_edges.push((source.index() as u32, target.index() as u32, label));
         }
     }
-    log::info!("Built reverse reference map: {} entries", reverse_refs.len());
+    log::info!("Extracted {} forward edges ({:.2} MB compact)",
+        forward_edges.len(),
+        (forward_edges.len() * std::mem::size_of::<(u32, u32, EdgeLabel)>()) as f64 / (1024.0 * 1024.0));
 
     // Step 2: Build children map
     let mut children_map: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::with_capacity(petgraph.node_count());
@@ -472,7 +475,8 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         class_histogram,
         leak_suspects,
         summary,
-        reverse_refs,
+        forward_edges,
+        reverse_refs: OnceLock::new(),
         waste_analysis,
         field_name_table,
         class_field_layouts,

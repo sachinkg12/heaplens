@@ -24,7 +24,7 @@ use petgraph::algo::dominators;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 /// Errors that can occur during HPROF file loading and mapping.
@@ -1830,9 +1830,12 @@ pub struct AnalysisState {
     pub leak_suspects: Vec<LeakSuspect>,
     /// Heap summary statistics.
     pub summary: HeapSummary,
-    /// Reverse reference adjacency list: for each node, who references it and via which edge label.
+    /// Compact forward edges (source, target, label) extracted from the graph before it's dropped.
+    /// Used to lazily build reverse_refs on first access.
+    pub forward_edges: Vec<(u32, u32, EdgeLabel)>,
+    /// Lazily-built reverse reference adjacency list. Built from forward_edges on first access.
     /// Used for BFS backward traversal to find GC root paths.
-    pub reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>>,
+    pub reverse_refs: OnceLock<HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>>>,
     /// Waste analysis: duplicate strings and empty collections.
     pub waste_analysis: WasteAnalysis,
     /// Field name table: maps u32 index → field name string.
@@ -1844,6 +1847,22 @@ pub struct AnalysisState {
 }
 
 impl AnalysisState {
+    /// Returns the reverse reference map, building it lazily on first access.
+    /// This avoids precomputing ~15GB of HashMap data during analysis.
+    pub fn get_reverse_refs(&self) -> &HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> {
+        self.reverse_refs.get_or_init(|| {
+            log::info!("Building reverse reference map lazily from {} forward edges", self.forward_edges.len());
+            let mut map: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::with_capacity(self.forward_edges.len() / 2);
+            for &(src, tgt, label) in &self.forward_edges {
+                map.entry(NodeIndex::new(tgt as usize))
+                    .or_insert_with(Vec::new)
+                    .push((NodeIndex::new(src as usize), label));
+            }
+            log::info!("Reverse reference map built: {} entries", map.len());
+            map
+        })
+    }
+
     /// Resolves an EdgeLabel to a human-readable field name string.
     pub fn resolve_edge_label(&self, label: &EdgeLabel) -> Option<String> {
         match label {
@@ -1903,7 +1922,7 @@ impl AnalysisState {
             // If none, fall back to any referrer with a named edge, since the
             // dominator parent may not have a direct reference (e.g., dominated
             // through an intermediate array or wrapper).
-            let field_name = self.reverse_refs.get(&child_idx)
+            let field_name = self.get_reverse_refs().get(&child_idx)
                 .and_then(|refs| {
                     // Prefer direct edge from dominator parent
                     refs.iter()
@@ -1945,7 +1964,7 @@ impl AnalysisState {
     /// by retained size descending.
     pub fn get_referrers(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
         let target_idx = *self.id_to_node.get(&object_id)?;
-        let refs = self.reverse_refs.get(&target_idx)?;
+        let refs = self.get_reverse_refs().get(&target_idx)?;
 
         let mut reports = Vec::new();
         for &(referrer_idx, edge_label) in refs {
@@ -2033,7 +2052,7 @@ impl AnalysisState {
             }
 
             // Expand backward: who references current?
-            if let Some(referrers) = self.reverse_refs.get(&current) {
+            if let Some(referrers) = self.get_reverse_refs().get(&current) {
                 for &(referrer, label) in referrers {
                     if !came_from.contains_key(&referrer) {
                         // The edge goes referrer→current, so the label applies to the
@@ -2609,9 +2628,9 @@ mod tests {
         node_data: &[(NodeIndex, u64, &'static str, &str)], // (idx, object_id, node_type, class_name)
         super_root: NodeIndex,
     ) -> AnalysisState {
-        let mut reverse_refs: HashMap<NodeIndex, Vec<(NodeIndex, EdgeLabel)>> = HashMap::new();
         let mut children_map: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
         let mut id_to_node: HashMap<u64, NodeIndex> = HashMap::new();
+        let mut forward_edges: Vec<(u32, u32, EdgeLabel)> = Vec::new();
 
         // Determine the max node index to size the Vecs
         let max_idx = node_data.iter().map(|&(idx, _, _, _)| idx.index()).max().unwrap_or(0);
@@ -2622,7 +2641,7 @@ mod tests {
         let mut retained_sizes: Vec<u64> = vec![0u64; vec_size];
 
         for &(src, tgt) in edges {
-            reverse_refs.entry(tgt).or_insert_with(Vec::new).push((src, EdgeLabel::Unknown));
+            forward_edges.push((src.index() as u32, tgt.index() as u32, EdgeLabel::Unknown));
             children_map.entry(src).or_insert_with(Vec::new).push(tgt);
         }
 
@@ -2654,7 +2673,8 @@ mod tests {
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
             },
-            reverse_refs,
+            forward_edges,
+            reverse_refs: OnceLock::new(),
             field_name_table: vec![],
             class_field_layouts: HashMap::new(),
             id_size: IdSize::U64,
