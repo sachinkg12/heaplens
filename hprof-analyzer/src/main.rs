@@ -15,6 +15,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::signal;
 use tokio::sync::mpsc;
@@ -47,6 +48,15 @@ struct JsonRpcNotification {
     params: serde_json::Value,
 }
 
+/// Per-phase timing breakdown in milliseconds.
+#[derive(Debug, Clone, Serialize)]
+struct TimingBreakdown {
+    file_loading_ms: u64,
+    graph_building_ms: u64,
+    dominator_analysis_ms: u64,
+    total_ms: u64,
+}
+
 /// Result of heap analysis.
 #[derive(Debug, Serialize)]
 struct AnalyzeHeapResult {
@@ -64,6 +74,8 @@ struct AnalyzeHeapResult {
     leak_suspects: Option<Vec<hprof_analyzer::LeakSuspect>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     waste_analysis: Option<WasteAnalysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<TimingBreakdown>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -93,7 +105,7 @@ fn analyze_heap_blocking(
     log::info!("Starting heap analysis for: {:?} (request_id: {})", path, request_id);
 
     match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token) {
-        Ok((top_objects, analysis_state)) => {
+        Ok((top_objects, analysis_state, timing)) => {
             log::info!("Heap analysis completed successfully (request_id: {})", request_id);
 
             let top_layers: Vec<_> = top_objects.iter()
@@ -111,6 +123,7 @@ fn analyze_heap_blocking(
                 class_histogram: Some(analysis_state.class_histogram.clone()),
                 leak_suspects: Some(analysis_state.leak_suspects.clone()),
                 waste_analysis: Some(analysis_state.waste_analysis.clone()),
+                timing: Some(timing),
                 error: None,
             }
         }
@@ -126,6 +139,7 @@ fn analyze_heap_blocking(
                 class_histogram: None,
                 leak_suspects: None,
                 waste_analysis: None,
+                timing: None,
                 error: Some(error_msg),
             }
         }
@@ -137,13 +151,17 @@ fn analyze_heap_internal(
     path: &PathBuf,
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: &Arc<AtomicBool>,
-) -> Result<(Vec<hprof_analyzer::ObjectReport>, Arc<hprof_analyzer::AnalysisState>)> {
+) -> Result<(Vec<hprof_analyzer::ObjectReport>, Arc<hprof_analyzer::AnalysisState>, TimingBreakdown)> {
+    let total_start = Instant::now();
+
     // Phase 1/4: Load and map the HPROF file
     eprintln!("[Progress] Step 1/4: Loading HPROF file...");
+    let phase_start = Instant::now();
     let loader = HprofLoader::new(path.clone());
     let raw_mmap = loader.map_file()
         .with_context(|| format!("Failed to load HPROF file: {:?}", path))?;
     let mmap = Arc::new(raw_mmap);
+    let file_loading_ms = phase_start.elapsed().as_millis() as u64;
 
     let file_size = mmap.len() as u64;
     let file_size_mb = file_size as f64 / (1024.0 * 1024.0);
@@ -186,12 +204,15 @@ fn analyze_heap_internal(
         eprintln!("[Progress] Failed to send graph_building notification: {}", e);
     }
 
+    let phase_start = Instant::now();
     let (graph, waste_data) = build_graph(&mmap[..])
         .context("Failed to build heap graph")?;
+    let graph_building_ms = phase_start.elapsed().as_millis() as u64;
 
-    eprintln!("[Progress] Heap graph built: {} nodes, {} edges",
+    eprintln!("[Progress] Heap graph built: {} nodes, {} edges ({} ms)",
                 graph.node_count(),
-                graph.edge_count());
+                graph.edge_count(),
+                graph_building_ms);
     log::info!("Heap graph built: {} nodes, {} edges",
                 graph.node_count(),
                 graph.edge_count());
@@ -231,11 +252,17 @@ fn analyze_heap_internal(
         eprintln!("[Progress] Failed to send dominators notification: {}", e);
     }
 
+    let phase_start = Instant::now();
     let (top_objects, analysis_state) = calculate_dominators_with_state(graph, waste_data)
         .context("Failed to calculate dominators")?;
+    let dominator_analysis_ms = phase_start.elapsed().as_millis() as u64;
 
-    eprintln!("[Progress] Analysis complete: {} top objects", top_objects.len());
-    log::info!("Analysis complete: {} top objects", top_objects.len());
+    let total_ms = total_start.elapsed().as_millis() as u64;
+
+    eprintln!("[Progress] Analysis complete: {} top objects ({} ms total)", top_objects.len(), total_ms);
+    eprintln!("[Timing] Loading: {} ms | Graph: {} ms | Dominators: {} ms | Total: {} ms",
+        file_loading_ms, graph_building_ms, dominator_analysis_ms, total_ms);
+    log::info!("Analysis complete: {} top objects ({} ms total)", top_objects.len(), total_ms);
 
     // Wrap in Arc for cheap cloning on queries
     let analysis_state = Arc::new(analysis_state);
@@ -254,7 +281,14 @@ fn analyze_heap_internal(
 
     log::debug!("Stored analysis state for: {:?}", path);
 
-    Ok((top_objects, analysis_state))
+    let timing = TimingBreakdown {
+        file_loading_ms,
+        graph_building_ms,
+        dominator_analysis_ms,
+        total_ms,
+    };
+
+    Ok((top_objects, analysis_state, timing))
 }
 
 /// Writes a JSON value to stdout followed by a newline, then flushes.
@@ -852,7 +886,7 @@ fn handle_mcp_tool_call(
             eprintln!("[MCP] analyze_heap: {}", path);
             let no_cancel = Arc::new(AtomicBool::new(false));
             match analyze_heap_internal(&PathBuf::from(path), analysis_states.clone(), &no_cancel) {
-                Ok((top_objects, state)) => {
+                Ok((top_objects, state, _timing)) => {
                     let text = format_analyze_result(&state, &top_objects);
                     mcp_text_result(&text, false)
                 }
