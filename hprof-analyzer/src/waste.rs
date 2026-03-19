@@ -172,7 +172,7 @@ pub(crate) fn extract_nth_field_of_type(
     };
 
     for ft in field_types {
-        let size = crate::field_type_size(ft, id_size);
+        let size = crate::graph_builder::field_type_size(ft, id_size);
         if offset + size > data.len() {
             break;
         }
