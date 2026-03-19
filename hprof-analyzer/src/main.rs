@@ -1203,121 +1203,51 @@ async fn run_jsonrpc_server() -> Result<()> {
                     }
                 };
 
-                // Handle analyze_heap requests
-                if request.method == "analyze_heap" {
-                    if let Err(e) = handle_analyze_heap_request(
-                        request,
-                        &result_tx,
-                        &request_id_counter,
-                        &analysis_states,
-                        &cancel_tokens,
-                    ).await {
-                        eprintln!("Error handling request: {}", e);
+                // Dispatch RPC method
+                let method = request.method.clone();
+                let result = match method.as_str() {
+                    "analyze_heap" => handle_analyze_heap_request(
+                        request, &result_tx, &request_id_counter, &analysis_states, &cancel_tokens,
+                    ).await,
+                    "cancel_analysis" => handle_cancel_analysis_request(request, &cancel_tokens).await,
+                    "ping" => {
+                        if let Some(id) = request.id {
+                            let response = serde_json::json!({
+                                "jsonrpc": "2.0", "id": id, "result": { "status": "ok" }
+                            });
+                            send_stdout(&response).map_err(|e| e.into())
+                        } else { Ok(()) }
                     }
-                } else if request.method == "cancel_analysis" {
-                    if let Err(e) = handle_cancel_analysis_request(
-                        request,
-                        &cancel_tokens,
-                    ).await {
-                        eprintln!("Error handling cancel_analysis request: {}", e);
-                    }
-                } else if request.method == "ping" {
-                    if let Some(id) = request.id {
-                        let response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": { "status": "ok" }
-                        });
-                        if let Err(e) = send_stdout(&response) {
-                            eprintln!("Failed to send ping response: {}", e);
-                        }
-                    }
-                } else if request.method == "get_children" {
-                    if let Err(e) = handle_get_children_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling get_children request: {}", e);
-                    }
-                } else if request.method == "get_referrers" {
-                    if let Err(e) = handle_get_referrers_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling get_referrers request: {}", e);
-                    }
-                } else if request.method == "export_json" {
-                    if let Err(e) = handle_export_json_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling export_json request: {}", e);
-                    }
-                } else if request.method == "gc_root_path" {
-                    if let Err(e) = handle_gc_root_path_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling gc_root_path request: {}", e);
-                    }
-                } else if request.method == "inspect_object" {
-                    if let Err(e) = handle_inspect_object_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling inspect_object request: {}", e);
-                    }
-                } else if request.method == "execute_query" {
-                    if let Err(e) = handle_execute_query_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling execute_query request: {}", e);
-                    }
-                } else if request.method == "list_analyzed_files" {
-                    if let Err(e) = handle_list_analyzed_files_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling list_analyzed_files request: {}", e);
-                    }
-                } else if request.method == "compare_heaps" {
-                    if let Err(e) = handle_compare_heaps_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling compare_heaps request: {}", e);
-                    }
-                } else if request.method == "get_dominator_subtree" {
-                    if let Err(e) = handle_get_dominator_subtree_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling get_dominator_subtree request: {}", e);
-                    }
-                } else if request.method == "get_timeline_data" {
-                    if let Err(e) = handle_get_timeline_data_request(
-                        request,
-                        &analysis_states,
-                    ).await {
-                        eprintln!("Error handling get_timeline_data request: {}", e);
-                    }
-                } else {
-                    // Unknown method - send error response
-                    if let Some(id) = request.id {
-                        let error_response = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "error": {
-                                "code": -32601,
-                                "message": format!("Method not found: {}", request.method)
+                    "get_children" => handle_get_children_request(request, &analysis_states).await,
+                    "get_referrers" => handle_get_referrers_request(request, &analysis_states).await,
+                    "export_json" => handle_export_json_request(request, &analysis_states).await,
+                    "gc_root_path" => handle_gc_root_path_request(request, &analysis_states).await,
+                    "inspect_object" => handle_inspect_object_request(request, &analysis_states).await,
+                    "execute_query" => handle_execute_query_request(request, &analysis_states).await,
+                    "list_analyzed_files" => handle_list_analyzed_files_request(request, &analysis_states).await,
+                    "compare_heaps" => handle_compare_heaps_request(request, &analysis_states).await,
+                    "get_dominator_subtree" => handle_get_dominator_subtree_request(request, &analysis_states).await,
+                    "get_timeline_data" => handle_get_timeline_data_request(request, &analysis_states).await,
+                    _ => {
+                        if let Some(id) = request.id {
+                            let error_response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": {
+                                    "code": -32601,
+                                    "message": format!("Method not found: {}", method)
+                                }
+                            });
+                            if let Err(e) = send_stdout(&error_response) {
+                                eprintln!("Failed to send error response: {}", e);
+                                break;
                             }
-                        });
-                        if let Err(e) = send_stdout(&error_response) {
-                            eprintln!("Failed to send error response: {}", e);
-                            break;
                         }
+                        Ok(())
                     }
+                };
+                if let Err(e) = result {
+                    eprintln!("Error handling {} request: {}", method, e);
                 }
             }
 
