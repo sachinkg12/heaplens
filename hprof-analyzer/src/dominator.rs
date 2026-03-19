@@ -96,8 +96,8 @@ pub fn calculate_dominators(graph: &HeapGraph) -> Result<Vec<ObjectReport>> {
         // Skip non-object nodes (0 retained size, never in top 50)
         let (object_id, node_type, class_name) = match node_data {
             NodeData::SuperRoot | NodeData::Root | NodeData::Class => continue,
-            NodeData::Instance { id, class_name, .. } => (*id, "Instance".to_string(), class_name.clone()),
-            NodeData::Array { id, class_name, .. } => (*id, "Array".to_string(), class_name.clone()),
+            NodeData::Instance { id, class_name, .. } => (*id, "Instance".to_string(), class_name.to_string()),
+            NodeData::Array { id, class_name, .. } => (*id, "Array".to_string(), class_name.to_string()),
         };
 
         let report = ObjectReport::new(object_id, node_type, class_name, shallow_sizes[i], retained, node_idx);
@@ -202,7 +202,6 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     log::info!("Calculated retained sizes for {} nodes", node_count);
 
     // Steps 5+6: Build node_data_map, ObjectReports, and class histogram
-    let mut class_name_intern: HashMap<String, Arc<str>> = HashMap::new();
     let empty_class: Arc<str> = Arc::from("");
     let mut node_data_map: Vec<(u64, &'static str, Arc<str>)> = Vec::with_capacity(node_count);
     for _ in 0..node_count {
@@ -224,32 +223,18 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
             NodeData::Root => (0, "Root", empty_class.clone()),
             NodeData::Class => (0, "Class", empty_class.clone()),
             NodeData::Instance { id, class_name, .. } => {
-                let interned = if let Some(existing) = class_name_intern.get(class_name) {
-                    existing.clone()
-                } else {
-                    let arc: Arc<str> = Arc::from(class_name.as_str());
-                    class_name_intern.insert(class_name.clone(), arc.clone());
-                    arc
-                };
-                let entry = histogram_map.entry(class_name.clone()).or_insert((0, 0, 0));
+                let entry = histogram_map.entry(class_name.to_string()).or_insert((0, 0, 0));
                 entry.0 += 1;
                 entry.1 += shallow;
                 entry.2 += retained;
-                (*id, "Instance", interned)
+                (*id, "Instance", class_name.clone())
             }
             NodeData::Array { id, class_name, .. } => {
-                let interned = if let Some(existing) = class_name_intern.get(class_name) {
-                    existing.clone()
-                } else {
-                    let arc: Arc<str> = Arc::from(class_name.as_str());
-                    class_name_intern.insert(class_name.clone(), arc.clone());
-                    arc
-                };
-                let entry = histogram_map.entry(class_name.clone()).or_insert((0, 0, 0));
+                let entry = histogram_map.entry(class_name.to_string()).or_insert((0, 0, 0));
                 entry.0 += 1;
                 entry.1 += shallow;
                 entry.2 += retained;
-                (*id, "Array", interned)
+                (*id, "Array", class_name.clone())
             }
         };
 

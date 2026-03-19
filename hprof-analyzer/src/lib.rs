@@ -493,7 +493,7 @@ pub enum NodeData {
         /// The size of the instance in bytes.
         size: u32,
         /// The fully-qualified class name (e.g. "java.lang.String").
-        class_name: String,
+        class_name: Arc<str>,
     },
     /// An array (object array or primitive array) with its ID, size, and class name.
     Array {
@@ -502,7 +502,7 @@ pub enum NodeData {
         /// The size of the array in bytes.
         size: u32,
         /// The array class name (e.g. "byte[]", "java.lang.Object[]").
-        class_name: String,
+        class_name: Arc<str>,
     },
 }
 
@@ -789,12 +789,12 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
     log::info!("Built string table: {} entries, {} LoadClass entries", string_table.len(), load_class_entries.len());
 
     // Resolve class names and create class graph nodes from collected LoadClass entries
-    let mut class_name_map: HashMap<u64, String> = HashMap::with_capacity(load_class_entries.len());
+    let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::with_capacity(load_class_entries.len());
     let mut class_count = 0u64;
     for (class_obj_id, class_name_id) in &load_class_entries {
         if let Some(name) = string_table.get(class_name_id) {
             let java_name = convert_jvm_class_name(name);
-            class_name_map.insert(*class_obj_id, java_name);
+            class_name_map.insert(*class_obj_id, Arc::from(java_name.as_str()));
         }
         if !id_to_node.contains_key(class_obj_id) {
             let node_idx = graph.add_node(NodeData::Class);
@@ -1106,7 +1106,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                         jvm_hprof::heap_dump::SubRecord::PrimitiveArrayNoData(array) => {
                             let obj_id = array.obj_id().id();
                             let prim_type = array.primitive_type();
-                            let class_name = format!("{}[]", prim_type.java_type_name());
+                            let class_name: Arc<str> = Arc::from(format!("{}[]", prim_type.java_type_name()).as_str());
 
                             if let Some(&existing_idx) = id_to_node.get(&obj_id) {
                                 if matches!(graph[existing_idx], NodeData::Root) {
@@ -1129,7 +1129,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                 .unwrap_or(instance.fields().len() as u32);
                             let class_name = class_name_map.get(&class_obj_id)
                                 .cloned()
-                                .unwrap_or_else(|| format!("Unknown(0x{:x})", class_obj_id));
+                                .unwrap_or_else(|| Arc::from(format!("Unknown(0x{:x})", class_obj_id).as_str()));
 
                             if let Some(&existing_idx) = id_to_node.get(&obj_id) {
                                 // Upgrade GC root nodes with actual Instance data
@@ -1163,7 +1163,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                             let size = element_count * id_size_bytes as u32;
                             let class_name = class_name_map.get(&array_class_obj_id)
                                 .cloned()
-                                .unwrap_or_else(|| "Object[]".to_string());
+                                .unwrap_or_else(|| Arc::from("Object[]"));
                             array_element_counts.insert(obj_id, element_count);
 
                             if let Some(&existing_idx) = id_to_node.get(&obj_id) {
@@ -1184,38 +1184,38 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                             let obj_id = array.obj_id().id();
                             let prim_type = array.primitive_type();
                             // Compute size by counting elements via typed iterators
-                            let (elem_count, elem_size, class_name) = match prim_type {
+                            let (elem_count, elem_size, class_name): (u32, u32, Arc<str>) = match prim_type {
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Boolean => {
                                     let count = array.booleans().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 1u32, "boolean[]".to_string())
+                                    (count, 1u32, Arc::from("boolean[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Byte => {
                                     let count = array.bytes().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 1, "byte[]".to_string())
+                                    (count, 1, Arc::from("byte[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
                                     let count = array.chars().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 2, "char[]".to_string())
+                                    (count, 2, Arc::from("char[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Short => {
                                     let count = array.shorts().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 2, "short[]".to_string())
+                                    (count, 2, Arc::from("short[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Int => {
                                     let count = array.ints().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 4, "int[]".to_string())
+                                    (count, 4, Arc::from("int[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Float => {
                                     let count = array.floats().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 4, "float[]".to_string())
+                                    (count, 4, Arc::from("float[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Long => {
                                     let count = array.longs().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 8, "long[]".to_string())
+                                    (count, 8, Arc::from("long[]"))
                                 }
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Double => {
                                     let count = array.doubles().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 8, "double[]".to_string())
+                                    (count, 8, Arc::from("double[]"))
                                 }
                             };
                             let size = elem_count * elem_size;
@@ -1277,16 +1277,16 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
 
     // --- Waste analysis: look up class IDs for target classes ---
     let string_class_id: Option<u64> = class_name_map.iter()
-        .find(|(_, name)| name.as_str() == "java.lang.String")
+        .find(|(_, name)| name.as_ref() == "java.lang.String")
         .map(|(id, _)| *id);
     let hashmap_class_id: Option<u64> = class_name_map.iter()
-        .find(|(_, name)| name.as_str() == "java.util.HashMap")
+        .find(|(_, name)| name.as_ref() == "java.util.HashMap")
         .map(|(id, _)| *id);
     let linked_hashmap_class_id: Option<u64> = class_name_map.iter()
-        .find(|(_, name)| name.as_str() == "java.util.LinkedHashMap")
+        .find(|(_, name)| name.as_ref() == "java.util.LinkedHashMap")
         .map(|(id, _)| *id);
     let arraylist_class_id: Option<u64> = class_name_map.iter()
-        .find(|(_, name)| name.as_str() == "java.util.ArrayList")
+        .find(|(_, name)| name.as_ref() == "java.util.ArrayList")
         .map(|(id, _)| *id);
 
     // Boxed primitive class IDs
@@ -1303,7 +1303,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
         ];
         names.iter().filter_map(|(name, prim_size)| {
             class_name_map.iter()
-                .find(|(_, n)| n.as_str() == *name)
+                .find(|(_, n)| n.as_ref() == *name)
                 .map(|(id, _)| (*id, *name, *prim_size))
         }).collect()
     };
@@ -1402,7 +1402,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                             jvm_hprof::heap_dump::FieldType::Int, 0,
                                         ) {
                                             let cname = class_name_map.get(&class_obj_id)
-                                                .cloned().unwrap_or_default();
+                                                .map(|s| s.to_string()).unwrap_or_default();
                                             let shallow = class_instance_sizes.get(&class_obj_id)
                                                 .copied().unwrap_or(fields.len() as u32);
                                             if size_val == 0 {
