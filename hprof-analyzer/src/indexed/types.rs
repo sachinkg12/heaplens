@@ -72,6 +72,12 @@ pub trait HeapAnalysis: Send + Sync {
 
     /// Returns detailed info about a single object: (report, child_count, referrer_count).
     fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)>;
+
+    /// Returns a subtree of the dominator tree rooted at the given object.
+    fn get_dominator_subtree(&self, object_id: u64, max_depth: usize, max_children: usize) -> Option<crate::DominatorTreeNode>;
+
+    /// Returns a timeline snapshot for multi-snapshot comparison.
+    fn get_timeline_snapshot(&self, path: &str, top_n: usize) -> crate::TimelineSnapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +214,14 @@ impl HeapAnalysis for crate::AnalysisState {
         let child_count = self.children_map.get(&node_idx).map(|c| c.len()).unwrap_or(0);
         let ref_count = self.get_reverse_refs().get(&node_idx).map(|r| r.len()).unwrap_or(0);
         Some((report, child_count, ref_count))
+    }
+
+    fn get_dominator_subtree(&self, object_id: u64, max_depth: usize, max_children: usize) -> Option<crate::DominatorTreeNode> {
+        self.get_dominator_subtree(object_id, max_depth, max_children)
+    }
+
+    fn get_timeline_snapshot(&self, path: &str, top_n: usize) -> crate::TimelineSnapshot {
+        self.get_timeline_snapshot(path, top_n)
     }
 }
 

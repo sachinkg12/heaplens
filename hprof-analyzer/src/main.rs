@@ -9,12 +9,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use hprof_analyzer::{build_graph, calculate_dominators_with_state, compare_heaps, FieldInfo, HprofLoader, WasteAnalysis};
+use hprof_analyzer::indexed::types::HeapAnalysis;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Global flag: use the indexed (MAT-style) analysis backend.
+static USE_INDEXED: AtomicBool = AtomicBool::new(false);
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::signal;
@@ -28,6 +32,10 @@ struct Cli {
     /// Run as an MCP (Model Context Protocol) server instead of JSON-RPC
     #[arg(long)]
     mcp: bool,
+
+    /// Use the indexed (MAT-style) analysis backend for faster parsing
+    #[arg(long)]
+    indexed: bool,
 }
 
 /// JSON-RPC 2.0 Request structure.
@@ -83,8 +91,8 @@ struct AnalyzeHeapResult {
 /// Analysis state stored per file path.
 #[derive(Clone)]
 struct FileAnalysisState {
-    /// The analysis state for querying children (Arc-wrapped for cheap cloning).
-    state: Arc<RwLock<Option<Arc<hprof_analyzer::AnalysisState>>>>,
+    /// The analysis state for querying (Arc-wrapped for cheap cloning).
+    state: Arc<RwLock<Option<Arc<dyn HeapAnalysis>>>>,
     /// The file path this analysis is for.
     #[allow(dead_code)]
     path: PathBuf,
@@ -104,7 +112,7 @@ fn analyze_heap_blocking(
 ) -> AnalyzeHeapResult {
     log::info!("Starting heap analysis for: {:?} (request_id: {})", path, request_id);
 
-    match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token) {
+    match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token, USE_INDEXED.load(Ordering::Relaxed)) {
         Ok((top_objects, analysis_state, timing)) => {
             log::info!("Heap analysis completed successfully (request_id: {})", request_id);
 
@@ -119,10 +127,10 @@ fn analyze_heap_blocking(
                 status: "completed".to_string(),
                 top_objects: Some(top_objects),
                 top_layers: Some(top_layers),
-                summary: Some(analysis_state.summary.clone()),
-                class_histogram: Some(analysis_state.class_histogram.clone()),
-                leak_suspects: Some(analysis_state.leak_suspects.clone()),
-                waste_analysis: Some(analysis_state.waste_analysis.clone()),
+                summary: Some(analysis_state.get_summary().clone()),
+                class_histogram: Some(analysis_state.get_class_histogram().to_vec()),
+                leak_suspects: Some(analysis_state.get_leak_suspects().to_vec()),
+                waste_analysis: Some(analysis_state.get_waste_analysis().clone()),
                 timing: Some(timing),
                 error: None,
             }
@@ -151,7 +159,8 @@ fn analyze_heap_internal(
     path: &PathBuf,
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: &Arc<AtomicBool>,
-) -> Result<(Vec<hprof_analyzer::ObjectReport>, Arc<hprof_analyzer::AnalysisState>, TimingBreakdown)> {
+    use_indexed: bool,
+) -> Result<(Vec<hprof_analyzer::ObjectReport>, Arc<dyn HeapAnalysis>, TimingBreakdown)> {
     let total_start = Instant::now();
 
     // Phase 1/4: Load and map the HPROF file
@@ -189,73 +198,84 @@ fn analyze_heap_internal(
         anyhow::bail!("Analysis cancelled");
     }
 
-    // Phase 2/4: Build the heap graph
-    eprintln!("[Progress] Step 2/4: Building heap graph...");
-    let graph_building_notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "heap_analysis_progress",
-        "params": {
-            "stage": "graph_building",
-            "phase": 2,
-            "total_phases": 4
-        }
-    });
-    if let Err(e) = send_stdout(&graph_building_notification) {
-        eprintln!("[Progress] Failed to send graph_building notification: {}", e);
-    }
+    // Phase 2-4: Build graph, compute dominators (legacy or indexed path)
+    let (top_objects, analysis_state, graph_building_ms, dominator_analysis_ms): (
+        Vec<hprof_analyzer::ObjectReport>,
+        Arc<dyn HeapAnalysis>,
+        u64,
+        u64,
+    ) = if use_indexed {
+        eprintln!("[Progress] Step 2/3: Indexed parse + analysis...");
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": { "stage": "graph_building", "phase": 2, "total_phases": 3 }
+        }));
 
-    let phase_start = Instant::now();
-    let (graph, waste_data) = build_graph(&mmap[..])
-        .context("Failed to build heap graph")?;
-    let graph_building_ms = phase_start.elapsed().as_millis() as u64;
+        let phase_start = Instant::now();
+        let parse_result = hprof_analyzer::indexed::parse::parse_indexed(&mmap[..])
+            .context("Indexed parse failed")?;
+        let graph_ms = phase_start.elapsed().as_millis() as u64;
 
-    eprintln!("[Progress] Heap graph built: {} nodes, {} edges ({} ms)",
-                graph.node_count(),
-                graph.edge_count(),
-                graph_building_ms);
-    log::info!("Heap graph built: {} nodes, {} edges",
-                graph.node_count(),
-                graph.edge_count());
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": {
+                "stage": "graph_built", "phase": 3, "total_phases": 3,
+                "summary": parse_result.summary
+            }
+        }));
 
-    // Phase 3/4: Graph built — emit summary stats for early rendering
-    let progress_summary = graph.summary().clone();
-    let progress_notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "heap_analysis_progress",
-        "params": {
-            "stage": "graph_built",
-            "phase": 3,
-            "total_phases": 4,
-            "summary": progress_summary
-        }
-    });
-    if let Err(e) = send_stdout(&progress_notification) {
-        eprintln!("[Progress] Failed to send progress notification: {}", e);
-    }
+        if cancel_token.load(Ordering::Relaxed) { anyhow::bail!("Analysis cancelled"); }
 
-    if cancel_token.load(Ordering::Relaxed) {
-        anyhow::bail!("Analysis cancelled");
-    }
+        let phase_start = Instant::now();
+        let indexed_state = hprof_analyzer::indexed::IndexedAnalysisState::from_parse_result(parse_result)
+            .context("Indexed analysis failed")?;
+        let dom_ms = phase_start.elapsed().as_millis() as u64;
 
-    // Phase 4/4: Calculate dominators and retained sizes
-    eprintln!("[Progress] Step 4/4: Calculating dominators and retained sizes...");
-    let dominators_notification = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "heap_analysis_progress",
-        "params": {
-            "stage": "dominators",
-            "phase": 4,
-            "total_phases": 4
-        }
-    });
-    if let Err(e) = send_stdout(&dominators_notification) {
-        eprintln!("[Progress] Failed to send dominators notification: {}", e);
-    }
+        let top = indexed_state.get_top_layers(3, 50);
+        (top, Arc::new(indexed_state) as Arc<dyn HeapAnalysis>, graph_ms, dom_ms)
+    } else {
+        eprintln!("[Progress] Step 2/4: Building heap graph...");
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": { "stage": "graph_building", "phase": 2, "total_phases": 4 }
+        }));
 
-    let phase_start = Instant::now();
-    let (top_objects, analysis_state) = calculate_dominators_with_state(graph, waste_data)
-        .context("Failed to calculate dominators")?;
-    let dominator_analysis_ms = phase_start.elapsed().as_millis() as u64;
+        let phase_start = Instant::now();
+        let (graph, waste_data) = build_graph(&mmap[..])
+            .context("Failed to build heap graph")?;
+        let graph_ms = phase_start.elapsed().as_millis() as u64;
+
+        eprintln!("[Progress] Heap graph built: {} nodes, {} edges ({} ms)",
+            graph.node_count(), graph.edge_count(), graph_ms);
+
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": {
+                "stage": "graph_built", "phase": 3, "total_phases": 4,
+                "summary": graph.summary().clone()
+            }
+        }));
+
+        if cancel_token.load(Ordering::Relaxed) { anyhow::bail!("Analysis cancelled"); }
+
+        eprintln!("[Progress] Step 4/4: Calculating dominators and retained sizes...");
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": { "stage": "dominators", "phase": 4, "total_phases": 4 }
+        }));
+
+        let phase_start = Instant::now();
+        let (top_objects, state) = calculate_dominators_with_state(graph, waste_data)
+            .context("Failed to calculate dominators")?;
+        let dom_ms = phase_start.elapsed().as_millis() as u64;
+
+        (top_objects, Arc::new(state) as Arc<dyn HeapAnalysis>, graph_ms, dom_ms)
+    };
 
     let total_ms = total_start.elapsed().as_millis() as u64;
 
@@ -264,10 +284,7 @@ fn analyze_heap_internal(
         file_loading_ms, graph_building_ms, dominator_analysis_ms, total_ms);
     log::info!("Analysis complete: {} top objects ({} ms total)", top_objects.len(), total_ms);
 
-    // Wrap in Arc for cheap cloning on queries
-    let analysis_state = Arc::new(analysis_state);
-
-    // Step 4: Store analysis state for lazy loading queries
+    // Store analysis state for lazy loading queries
     {
         let mut states = analysis_states.write()
             .map_err(|e| anyhow::anyhow!("Failed to write analysis states: {}", e))?;
@@ -483,7 +500,7 @@ fn mcp_tool_definitions() -> serde_json::Value {
 fn get_analysis_state_for_path(
     analysis_states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     path: &str,
-) -> std::result::Result<Arc<hprof_analyzer::AnalysisState>, String> {
+) -> std::result::Result<Arc<dyn HeapAnalysis>, String> {
     let states = analysis_states.read()
         .map_err(|e| format!("Internal error: {}", e))?;
     let file_state = states.get(&PathBuf::from(path))
@@ -497,10 +514,10 @@ fn get_analysis_state_for_path(
 
 /// Formats the analyze_heap result as LLM-friendly markdown.
 fn format_analyze_result(
-    state: &hprof_analyzer::AnalysisState,
+    state: &dyn HeapAnalysis,
     top_objects: &[hprof_analyzer::ObjectReport],
 ) -> String {
-    let s = &state.summary;
+    let s = state.get_summary();
     let mut out = String::new();
 
     out.push_str("## Heap Summary\n\n");
@@ -530,9 +547,9 @@ fn format_analyze_result(
     }
 
     // Leak suspects
-    if !state.leak_suspects.is_empty() {
+    if !state.get_leak_suspects().is_empty() {
         out.push_str("## Leak Suspects\n\n");
-        for suspect in &state.leak_suspects {
+        for suspect in state.get_leak_suspects() {
             let severity = if suspect.retained_percentage > 30.0 { "HIGH" } else { "MEDIUM" };
             out.push_str(&format!("- **[{}] {}** - retains {:.1}% of heap ({}) - {}\n",
                 severity, suspect.class_name, suspect.retained_percentage,
@@ -542,12 +559,12 @@ fn format_analyze_result(
     }
 
     // Top 10 histogram
-    let hist_count = state.class_histogram.len().min(10);
+    let hist_count = state.get_class_histogram().len().min(10);
     if hist_count > 0 {
         out.push_str("## Top Classes by Retained Size\n\n");
         out.push_str("| Class | Instances | Shallow | Retained |\n");
         out.push_str("|-------|-----------|---------|----------|\n");
-        for entry in state.class_histogram.iter().take(hist_count) {
+        for entry in state.get_class_histogram().iter().take(hist_count) {
             out.push_str(&format!("| {} | {} | {} | {} |\n",
                 entry.class_name, entry.instance_count,
                 fmt_bytes(entry.shallow_size), fmt_bytes(entry.retained_size)));
@@ -555,7 +572,7 @@ fn format_analyze_result(
     }
 
     // Waste analysis
-    let w = &state.waste_analysis;
+    let w = state.get_waste_analysis();
     if w.total_wasted_bytes > 0 {
         out.push_str("\n## Waste Analysis\n\n");
         out.push_str(&format!("- **Total Waste:** {} ({:.1}% of heap)\n", fmt_bytes(w.total_wasted_bytes), w.waste_percentage));
@@ -885,9 +902,9 @@ fn handle_mcp_tool_call(
 
             eprintln!("[MCP] analyze_heap: {}", path);
             let no_cancel = Arc::new(AtomicBool::new(false));
-            match analyze_heap_internal(&PathBuf::from(path), analysis_states.clone(), &no_cancel) {
+            match analyze_heap_internal(&PathBuf::from(path), analysis_states.clone(), &no_cancel, USE_INDEXED.load(Ordering::Relaxed)) {
                 Ok((top_objects, state, _timing)) => {
-                    let text = format_analyze_result(&state, &top_objects);
+                    let text = format_analyze_result(&*state, &top_objects);
                     mcp_text_result(&text, false)
                 }
                 Err(e) => {
@@ -901,7 +918,7 @@ fn handle_mcp_tool_call(
                 None => return mcp_text_result("Missing required parameter: path", true),
             };
             match get_analysis_state_for_path(analysis_states, path) {
-                Ok(state) => mcp_text_result(&format_leak_suspects(&state.leak_suspects), false),
+                Ok(state) => mcp_text_result(&format_leak_suspects(state.get_leak_suspects()), false),
                 Err(e) => mcp_text_result(&e, true),
             }
         }
@@ -912,7 +929,7 @@ fn handle_mcp_tool_call(
             };
             let limit = arguments.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
             match get_analysis_state_for_path(analysis_states, path) {
-                Ok(state) => mcp_text_result(&format_class_histogram(&state.class_histogram, limit), false),
+                Ok(state) => mcp_text_result(&format_class_histogram(state.get_class_histogram(), limit), false),
                 Err(e) => mcp_text_result(&e, true),
             }
         }
@@ -939,7 +956,7 @@ fn handle_mcp_tool_call(
                 None => return mcp_text_result("Missing required parameter: path", true),
             };
             match get_analysis_state_for_path(analysis_states, path) {
-                Ok(state) => mcp_text_result(&format_summary(&state.summary), false),
+                Ok(state) => mcp_text_result(&format_summary(state.get_summary()), false),
                 Err(e) => mcp_text_result(&e, true),
             }
         }
@@ -949,7 +966,7 @@ fn handle_mcp_tool_call(
                 None => return mcp_text_result("Missing required parameter: path", true),
             };
             match get_analysis_state_for_path(analysis_states, path) {
-                Ok(state) => mcp_text_result(&format_waste_analysis(&state.waste_analysis), false),
+                Ok(state) => mcp_text_result(&format_waste_analysis(state.get_waste_analysis()), false),
                 Err(e) => mcp_text_result(&e, true),
             }
         }
@@ -1502,9 +1519,9 @@ async fn handle_export_json_request(
 
     let export_data = serde_json::json!({
         "source_file": path,
-        "summary": analysis_state.summary,
-        "class_histogram": analysis_state.class_histogram,
-        "leak_suspects": analysis_state.leak_suspects,
+        "summary": analysis_state.get_summary(),
+        "class_histogram": analysis_state.get_class_histogram(),
+        "leak_suspects": analysis_state.get_leak_suspects(),
         "top_objects": top_objects,
     });
 
@@ -1836,6 +1853,11 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.indexed {
+        USE_INDEXED.store(true, Ordering::Relaxed);
+        log::info!("Using indexed (MAT-style) analysis backend");
+    }
 
     if cli.mcp {
         log::info!("Starting HeapLens MCP server");

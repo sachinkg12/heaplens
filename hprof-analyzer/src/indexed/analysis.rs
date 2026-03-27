@@ -496,6 +496,23 @@ impl HeapAnalysis for IndexedAnalysisState {
         let ref_count = 0;
         Some((report, child_count, ref_count))
     }
+
+    fn get_dominator_subtree(&self, _object_id: u64, _max_depth: usize, _max_children: usize) -> Option<crate::DominatorTreeNode> {
+        // TODO: implement for indexed backend
+        None
+    }
+
+    fn get_timeline_snapshot(&self, path: &str, top_n: usize) -> crate::TimelineSnapshot {
+        let top_classes: Vec<crate::ClassHistogramEntry> = self.class_histogram.iter()
+            .take(top_n)
+            .cloned()
+            .collect();
+        crate::TimelineSnapshot {
+            path: path.to_string(),
+            summary: self.summary.clone(),
+            top_classes,
+        }
+    }
 }
 
 #[cfg(test)]
