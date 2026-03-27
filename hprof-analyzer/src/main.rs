@@ -165,21 +165,6 @@ fn analyze_heap_blocking(
                 error: None,
             };
 
-            // For indexed backend: Phase 1 result was already stored. Now run Phase 2.
-            if use_indexed {
-                // Send Phase 1 result immediately
-                let _ = result_tx.send(phase1_result.clone());
-
-                // Run Phase 2 (edges + dominators)
-                run_phase2_background(
-                    &path,
-                    request_id,
-                    &analysis_states,
-                    &cancel_token,
-                    timing,
-                );
-            }
-
             phase1_result
         }
         Err(e) => {
