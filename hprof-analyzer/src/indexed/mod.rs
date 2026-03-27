@@ -8,11 +8,10 @@
 //! and provides the impl for the existing `AnalysisState`.
 
 mod types;
-
-// Future submodules:
-// mod object_index;
-// mod dominator_index;
-// mod class_index;
-// mod snapshot;
+pub mod string_table;
+pub mod class_index;
+pub mod node_store;
+pub mod edge_store;
+pub mod parse;
 
 pub use types::HeapAnalysis;
