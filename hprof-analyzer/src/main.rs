@@ -420,58 +420,42 @@ fn analyze_heap_internal(
         }));
 
         let phase_start = Instant::now();
-        // Run Phase 1 twice: once for the Phase1AnalysisState (immediate display),
-        // once to keep the data for Phase 2 (edges + dominators). Phase 1 is fast
-        // (~1.4s) so the overhead is acceptable vs. the 38s Phase 2 runs in background.
-        let (phase1_for_display, _deferred_discard) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
+        let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
             .context("Indexed Phase 1 parse failed")?;
         let graph_ms = phase_start.elapsed().as_millis() as u64;
 
-        eprintln!("[Progress] Phase 1 complete: {} nodes ({} ms)", phase1_for_display.node_store.len(), graph_ms);
+        eprintln!("[Progress] Phase 1 complete: {} nodes ({} ms)", phase1.node_store.len(), graph_ms);
 
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
             "params": {
-                "stage": "graph_built", "phase": 3, "total_phases": 3,
-                "summary": phase1_for_display.summary
+                "stage": "graph_built", "phase": 3, "total_phases": 4,
+                "summary": phase1.summary
             }
         }));
 
         if cancel_token.load(Ordering::Relaxed) { anyhow::bail!("Analysis cancelled"); }
 
-        // Create Phase1AnalysisState (lightweight, no edges/dominators)
-        let phase1_state = hprof_analyzer::indexed::Phase1AnalysisState::new(phase1_for_display);
-        let top = phase1_state.get_top_layers(3, 50);
-        let analysis_state: Arc<dyn HeapAnalysis> = Arc::new(phase1_state);
+        // Phase 2: edges + dominators (~1s after file rescan elimination)
+        eprintln!("[Progress] Step 3/4: Extracting edges + computing dominators...");
+        let _ = send_stdout(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "heap_analysis_progress",
+            "params": { "stage": "dominators", "phase": 4, "total_phases": 4 }
+        }));
 
-        // Run Phase 1 again to get data for Phase 2 (deferred edge data + node store)
-        let (phase1_for_phase2, deferred_for_phase2) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
-            .context("Indexed Phase 1 re-parse for Phase 2 data")?;
+        let phase_start = Instant::now();
+        let phase2 = hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred)
+            .context("Indexed Phase 2 failed")?;
+        let indexed_state = hprof_analyzer::indexed::IndexedAnalysisState::from_phases(phase1, phase2)
+            .context("Indexed analysis state construction failed")?;
+        let dom_ms = phase_start.elapsed().as_millis() as u64;
 
-        // Store state with deferred data for Phase 2
-        {
-            let mut states = analysis_states.write()
-                .map_err(|e| anyhow::anyhow!("Failed to write analysis states: {}", e))?;
+        let top = indexed_state.get_top_layers(3, 50);
+        let analysis_state: Arc<dyn HeapAnalysis> = Arc::new(indexed_state);
 
-            states.insert(path.clone(), FileAnalysisState {
-                state: Arc::new(RwLock::new(Some(analysis_state.clone()))),
-                path: path.clone(),
-                mmap: Some(mmap),
-                deferred_edge_data: Arc::new(std::sync::Mutex::new(Some(deferred_for_phase2))),
-                phase1_result: Arc::new(std::sync::Mutex::new(Some(phase1_for_phase2))),
-            });
-        }
-
-        let total_ms = total_start.elapsed().as_millis() as u64;
-        let timing = TimingBreakdown {
-            file_loading_ms,
-            graph_building_ms: graph_ms,
-            dominator_analysis_ms: 0,
-            total_ms,
-        };
-
-        return Ok((top, analysis_state, timing));
+        (top, analysis_state, graph_ms, dom_ms)
     } else {
         eprintln!("[Progress] Step 2/4: Building heap graph...");
         let _ = send_stdout(&serde_json::json!({
