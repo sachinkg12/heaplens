@@ -89,7 +89,7 @@ export function getLeakSuspectsJs(): string {
                     ? ' <button class="why-alive-btn gc-path-link" data-object-id="' + s.object_id + '">Why alive?</button>'
                     : '';
                 var inspectLink = s.object_id
-                    ? ' <button class="why-alive-btn inspect-obj-link" data-object-id="' + s.object_id + '">Inspect</button>'
+                    ? ' <button class="why-alive-btn inspect-obj-link" data-object-id="' + s.object_id + '" data-class-name="' + escapeHtml(s.class_name) + '" data-shallow="' + (s.shallow_size || 0) + '" data-retained="' + s.retained_size + '">Inspect</button>'
                     : '';
                 var sanitizedId = (s.class_name + '_' + s.object_id).replace(/[^a-zA-Z0-9]/g, '_');
                 var explainLink = ' | <a class="suspect-explain-link" data-class="' + escapeHtml(s.class_name) +
@@ -250,7 +250,10 @@ export function getLeakSuspectsJs(): string {
                 link.addEventListener('click', function(e) {
                     e.preventDefault();
                     var objectId = parseInt(link.dataset.objectId, 10);
-                    if (objectId) vscode.postMessage({ command: 'inspectObject', objectId: objectId });
+                    var className = link.dataset.className || 'Unknown';
+                    var shallow = parseInt(link.dataset.shallow || '0', 10);
+                    var retained = parseInt(link.dataset.retained || '0', 10);
+                    if (objectId) openInspector(objectId, className, shallow, retained);
                 });
             });
 
