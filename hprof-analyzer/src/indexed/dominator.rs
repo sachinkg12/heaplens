@@ -87,10 +87,11 @@ pub fn compute_dominators(
 
     if reachable <= 1 {
         // Only the root or nothing is reachable
-        let mut retained_sizes: Vec<u64> = Vec::with_capacity(n);
-        for i in 0..n {
-            retained_sizes.push(node_store.get_by_index(i as u32).shallow_size as u64);
-        }
+        use rayon::prelude::*;
+        let retained_sizes: Vec<u64> = (0..n)
+            .into_par_iter()
+            .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
+            .collect();
         let dominator_parent = vec![u32::MAX; n];
         let dominator_children = vec![Vec::new(); n];
         return DominatorResult {
@@ -203,10 +204,12 @@ pub fn compute_dominators(
 
     // --- Compute retained sizes bottom-up ---
 
-    let mut retained_sizes: Vec<u64> = Vec::with_capacity(n);
-    for i in 0..n {
-        retained_sizes.push(node_store.get_by_index(i as u32).shallow_size as u64);
-    }
+    // Initialize retained sizes from shallow sizes using rayon parallel collect
+    use rayon::prelude::*;
+    let mut retained_sizes: Vec<u64> = (0..n)
+        .into_par_iter()
+        .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
+        .collect();
 
     // Process in reverse DFS order: children before parents.
     // First handle reachable nodes in reverse DFS order.

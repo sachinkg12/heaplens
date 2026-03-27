@@ -38,6 +38,12 @@ macro_rules! iterator_method {
 }
 
 impl<'a> PrimitiveArray<'a> {
+    /// Returns the number of elements in this primitive array, read directly
+    /// from the HPROF record header (O(1), no iteration required).
+    pub fn num_elements(&self) -> u32 {
+        self.num_elements
+    }
+
     pub(crate) fn parse(input: &[u8], id_size: IdSize) -> nom::IResult<&[u8], PrimitiveArray> {
         // https://github.com/openjdk/jdk/blob/08822b4e0526fe001c39fe08e241b849eddf481d/src/hotspot/share/services/heapDumper.cpp#L279
         let (input, obj_id) = Id::parse(input, id_size)?;

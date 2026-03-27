@@ -83,21 +83,69 @@ impl IndexedAnalysisState {
         // attaching them to root.
         summary.reachable_heap_size = summary.total_heap_size;
 
-        // 2. Build class histogram
+        // 2. Build class histogram, collect leak candidates, and select top-50
+        //    objects in a single pass over all nodes.
+        use std::collections::BinaryHeap;
+
+        let reachable_heap_size = summary.reachable_heap_size;
+        let threshold_bytes = if reachable_heap_size > 0 {
+            (reachable_heap_size as f64 * 0.10) as u64
+        } else {
+            u64::MAX
+        };
+
         let mut histogram_map: HashMap<String, (u64, u64, u64)> = HashMap::new();
+        // Min-heap of top-10 leak candidates by retained size (keeps smallest on top)
+        let mut leak_heap: BinaryHeap<std::cmp::Reverse<(u64, u32)>> = BinaryHeap::with_capacity(11);
+        // Min-heap of top-50 objects by retained size
+        let mut top_heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
+
         for i in 0..node_store.len() {
             let node = node_store.get_by_index(i as u32);
             match node.node_type {
-                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {
-                    let class_name = node.class_name.to_string();
-                    let shallow = node.shallow_size as u64;
-                    let retained = dominator.retained_sizes[i];
-                    let entry = histogram_map.entry(class_name).or_insert((0, 0, 0));
-                    entry.0 += 1;
-                    entry.1 += shallow;
-                    entry.2 += retained;
+                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+                _ => continue,
+            }
+
+            let shallow = node.shallow_size as u64;
+            let retained = dominator.retained_sizes[i];
+
+            // Histogram aggregation
+            let class_name = node.class_name.to_string();
+            let entry = histogram_map.entry(class_name).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += shallow;
+            entry.2 += retained;
+
+            if retained == 0 {
+                continue;
+            }
+
+            // Leak candidate: only track objects above the 10% threshold
+            if retained >= threshold_bytes {
+                leak_heap.push(std::cmp::Reverse((retained, i as u32)));
+                if leak_heap.len() > 10 {
+                    leak_heap.pop();
                 }
-                _ => {}
+            }
+
+            // Top-50 objects by retained size (BinaryHeap min-heap via ObjectReport Ord)
+            let node_type_str = match node.node_type {
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                _ => unreachable!(),
+            };
+            let report = ObjectReport::new(
+                node.id,
+                node_type_str.to_string(),
+                node.class_name.to_string(),
+                shallow,
+                retained,
+                NodeIndex::new(i),
+            );
+            top_heap.push(report);
+            if top_heap.len() > 50 {
+                top_heap.pop();
             }
         }
 
@@ -114,31 +162,15 @@ impl IndexedAnalysisState {
             .collect();
         class_histogram.sort_by(|a, b| b.retained_size.cmp(&a.retained_size));
 
-        // 3. Identify leak suspects (objects retaining >10% of reachable heap)
-        let reachable_heap_size = summary.reachable_heap_size;
+        // 3. Build leak suspects from the collected candidates
         let mut leak_suspects = Vec::new();
 
         if reachable_heap_size > 0 {
-            let threshold_pct = 10.0;
-            let threshold_bytes = (reachable_heap_size as f64 * threshold_pct / 100.0) as u64;
+            // Convert leak heap to sorted vec (largest first)
+            let mut candidates: Vec<(u64, u32)> = leak_heap.into_iter().map(|r| r.0).collect();
+            candidates.sort_by(|a, b| b.0.cmp(&a.0));
 
-            // Individual object suspects
-            let mut candidates: Vec<(u32, u64, f64)> = Vec::new();
-            for i in 0..node_store.len() {
-                let node = node_store.get_by_index(i as u32);
-                if !matches!(node.node_type, NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray) {
-                    continue;
-                }
-                let retained = dominator.retained_sizes[i];
-                if retained < threshold_bytes {
-                    continue;
-                }
-                let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
-                candidates.push((i as u32, retained, percentage));
-            }
-            candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-            for &(idx, retained, percentage) in candidates.iter().take(10) {
+            for &(retained, idx) in &candidates {
                 let node = node_store.get_by_index(idx);
                 let class_name = node.class_name.to_string();
                 let display_name = if class_name.is_empty() {
@@ -146,6 +178,7 @@ impl IndexedAnalysisState {
                 } else {
                     class_name
                 };
+                let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
                 leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
                     object_id: node.id,
@@ -193,40 +226,7 @@ impl IndexedAnalysisState {
             });
         }
 
-        // 4. Select top 50 objects by retained size
-        use std::collections::BinaryHeap;
-        let mut top_heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
-
-        for i in 0..node_store.len() {
-            let node = node_store.get_by_index(i as u32);
-            let retained = dominator.retained_sizes[i];
-            if retained == 0 {
-                continue;
-            }
-            match node.node_type {
-                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {
-                    let node_type_str = match node.node_type {
-                        NodeType::Instance => "Instance",
-                        NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
-                        _ => unreachable!(),
-                    };
-                    let report = ObjectReport::new(
-                        node.id,
-                        node_type_str.to_string(),
-                        node.class_name.to_string(),
-                        node.shallow_size as u64,
-                        retained,
-                        NodeIndex::new(i),
-                    );
-                    top_heap.push(report);
-                    if top_heap.len() > 50 {
-                        top_heap.pop();
-                    }
-                }
-                _ => {}
-            }
-        }
-
+        // 4. Finalize top-50 objects
         let top_objects: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
         Ok(Self {

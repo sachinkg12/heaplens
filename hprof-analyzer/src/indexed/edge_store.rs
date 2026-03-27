@@ -54,8 +54,9 @@ impl EdgeBuilder {
     ///
     /// Also builds the reverse CSR for backward traversal.
     pub fn build(mut self, node_count: usize) -> EdgeStore {
-        // Sort by (source, target) for CSR construction and dedup
-        self.edges.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        // Use rayon parallel sort for large edge lists
+        use rayon::slice::ParallelSliceMut;
+        self.edges.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
         // Deduplicate by (source, target), keeping the first label
         self.edges.dedup_by(|b, a| a.0 == b.0 && a.1 == b.1);

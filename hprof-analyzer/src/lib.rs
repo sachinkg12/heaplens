@@ -1154,13 +1154,8 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                 IdSize::U32 => 4,
                                 IdSize::U64 => 8,
                             };
-                            let mut element_count = 0u32;
-                            for element_result in array.elements(id_size) {
-                                match element_result {
-                                    Ok(Some(_)) | Ok(None) => element_count += 1,
-                                    Err(_) => {}
-                                }
-                            }
+                            // Use num_elements() from the HPROF header (O(1))
+                            let element_count = array.num_elements();
                             let size = element_count * id_size_bytes as u32;
                             let class_name = class_name_map.get(&array_class_obj_id)
                                 .cloned()
@@ -1184,40 +1179,18 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                         jvm_hprof::heap_dump::SubRecord::PrimitiveArray(array) => {
                             let obj_id = array.obj_id().id();
                             let prim_type = array.primitive_type();
-                            // Compute size by counting elements via typed iterators
-                            let (elem_count, elem_size, class_name): (u32, u32, Arc<str>) = match prim_type {
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Boolean => {
-                                    let count = array.booleans().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 1u32, Arc::from("boolean[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Byte => {
-                                    let count = array.bytes().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 1, Arc::from("byte[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
-                                    let count = array.chars().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 2, Arc::from("char[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Short => {
-                                    let count = array.shorts().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 2, Arc::from("short[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Int => {
-                                    let count = array.ints().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 4, Arc::from("int[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Float => {
-                                    let count = array.floats().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 4, Arc::from("float[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Long => {
-                                    let count = array.longs().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 8, Arc::from("long[]"))
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Double => {
-                                    let count = array.doubles().map_or(0u32, |iter| iter.count() as u32);
-                                    (count, 8, Arc::from("double[]"))
-                                }
+                            // Use num_elements() from the HPROF header directly (O(1))
+                            // instead of iterating all elements via typed iterators.
+                            let elem_count = array.num_elements();
+                            let (elem_size, class_name): (u32, Arc<str>) = match prim_type {
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Boolean => (1u32, Arc::from("boolean[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Byte => (1, Arc::from("byte[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Char => (2, Arc::from("char[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Short => (2, Arc::from("short[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Int => (4, Arc::from("int[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Float => (4, Arc::from("float[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Long => (8, Arc::from("long[]")),
+                                jvm_hprof::heap_dump::PrimitiveArrayType::Double => (8, Arc::from("double[]")),
                             };
                             let size = elem_count * elem_size;
                             array_element_counts.insert(obj_id, elem_count);

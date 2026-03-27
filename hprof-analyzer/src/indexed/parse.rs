@@ -360,22 +360,17 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
                                     IdSize::U64 => 8,
                                 };
 
-                                // Count elements and collect references
-                                let mut element_count = 0u32;
+                                // Use num_elements() from the HPROF header (O(1))
+                                // instead of iterating to count. Still iterate
+                                // for collecting non-null element references.
+                                let element_count = array.num_elements();
                                 let mut element_refs: Vec<u64> = Vec::new();
                                 for el_result in array.elements(id_size) {
-                                    match el_result {
-                                        Ok(Some(el_id)) => {
-                                            element_count += 1;
-                                            let ref_id = el_id.id();
-                                            if ref_id != 0 {
-                                                element_refs.push(ref_id);
-                                            }
+                                    if let Ok(Some(el_id)) = el_result {
+                                        let ref_id = el_id.id();
+                                        if ref_id != 0 {
+                                            element_refs.push(ref_id);
                                         }
-                                        Ok(None) => {
-                                            element_count += 1;
-                                        }
-                                        Err(_) => {}
                                     }
                                 }
 
@@ -431,55 +426,34 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
                             jvm_hprof::heap_dump::SubRecord::PrimitiveArray(array) => {
                                 let obj_id = array.obj_id().id();
                                 let prim_type = array.primitive_type();
-                                let (elem_count, elem_size, class_name): (u32, u32, Arc<str>) =
+                                // Use num_elements() from the HPROF header directly (O(1))
+                                // instead of iterating all elements via typed iterators.
+                                let elem_count = array.num_elements();
+                                let (elem_size, class_name): (u32, Arc<str>) =
                                     match prim_type {
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Boolean => {
-                                            let c = array
-                                                .booleans()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 1, Arc::from("boolean[]"))
+                                            (1, Arc::from("boolean[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Byte => {
-                                            let c = array
-                                                .bytes()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 1, Arc::from("byte[]"))
+                                            (1, Arc::from("byte[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
-                                            let c = array
-                                                .chars()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 2, Arc::from("char[]"))
+                                            (2, Arc::from("char[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Short => {
-                                            let c = array
-                                                .shorts()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 2, Arc::from("short[]"))
+                                            (2, Arc::from("short[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Int => {
-                                            let c = array
-                                                .ints()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 4, Arc::from("int[]"))
+                                            (4, Arc::from("int[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Float => {
-                                            let c = array
-                                                .floats()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 4, Arc::from("float[]"))
+                                            (4, Arc::from("float[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Long => {
-                                            let c = array
-                                                .longs()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 8, Arc::from("long[]"))
+                                            (8, Arc::from("long[]"))
                                         }
                                         jvm_hprof::heap_dump::PrimitiveArrayType::Double => {
-                                            let c = array
-                                                .doubles()
-                                                .map_or(0u32, |iter| iter.count() as u32);
-                                            (c, 8, Arc::from("double[]"))
+                                            (8, Arc::from("double[]"))
                                         }
                                     };
 
