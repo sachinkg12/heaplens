@@ -26,8 +26,11 @@ pub trait HeapAnalysis: Send + Sync {
     /// Returns the class histogram sorted by retained size.
     fn get_class_histogram(&self) -> &[ClassHistogramEntry];
 
-    /// Returns detected leak suspects.
+    /// Returns detected leak suspects (class-level aggregations).
     fn get_leak_suspects(&self) -> &[LeakSuspect];
+
+    /// Returns individual object-level leak suspects (MAT-style).
+    fn get_object_leak_suspects(&self) -> &[LeakSuspect];
 
     /// Returns waste analysis (duplicate strings, empty collections, etc.).
     fn get_waste_analysis(&self) -> &WasteAnalysis;
@@ -99,6 +102,10 @@ impl HeapAnalysis for crate::AnalysisState {
 
     fn get_leak_suspects(&self) -> &[LeakSuspect] {
         &self.leak_suspects
+    }
+
+    fn get_object_leak_suspects(&self) -> &[LeakSuspect] {
+        &self.object_leak_suspects
     }
 
     fn get_waste_analysis(&self) -> &WasteAnalysis {

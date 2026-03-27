@@ -1800,8 +1800,10 @@ pub struct AnalysisState {
     pub node_data_map: Vec<(u64, &'static str, Arc<str>)>,
     /// Class histogram entries sorted by retained size.
     pub class_histogram: Vec<ClassHistogramEntry>,
-    /// Detected leak suspects.
+    /// Detected leak suspects (class-level aggregations).
     pub leak_suspects: Vec<LeakSuspect>,
+    /// Individual object-level leak suspects (MAT-style).
+    pub object_leak_suspects: Vec<LeakSuspect>,
     /// Heap summary statistics.
     pub summary: HeapSummary,
     /// Compact forward edges (source, target, label) extracted from the graph before it's dropped.
@@ -2637,6 +2639,7 @@ mod tests {
             node_data_map,
             class_histogram: vec![],
             leak_suspects: vec![],
+            object_leak_suspects: vec![],
             summary: HeapSummary {
                 total_heap_size: 1000,
                 reachable_heap_size: 1000,

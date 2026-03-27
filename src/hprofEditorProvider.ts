@@ -266,6 +266,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     summary: params.summary || null,
                     classHistogram: params.class_histogram || [],
                     leakSuspects: params.leak_suspects || [],
+                    objectLeakSuspects: params.object_leak_suspects || [],
                     wasteAnalysis: params.waste_analysis || null
                 };
 

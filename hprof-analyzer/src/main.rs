@@ -85,6 +85,8 @@ struct AnalyzeHeapResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     leak_suspects: Option<Vec<hprof_analyzer::LeakSuspect>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    object_leak_suspects: Option<Vec<hprof_analyzer::LeakSuspect>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     waste_analysis: Option<WasteAnalysis>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timing: Option<TimingBreakdown>,
@@ -157,6 +159,7 @@ fn analyze_heap_blocking(
                 summary: Some(analysis_state.get_summary().clone()),
                 class_histogram: Some(analysis_state.get_class_histogram().to_vec()),
                 leak_suspects: Some(analysis_state.get_leak_suspects().to_vec()),
+                object_leak_suspects: Some(analysis_state.get_object_leak_suspects().to_vec()),
                 waste_analysis: Some(analysis_state.get_waste_analysis().clone()),
                 timing: Some(timing.clone()),
                 error: None,
@@ -190,6 +193,7 @@ fn analyze_heap_blocking(
                 summary: None,
                 class_histogram: None,
                 leak_suspects: None,
+                object_leak_suspects: None,
                 waste_analysis: None,
                 timing: None,
                 error: Some(error_msg),
@@ -315,6 +319,7 @@ fn run_phase2_background(
         .cloned()
         .collect();
     let leak_suspects = full_state_arc.get_leak_suspects().to_vec();
+    let object_leak_suspects = full_state_arc.get_object_leak_suspects().to_vec();
     let class_histogram = full_state_arc.get_class_histogram().to_vec();
     let summary = full_state_arc.get_summary().clone();
     let waste_analysis = full_state_arc.get_waste_analysis().clone();
@@ -353,6 +358,7 @@ fn run_phase2_background(
             "summary": summary,
             "class_histogram": class_histogram,
             "leak_suspects": leak_suspects,
+            "object_leak_suspects": object_leak_suspects,
             "waste_analysis": waste_analysis,
             "timing": timing
         }
@@ -1768,6 +1774,7 @@ async fn handle_export_json_request(
         "summary": analysis_state.get_summary(),
         "class_histogram": analysis_state.get_class_histogram(),
         "leak_suspects": analysis_state.get_leak_suspects(),
+        "object_leak_suspects": analysis_state.get_object_leak_suspects(),
         "top_objects": top_objects,
     });
 

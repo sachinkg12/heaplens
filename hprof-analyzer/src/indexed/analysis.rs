@@ -39,6 +39,7 @@ pub struct IndexedAnalysisState {
     summary: HeapSummary,
     class_histogram: Vec<ClassHistogramEntry>,
     leak_suspects: Vec<LeakSuspect>,
+    object_leak_suspects: Vec<LeakSuspect>,
     waste: OnceLock<WasteAnalysis>,
     waste_raw: WasteRawData,
     top_objects: Vec<ObjectReport>,
@@ -173,6 +174,7 @@ impl IndexedAnalysisState {
         // 3. Build leak suspects — class-level aggregations first (matching legacy behavior),
         //    then individual suspects only if not already covered.
         let mut leak_suspects = Vec::new();
+        let mut object_leak_suspects = Vec::new();
 
         if reachable_heap_size > 0 {
             // Phase 1: Class-level suspects (>10% retained, multiple instances)
@@ -239,6 +241,36 @@ impl IndexedAnalysisState {
                     .partial_cmp(&a.retained_percentage)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+
+            // 3b. Build object-level suspects from all individual candidates
+            // (no class-level filtering — every individual object above threshold)
+            for &(retained, idx) in candidates.iter().take(10) {
+                let node = node_store.get_by_index(idx);
+                let class_name = node.class_name.to_string();
+                let display_name = if class_name.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    class_name
+                };
+                let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
+                object_leak_suspects.push(LeakSuspect {
+                    class_name: display_name.clone(),
+                    object_id: node.id,
+                    retained_size: retained,
+                    retained_percentage: percentage,
+                    description: format!(
+                        "Single {} instance retains {:.1}% of reachable heap ({:.2} MB)",
+                        display_name,
+                        percentage,
+                        retained as f64 / (1024.0 * 1024.0)
+                    ),
+                });
+            }
+            object_leak_suspects.sort_by(|a, b| {
+                b.retained_percentage
+                    .partial_cmp(&a.retained_percentage)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
 
         // 4. Finalize top-50 objects
@@ -253,6 +285,7 @@ impl IndexedAnalysisState {
             summary,
             class_histogram,
             leak_suspects,
+            object_leak_suspects,
             waste: OnceLock::new(),
             waste_raw,
             top_objects,
@@ -320,6 +353,10 @@ impl HeapAnalysis for IndexedAnalysisState {
 
     fn get_leak_suspects(&self) -> &[LeakSuspect] {
         &self.leak_suspects
+    }
+
+    fn get_object_leak_suspects(&self) -> &[LeakSuspect] {
+        &self.object_leak_suspects
     }
 
     fn get_waste_analysis(&self) -> &WasteAnalysis {
@@ -673,6 +710,11 @@ impl HeapAnalysis for Phase1AnalysisState {
 
     fn get_leak_suspects(&self) -> &[LeakSuspect] {
         // No retained sizes in Phase 1 → no leak suspects
+        &[]
+    }
+
+    fn get_object_leak_suspects(&self) -> &[LeakSuspect] {
+        // No retained sizes in Phase 1 → no object leak suspects
         &[]
     }
 

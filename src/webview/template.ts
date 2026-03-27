@@ -65,12 +65,17 @@ export function getHtmlTemplate(): string {
 
     <!-- Tab 4: Leak Suspects -->
     <div id="tab-leaks" class="tab-content" role="tabpanel" aria-labelledby="tabBtn-leaks">
+        <div class="leak-view-toggle">
+            <button class="leak-toggle-btn active" data-view="object">By Object</button>
+            <button class="leak-toggle-btn" data-view="class">By Class</button>
+        </div>
         <div class="leak-threshold-row" id="leak-threshold-row" style="display:none;">
             <label>Min retained %:</label>
             <input type="range" id="leak-threshold-slider" min="1" max="50" value="10" step="1">
             <span id="leak-threshold-value">10%</span>
         </div>
-        <div id="leak-suspects"><div class="loading">Waiting for analysis...</div></div>
+        <div id="object-suspects"><div class="loading">Waiting for analysis...</div></div>
+        <div id="leak-suspects" style="display:none;"><div class="loading">Waiting for analysis...</div></div>
     </div>
 
     <!-- Tab 5: Waste -->

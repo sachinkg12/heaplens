@@ -1824,6 +1824,7 @@ mod tests {
             super_root: NodeIndex::new(0),
             node_data_map,
             class_histogram,
+            object_leak_suspects: leak_suspects.iter().filter(|s| s.object_id != 0).cloned().collect(),
             leak_suspects,
             summary,
             forward_edges,

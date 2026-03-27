@@ -191,6 +191,42 @@ export function getStyles(): string {
         .dep-badge.workspace { background: var(--vscode-testing-iconPassed, #388a34); }
         .dep-badge.decompiled { opacity: 0.6; font-style: italic; }
 
+        /* Leak view toggle (segmented control) */
+        .leak-view-toggle {
+            display: inline-flex;
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+        .leak-toggle-btn {
+            padding: 6px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            border: none;
+            background: transparent;
+            color: var(--vscode-foreground);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            font-family: var(--vscode-font-family);
+            opacity: 0.7;
+        }
+        .leak-toggle-btn:hover {
+            opacity: 1;
+        }
+        .leak-toggle-btn.active {
+            background: var(--vscode-focusBorder);
+            color: var(--vscode-editor-background);
+            opacity: 1;
+        }
+        .suspect-obj-id {
+            font-size: 12px;
+            opacity: 0.6;
+            font-family: var(--vscode-editor-font-family, monospace);
+            margin-left: 8px;
+        }
+
         /* Leak suspect cards */
         .suspect-card {
             padding: var(--hl-space-lg);

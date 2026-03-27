@@ -460,7 +460,14 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
 
         leak_suspects.sort_by(|a, b| b.retained_percentage.partial_cmp(&a.retained_percentage).unwrap_or(std::cmp::Ordering::Equal));
     }
-    log::info!("Detected {} leak suspects", leak_suspects.len());
+
+    // Split into object-level suspects (individual objects with object_id != 0)
+    let object_leak_suspects: Vec<LeakSuspect> = leak_suspects.iter()
+        .filter(|s| s.object_id != 0)
+        .cloned()
+        .collect();
+
+    log::info!("Detected {} leak suspects ({} object-level)", leak_suspects.len(), object_leak_suspects.len());
 
     // Step 8: Compute waste analysis
     let waste_analysis = crate::waste::compute_waste_analysis(&waste_data, summary.total_heap_size);
@@ -474,6 +481,7 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         node_data_map,
         class_histogram,
         leak_suspects,
+        object_leak_suspects,
         summary,
         forward_edges,
         reverse_refs: OnceLock::new(),
