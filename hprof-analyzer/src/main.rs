@@ -1579,12 +1579,8 @@ async fn handle_analyze_heap_request(
             tokens.remove(&path_key);
         }
 
-        // For legacy mode, send result via channel. For indexed mode,
-        // analyze_heap_blocking already sent Phase 1 result internally.
-        if !USE_INDEXED.load(Ordering::Relaxed) {
-            if let Err(e) = result_tx.send(result) {
-                eprintln!("Failed to send analysis result: {}", e);
-            }
+        if let Err(e) = result_tx.send(result) {
+            eprintln!("Failed to send analysis result: {}", e);
         }
     });
 
