@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use jvm_hprof::{parse_hprof, IdSize, RecordTag};
+use rayon::prelude::*;
 
 use crate::graph_builder::{
     convert_jvm_class_name, extract_object_references_fallback,
@@ -848,24 +849,37 @@ pub fn parse_indexed_phase2(
         }
     }
 
-    // Instance edges from deferred data
-    for di in &deferred.deferred_instances {
-        let fields = &di.field_bytes;
-        let class_obj_id = di.class_obj_id;
+    // Instance edges from deferred data (parallel with rayon)
+    let chunk_edges: Vec<Vec<(u32, u32, u8)>> = deferred.deferred_instances
+        .par_chunks(10_000)
+        .map(|chunk| {
+            let mut local_edges = Vec::new();
+            for di in chunk {
+                let fields = &di.field_bytes;
+                let class_obj_id = di.class_obj_id;
 
-        if let Some(field_layout) = class_index.field_layout(class_obj_id) {
-            extract_typed_references_named(fields, id_size, field_layout, |ref_id, _fname| {
-                if let Some(ref_idx) = node_store.index_of(ref_id) {
-                    edge_builder.add_edge(di.node_idx, ref_idx, label::INSTANCE_FIELD);
+                if let Some(field_layout) = class_index.field_layout(class_obj_id) {
+                    extract_typed_references_named(fields, id_size, field_layout, |ref_id, _fname| {
+                        if let Some(ref_idx) = node_store.index_of(ref_id) {
+                            local_edges.push((di.node_idx, ref_idx, label::INSTANCE_FIELD));
+                        }
+                    });
+                } else {
+                    // Fallback: brute-force reference extraction
+                    extract_object_references_fallback(fields, id_size, |ref_id| {
+                        if let Some(ref_idx) = node_store.index_of(ref_id) {
+                            local_edges.push((di.node_idx, ref_idx, label::UNKNOWN));
+                        }
+                    });
                 }
-            });
-        } else {
-            // Fallback: brute-force reference extraction
-            extract_object_references_fallback(fields, id_size, |ref_id| {
-                if let Some(ref_idx) = node_store.index_of(ref_id) {
-                    edge_builder.add_edge(di.node_idx, ref_idx, label::UNKNOWN);
-                }
-            });
+            }
+            local_edges
+        })
+        .collect();
+
+    for edges in chunk_edges {
+        for (src, dst, lbl) in edges {
+            edge_builder.add_edge(src, dst, lbl);
         }
     }
 
