@@ -1851,25 +1851,30 @@ async fn handle_inspect_object_request(
 
     let request_id = request.id.ok_or_else(|| anyhow::anyhow!("Request ID required"))?;
 
-    let analysis_states_guard = analysis_states.read()
-        .map_err(|e| anyhow::anyhow!("Failed to read analysis states: {}", e))?;
-
-    let file_state = analysis_states_guard.get(&PathBuf::from(path))
-        .ok_or_else(|| anyhow::anyhow!("No analysis found for file: {}", path))?;
-
-    let state_guard = file_state.state.read()
-        .map_err(|e| anyhow::anyhow!("Failed to read analysis state: {}", e))?;
-
-    let analysis_state = state_guard.as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Analysis state not available"))?;
-
-    // Use cached mmap if available, otherwise fall back to path-based re-mapping
-    let fields = if let Some(ref cached_mmap) = file_state.mmap {
-        analysis_state.inspect_object_bytes(&cached_mmap[..], object_id)
-    } else {
-        let hprof_path = std::path::Path::new(path);
-        analysis_state.inspect_object(hprof_path, object_id)
+    let (analysis_state, mmap_clone) = {
+        let states = analysis_states.read()
+            .map_err(|e| anyhow::anyhow!("Failed to read analysis states: {}", e))?;
+        let file_state = states.get(&PathBuf::from(path))
+            .ok_or_else(|| anyhow::anyhow!("No analysis found for file: {}", path))?;
+        let state_guard = file_state.state.read()
+            .map_err(|e| anyhow::anyhow!("Failed to read analysis state: {}", e))?;
+        let state = state_guard.as_ref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Analysis state not available"))?;
+        let mmap = file_state.mmap.clone();
+        (state, mmap)
     };
+    let path_owned = path.to_string();
+
+    // Run in blocking task since inspect_object_bytes scans the full HPROF file
+    let fields = task::spawn_blocking(move || {
+        if let Some(ref cached_mmap) = mmap_clone {
+            analysis_state.inspect_object_bytes(&cached_mmap[..], object_id)
+        } else {
+            let hprof_path = std::path::Path::new(&path_owned);
+            analysis_state.inspect_object(hprof_path, object_id)
+        }
+    }).await.map_err(|e| anyhow::anyhow!("Inspect task failed: {}", e))?;
 
     let response = serde_json::json!({
         "jsonrpc": "2.0",
