@@ -170,15 +170,41 @@ impl IndexedAnalysisState {
             .collect();
         class_histogram.sort_by(|a, b| b.retained_size.cmp(&a.retained_size));
 
-        // 3. Build leak suspects from the collected candidates
+        // 3. Build leak suspects — class-level aggregations first (matching legacy behavior),
+        //    then individual suspects only if not already covered.
         let mut leak_suspects = Vec::new();
 
         if reachable_heap_size > 0 {
-            // Convert leak heap to sorted vec (largest first)
+            // Phase 1: Class-level suspects (>10% retained, multiple instances)
+            for entry in &class_histogram {
+                let percentage =
+                    (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
+                if percentage > 10.0 && entry.instance_count > 1 {
+                    leak_suspects.push(LeakSuspect {
+                        class_name: entry.class_name.clone(),
+                        object_id: 0,
+                        retained_size: entry.retained_size,
+                        retained_percentage: percentage,
+                        description: format!(
+                            "{} instances of {} collectively retain {:.1}% of reachable heap ({:.2} MB)",
+                            entry.instance_count,
+                            entry.class_name,
+                            percentage,
+                            entry.retained_size as f64 / (1024.0 * 1024.0)
+                        ),
+                    });
+                }
+            }
+
+            // Phase 2: Individual suspects (>10% retained), only if not already
+            // covered by a class-level suspect for the same class name.
             let mut candidates: Vec<(u64, u32)> = leak_heap.into_iter().map(|r| r.0).collect();
             candidates.sort_by(|a, b| b.0.cmp(&a.0));
 
             for &(retained, idx) in &candidates {
+                if leak_suspects.len() >= 10 {
+                    break;
+                }
                 let node = node_store.get_by_index(idx);
                 let class_name = node.class_name.to_string();
                 let display_name = if class_name.is_empty() {
@@ -186,6 +212,13 @@ impl IndexedAnalysisState {
                 } else {
                     class_name
                 };
+                // Skip if this class is already represented by a class-level suspect
+                let already_covered = leak_suspects
+                    .iter()
+                    .any(|s| s.class_name == display_name);
+                if already_covered {
+                    continue;
+                }
                 let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
                 leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
@@ -199,32 +232,6 @@ impl IndexedAnalysisState {
                         retained as f64 / (1024.0 * 1024.0)
                     ),
                 });
-            }
-
-            // Class-level suspects
-            for entry in &class_histogram {
-                let percentage =
-                    (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
-                if percentage > 10.0 && entry.instance_count > 1 {
-                    let already_covered = leak_suspects
-                        .iter()
-                        .any(|s| s.class_name == entry.class_name);
-                    if !already_covered {
-                        leak_suspects.push(LeakSuspect {
-                            class_name: entry.class_name.clone(),
-                            object_id: 0,
-                            retained_size: entry.retained_size,
-                            retained_percentage: percentage,
-                            description: format!(
-                                "{} instances of {} collectively retain {:.1}% of reachable heap ({:.2} MB)",
-                                entry.instance_count,
-                                entry.class_name,
-                                percentage,
-                                entry.retained_size as f64 / (1024.0 * 1024.0)
-                            ),
-                        });
-                    }
-                }
             }
 
             leak_suspects.sort_by(|a, b| {
@@ -410,15 +417,105 @@ impl HeapAnalysis for IndexedAnalysisState {
         Ok(rows)
     }
 
-    fn gc_root_path(&self, _object_id: u64, _max_depth: usize) -> Option<Vec<ObjectReport>> {
-        // The indexed backend does not yet store forward/reverse edges needed
-        // for BFS path finding. Return None for now.
-        None
+    fn gc_root_path(&self, object_id: u64, max_depth: usize) -> Option<Vec<ObjectReport>> {
+        let target_idx = self.node_store.index_of(object_id)?;
+
+        // BFS backward from target through reverse edges until we hit a GC root.
+        // came_from[node] = Some(next_node_toward_target)  (None for the starting target)
+        let mut came_from: std::collections::HashMap<u32, Option<u32>> = std::collections::HashMap::new();
+        came_from.insert(target_idx, None);
+
+        let mut found_root: Option<u32> = None;
+        let mut queue: std::collections::VecDeque<(u32, usize)> = std::collections::VecDeque::new();
+        queue.push_back((target_idx, 0));
+
+        while let Some((current, depth)) = queue.pop_front() {
+            let node = self.node_store.get_by_index(current);
+            if matches!(node.node_type, NodeType::GcRoot | NodeType::SuperRoot) {
+                found_root = Some(current);
+                break;
+            }
+            if depth >= max_depth {
+                continue;
+            }
+            for &referrer in self.edge_store.reverse_neighbors(current) {
+                if !came_from.contains_key(&referrer) {
+                    came_from.insert(referrer, Some(current));
+                    queue.push_back((referrer, depth + 1));
+                }
+            }
+        }
+
+        let root_idx = found_root?;
+
+        // Reconstruct path from root to target
+        let mut path = Vec::new();
+        let mut current = root_idx;
+        loop {
+            let node = self.node_store.get_by_index(current);
+            let node_type_str = match node.node_type {
+                NodeType::SuperRoot => "SuperRoot",
+                NodeType::GcRoot => "Root",
+                NodeType::Class => "Class",
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+            };
+            let retained = self.dominator.retained_sizes[current as usize];
+            let report = ObjectReport::new(
+                node.id,
+                node_type_str.to_string(),
+                node.class_name.to_string(),
+                node.shallow_size as u64,
+                retained,
+                NodeIndex::new(current as usize),
+            );
+            path.push(report);
+
+            if current == target_idx {
+                break;
+            }
+            match came_from.get(&current) {
+                Some(Some(next)) => current = *next,
+                _ => break,
+            }
+        }
+
+        if path.len() < 2 {
+            return None;
+        }
+        Some(path)
     }
 
-    fn get_referrers(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
-        // The indexed backend does not yet store reverse reference edges.
-        None
+    fn get_referrers(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
+        let node_idx = self.node_store.index_of(object_id)?;
+        let referrers = self.edge_store.reverse_neighbors(node_idx);
+        if referrers.is_empty() {
+            return None;
+        }
+        let mut reports = Vec::new();
+        for &ref_idx in referrers {
+            let node = self.node_store.get_by_index(ref_idx);
+            let retained = self.dominator.retained_sizes[ref_idx as usize];
+            if retained == 0 && !matches!(node.node_type, NodeType::GcRoot | NodeType::SuperRoot) {
+                continue;
+            }
+            let node_type_str = match node.node_type {
+                NodeType::SuperRoot => "SuperRoot",
+                NodeType::GcRoot => "Root",
+                NodeType::Class => "Class",
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+            };
+            reports.push(ObjectReport::new(
+                node.id,
+                node_type_str.to_string(),
+                node.class_name.to_string(),
+                node.shallow_size as u64,
+                retained,
+                NodeIndex::new(ref_idx as usize),
+            ));
+        }
+        if reports.is_empty() { None } else { Some(reports) }
     }
 
     fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)> {

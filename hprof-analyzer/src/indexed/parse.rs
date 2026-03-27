@@ -184,6 +184,9 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     // Backing array info for string dedup waste analysis (byte[] and char[] content hashes)
     let mut backing_arrays: HashMap<u64, BackingArrayInfo> = HashMap::new();
 
+    // Track object array node indices to their array_class_obj_id for deferred name fixup
+    let mut object_array_class_ids: Vec<(u32, u64)> = Vec::new();
+
     // Counters
     let mut instance_count = 0u64;
     let mut array_count = 0u64;
@@ -453,6 +456,8 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                 }
 
                                 let size = element_count * id_size_bytes;
+                                // Use a placeholder; LoadClass may not be processed yet.
+                                // Will be fixed up after class_name_map is populated.
                                 let class_name = class_name_map
                                     .get(&array_class_obj_id)
                                     .cloned()
@@ -482,6 +487,9 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                     total_shallow_size += size as u64;
                                     idx
                                 };
+
+                                // Track for deferred class name fixup
+                                object_array_class_ids.push((node_idx, array_class_obj_id));
 
                                 // Store element refs for deferred edge extraction in Phase 2
                                 if !element_refs.is_empty() {
@@ -678,6 +686,18 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
         }
     }
 
+    // Fix up object array class names (arrays whose class name defaulted to
+    // "Object[]" because LoadClass hadn't been processed yet)
+    for &(node_idx, array_class_obj_id) in &object_array_class_ids {
+        if let Some(name) = class_name_map.get(&array_class_obj_id) {
+            let node = node_store.get_by_index(node_idx);
+            if node.class_name.as_ref() == "Object[]" {
+                let node_mut = node_store.get_by_index_mut(node_idx);
+                node_mut.class_name = name.clone();
+            }
+        }
+    }
+
     // ========================================================================
     // Resolve class field layouts
     // ========================================================================
@@ -843,17 +863,19 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                     }
                 }
 
-                // Waste: boxed primitives
-                if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
-                    let shallow = class_instance_sizes
-                        .get(&class_obj_id)
-                        .copied()
-                        .unwrap_or(fields.len() as u32);
-                    waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
-                        class_name: bp_name.to_string(),
-                        shallow_size: shallow,
-                    });
-                }
+            }
+
+            // Waste: boxed primitives (outside field_layout check —
+            // boxed primitives may not have field layouts resolved)
+            if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
+                let shallow = class_instance_sizes
+                    .get(&class_obj_id)
+                    .copied()
+                    .unwrap_or(fields.len() as u32);
+                waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
+                    class_name: bp_name.to_string(),
+                    shallow_size: shallow,
+                });
             }
         }
     }
