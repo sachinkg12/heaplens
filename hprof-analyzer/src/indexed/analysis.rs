@@ -18,7 +18,7 @@ use super::dominator::{compute_dominators, DominatorResult};
 use super::node_store::{NodeStore, NodeType};
 use super::edge_store::EdgeStore;
 use super::class_index::ClassIndex;
-use super::parse::ParseResult;
+use super::parse::{ParseResult, Phase1Result, Phase2Result};
 use super::string_table::StringTable;
 use super::types::HeapAnalysis;
 use super::waste::compute_indexed_waste;
@@ -515,6 +515,231 @@ impl HeapAnalysis for IndexedAnalysisState {
     }
 }
 
+impl IndexedAnalysisState {
+    /// Builds an `IndexedAnalysisState` from Phase 1 + Phase 2 results.
+    ///
+    /// This is the two-phase counterpart of `from_parse_result`.
+    pub fn from_phases(phase1: Phase1Result, phase2: Phase2Result) -> anyhow::Result<Self> {
+        let parse_result = ParseResult {
+            node_store: phase1.node_store,
+            edge_store: phase2.edge_store,
+            class_index: phase1.class_index,
+            string_table: phase1.string_table,
+            gc_root_ids: phase1.gc_root_ids,
+            summary: phase1.summary,
+            waste_raw: phase2.waste_raw,
+        };
+        Self::from_parse_result(parse_result)
+    }
+}
+
+// ===========================================================================
+// Phase1AnalysisState — lightweight state that works WITHOUT edges/dominators
+// ===========================================================================
+
+/// Analysis state built from Phase 1 data only (nodes, no edges/dominators).
+///
+/// Implements `HeapAnalysis` so all RPC handlers work, but methods that need
+/// dominator or edge data return empty/None results. This lets the frontend
+/// display overview, histogram, and waste data within ~1.4s while Phase 2
+/// runs in the background.
+pub struct Phase1AnalysisState {
+    node_store: NodeStore,
+    class_index: ClassIndex,
+    string_table: StringTable,
+    summary: HeapSummary,
+    class_histogram: Vec<ClassHistogramEntry>,
+    waste_raw: WasteRawData,
+    waste: OnceLock<WasteAnalysis>,
+    top_objects: Vec<ObjectReport>,
+}
+
+unsafe impl Send for Phase1AnalysisState {}
+unsafe impl Sync for Phase1AnalysisState {}
+
+impl Phase1AnalysisState {
+    /// Creates a `Phase1AnalysisState` from Phase 1 parse results.
+    pub fn new(phase1: Phase1Result) -> Self {
+        // Build top-50 objects by shallow size (no retained sizes available)
+        let mut top_heap: std::collections::BinaryHeap<ObjectReport> =
+            std::collections::BinaryHeap::with_capacity(51);
+
+        for i in 0..phase1.node_store.len() {
+            let node = phase1.node_store.get_by_index(i as u32);
+            match node.node_type {
+                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+                _ => continue,
+            }
+
+            let shallow = node.shallow_size as u64;
+            if shallow == 0 {
+                continue;
+            }
+
+            let node_type_str = match node.node_type {
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                _ => unreachable!(),
+            };
+
+            let report = ObjectReport::new(
+                node.id,
+                node_type_str.to_string(),
+                node.class_name.to_string(),
+                shallow,
+                shallow, // Use shallow as retained estimate for Phase 1
+                NodeIndex::new(i),
+            );
+            top_heap.push(report);
+            if top_heap.len() > 50 {
+                top_heap.pop();
+            }
+        }
+
+        let top_objects: Vec<ObjectReport> = top_heap.into_sorted_vec();
+
+        Self {
+            node_store: phase1.node_store,
+            class_index: phase1.class_index,
+            string_table: phase1.string_table,
+            summary: phase1.summary,
+            class_histogram: phase1.class_histogram,
+            waste_raw: phase1.waste_raw,
+            waste: OnceLock::new(),
+            top_objects,
+        }
+    }
+}
+
+impl HeapAnalysis for Phase1AnalysisState {
+    fn get_children(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
+        // No dominator tree in Phase 1
+        None
+    }
+
+    fn get_summary(&self) -> &HeapSummary {
+        &self.summary
+    }
+
+    fn get_class_histogram(&self) -> &[ClassHistogramEntry] {
+        &self.class_histogram
+    }
+
+    fn get_leak_suspects(&self) -> &[LeakSuspect] {
+        // No retained sizes in Phase 1 → no leak suspects
+        &[]
+    }
+
+    fn get_waste_analysis(&self) -> &WasteAnalysis {
+        self.waste.get_or_init(|| {
+            compute_indexed_waste(&self.waste_raw, self.summary.total_heap_size)
+        })
+    }
+
+    fn get_top_layers(&self, _max_depth: usize, max_nodes: usize) -> Vec<ObjectReport> {
+        // Return top objects by shallow size (no dominator tree to BFS)
+        self.top_objects.iter().take(max_nodes).cloned().collect()
+    }
+
+    fn inspect_object(&self, _hprof_path: &Path, _object_id: u64) -> Option<Vec<FieldInfo>> {
+        None
+    }
+
+    fn inspect_object_bytes(&self, _hprof_bytes: &[u8], _object_id: u64) -> Option<Vec<FieldInfo>> {
+        None
+    }
+
+    fn execute_query(&self, query_str: &str) -> Result<QueryResult, HeapQlError> {
+        crate::heapql::HeapQlEngine::new(self).execute_query(query_str)
+    }
+
+    fn execute_query_paged(
+        &self,
+        query_str: &str,
+        page: u64,
+        page_size: u64,
+    ) -> Result<QueryResult, HeapQlError> {
+        crate::heapql::HeapQlEngine::new(self).execute_query_paged(query_str, page, page_size)
+    }
+
+    fn scan_instances_table(&self) -> Vec<Vec<serde_json::Value>> {
+        let mut rows = Vec::new();
+        for i in 0..self.node_store.len() {
+            let node = self.node_store.get_by_index(i as u32);
+            match node.node_type {
+                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+                _ => continue,
+            }
+            let shallow = node.shallow_size as u64;
+            if shallow == 0 { continue; }
+            let node_type_str = match node.node_type {
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                _ => unreachable!(),
+            };
+            rows.push(vec![
+                serde_json::json!(node.id),
+                serde_json::json!(node_type_str),
+                serde_json::json!(node.class_name.as_ref()),
+                serde_json::json!(shallow),
+                serde_json::json!(0u64), // retained_size not available in Phase 1
+            ]);
+        }
+        rows
+    }
+
+    fn scan_dominator_children(&self, _parent_id: Option<u64>) -> Result<Vec<Vec<serde_json::Value>>, HeapQlError> {
+        // No dominator tree in Phase 1
+        Ok(Vec::new())
+    }
+
+    fn gc_root_path(&self, _object_id: u64, _max_depth: usize) -> Option<Vec<ObjectReport>> {
+        None
+    }
+
+    fn get_referrers(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
+        None
+    }
+
+    fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)> {
+        let node_idx = self.node_store.index_of(object_id)?;
+        let node = self.node_store.get_by_index(node_idx);
+        let shallow = node.shallow_size as u64;
+        let node_type_str = match node.node_type {
+            NodeType::SuperRoot => "SuperRoot",
+            NodeType::GcRoot => "Root",
+            NodeType::Class => "Class",
+            NodeType::Instance => "Instance",
+            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+        };
+        let report = ObjectReport::new(
+            node.id,
+            node_type_str.to_string(),
+            node.class_name.to_string(),
+            shallow,
+            0, // retained not available
+            NodeIndex::new(node_idx as usize),
+        );
+        Some((report, 0, 0))
+    }
+
+    fn get_dominator_subtree(&self, _object_id: u64, _max_depth: usize, _max_children: usize) -> Option<crate::DominatorTreeNode> {
+        None
+    }
+
+    fn get_timeline_snapshot(&self, path: &str, top_n: usize) -> crate::TimelineSnapshot {
+        let top_classes: Vec<crate::ClassHistogramEntry> = self.class_histogram.iter()
+            .take(top_n)
+            .cloned()
+            .collect();
+        crate::TimelineSnapshot {
+            path: path.to_string(),
+            summary: self.summary.clone(),
+            top_classes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +971,163 @@ mod tests {
         // big.B retains 90% of heap, should be a suspect
         assert!(!state.leak_suspects.is_empty());
         assert!(state.leak_suspects.iter().any(|s| s.class_name == "big.B"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase1AnalysisState tests
+    // -----------------------------------------------------------------------
+
+    use super::Phase1AnalysisState;
+    use crate::indexed::parse::Phase1Result;
+
+    /// Helper: build a minimal Phase1Result for testing.
+    fn build_test_phase1_result() -> Phase1Result {
+        let mut node_store = NodeStore::new();
+        node_store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        node_store.add_node(100, 0, 64, NodeType::Instance, Arc::from("java.lang.Object"));
+        node_store.add_node(200, 0, 128, NodeType::Instance, Arc::from("java.lang.String"));
+        node_store.add_node(300, 0, 256, NodeType::ObjectArray, Arc::from("byte[]"));
+
+        Phase1Result {
+            node_store,
+            class_index: ClassIndex::new(),
+            string_table: StringTable::new(),
+            gc_root_ids: vec![100],
+            summary: HeapSummary {
+                total_heap_size: 448,
+                reachable_heap_size: 448,
+                total_instances: 2,
+                total_classes: 0,
+                total_arrays: 1,
+                total_gc_roots: 1,
+                hprof_version: "JAVA PROFILE 1.0.2".to_string(),
+                heap_types: Vec::new(),
+            },
+            waste_raw: WasteRawData::new(),
+            class_histogram: vec![
+                crate::ClassHistogramEntry {
+                    class_name: "byte[]".to_string(),
+                    instance_count: 1,
+                    shallow_size: 256,
+                    retained_size: 0,
+                },
+                crate::ClassHistogramEntry {
+                    class_name: "java.lang.String".to_string(),
+                    instance_count: 1,
+                    shallow_size: 128,
+                    retained_size: 0,
+                },
+                crate::ClassHistogramEntry {
+                    class_name: "java.lang.Object".to_string(),
+                    instance_count: 1,
+                    shallow_size: 64,
+                    retained_size: 0,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn phase1_state_builds_successfully() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        assert_eq!(state.get_summary().total_heap_size, 448);
+    }
+
+    #[test]
+    fn phase1_state_get_summary() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let summary = state.get_summary();
+        assert_eq!(summary.total_instances, 2);
+        assert_eq!(summary.total_arrays, 1);
+    }
+
+    #[test]
+    fn phase1_state_get_class_histogram() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let hist = state.get_class_histogram();
+        assert_eq!(hist.len(), 3);
+        // Retained size should be 0 (Phase 1)
+        assert!(hist.iter().all(|e| e.retained_size == 0));
+    }
+
+    #[test]
+    fn phase1_state_get_leak_suspects_empty() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        assert!(state.get_leak_suspects().is_empty());
+    }
+
+    #[test]
+    fn phase1_state_get_children_returns_none() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        assert!(state.get_children(0).is_none());
+        assert!(state.get_children(100).is_none());
+    }
+
+    #[test]
+    fn phase1_state_get_top_layers_returns_by_shallow() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let layers = state.get_top_layers(3, 100);
+        assert!(!layers.is_empty());
+        // Should contain objects sorted by shallow size (used as retained estimate)
+    }
+
+    #[test]
+    fn phase1_state_get_waste_analysis() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let waste = state.get_waste_analysis();
+        assert_eq!(waste.total_wasted_bytes, 0);
+    }
+
+    #[test]
+    fn phase1_state_execute_query() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let result = state.execute_query("SELECT * FROM class_histogram");
+        assert!(result.is_ok());
+        let qr = result.unwrap();
+        assert!(!qr.rows.is_empty());
+    }
+
+    #[test]
+    fn phase1_state_gc_root_path_returns_none() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        assert!(state.gc_root_path(100, 10).is_none());
+    }
+
+    #[test]
+    fn phase1_state_get_referrers_returns_none() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        assert!(state.get_referrers(100).is_none());
+    }
+
+    #[test]
+    fn phase1_state_get_object_info() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let info = state.get_object_info(100);
+        assert!(info.is_some());
+        let (report, child_count, ref_count) = info.unwrap();
+        assert_eq!(report.object_id, 100);
+        assert_eq!(report.shallow_size, 64);
+        assert_eq!(report.retained_size, 0); // No retained in Phase 1
+        assert_eq!(child_count, 0);
+        assert_eq!(ref_count, 0);
+    }
+
+    #[test]
+    fn phase1_state_implements_heap_analysis_trait() {
+        let pr = build_test_phase1_result();
+        let state = Phase1AnalysisState::new(pr);
+        let dyn_ref: &dyn HeapAnalysis = &state;
+        assert_eq!(dyn_ref.get_summary().total_heap_size, 448);
     }
 }

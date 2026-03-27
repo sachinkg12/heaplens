@@ -19,3 +19,4 @@ pub mod analysis;
 
 pub use types::HeapAnalysis;
 pub use analysis::IndexedAnalysisState;
+pub use analysis::Phase1AnalysisState;

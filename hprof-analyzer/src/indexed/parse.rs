@@ -28,13 +28,13 @@ use super::node_store::{NodeStore, NodeType};
 use super::string_table::StringTable;
 
 /// Cached instance record for deferred edge extraction.
-struct DeferredInstance {
+pub struct DeferredInstance {
     /// Index of this instance in the NodeStore.
-    node_idx: u32,
+    pub node_idx: u32,
     /// Class object ID (for layout lookup).
-    class_obj_id: u64,
+    pub class_obj_id: u64,
     /// Raw field bytes (copied from the HPROF data).
-    field_bytes: Vec<u8>,
+    pub field_bytes: Vec<u8>,
 }
 
 /// The result of parsing an HPROF file with the indexed backend.
@@ -45,6 +45,38 @@ pub struct ParseResult {
     pub string_table: StringTable,
     pub gc_root_ids: Vec<u64>,
     pub summary: HeapSummary,
+    pub waste_raw: WasteRawData,
+}
+
+/// Result of Phase 1 parsing (nodes only, ~1.4s on 14 GB dumps).
+///
+/// Contains everything needed for overview, histogram, and waste analysis
+/// without requiring edge extraction or dominator computation.
+pub struct Phase1Result {
+    pub node_store: NodeStore,
+    pub class_index: ClassIndex,
+    pub string_table: StringTable,
+    pub gc_root_ids: Vec<u64>,
+    pub summary: HeapSummary,
+    pub waste_raw: WasteRawData,
+    /// Class histogram computed from shallow sizes only.
+    pub class_histogram: Vec<crate::ClassHistogramEntry>,
+}
+
+/// Data deferred from Phase 1 that Phase 2 needs for edge extraction.
+pub struct DeferredEdgeData {
+    pub deferred_instances: Vec<DeferredInstance>,
+    pub class_name_map: HashMap<u64, Arc<str>>,
+    pub class_instance_sizes: HashMap<u64, u32>,
+    pub id_size: jvm_hprof::IdSize,
+    pub array_element_counts: HashMap<u64, u32>,
+    pub classloader_ids: std::collections::HashSet<u64>,
+}
+
+/// Result of Phase 2 parsing (edges + CSR, ~38s on 14 GB dumps).
+pub struct Phase2Result {
+    pub edge_store: EdgeStore,
+    /// Updated waste data with backing array info from Phase 2 file scan.
     pub waste_raw: WasteRawData,
 }
 
@@ -65,15 +97,29 @@ fn add_gc_root(
 
 /// Parses an HPROF file into indexed data structures.
 ///
-/// Strategy:
-/// 1. Single file scan: collect UTF8 strings, LoadClass entries, ClassDump
-///    records, instance/array nodes, GC roots. Instance field bytes are
-///    cached for deferred edge extraction.
-/// 2. Resolve class field layouts via inheritance chain walking.
-/// 3. In-memory pass over cached instances to extract edges and waste data.
-///
-/// This avoids re-reading the memory-mapped file for edge extraction.
+/// This is the backward-compatible entry point that calls Phase 1 + Phase 2
+/// internally and returns a complete `ParseResult`.
 pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
+    let (phase1, deferred) = parse_indexed_phase1(data)?;
+    let phase2 = parse_indexed_phase2(&phase1, deferred, data)?;
+
+    Ok(ParseResult {
+        node_store: phase1.node_store,
+        edge_store: phase2.edge_store,
+        class_index: phase1.class_index,
+        string_table: phase1.string_table,
+        gc_root_ids: phase1.gc_root_ids,
+        summary: phase1.summary,
+        waste_raw: phase2.waste_raw,
+    })
+}
+
+/// Phase 1: Single file scan collecting nodes, class metadata, and GC roots.
+///
+/// Returns the Phase1Result (nodes, summary, histogram, waste candidates)
+/// and DeferredEdgeData needed for Phase 2 edge extraction.
+/// Takes ~1.4s on a 14 GB dump.
+pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeData)> {
     let hprof = parse_hprof(data)
         .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
 
@@ -92,7 +138,6 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
     let mut load_class_entries: Vec<(u64, u64)> = Vec::new();
     let mut class_index = ClassIndex::with_capacity(estimated_nodes / 10);
     let mut node_store = NodeStore::with_capacity(estimated_nodes);
-    let mut edge_builder = EdgeBuilder::with_capacity(estimated_nodes * 2);
     let mut gc_root_ids: Vec<u64> = Vec::new();
     let mut deferred_instances: Vec<DeferredInstance> = Vec::with_capacity(estimated_nodes);
     let mut heap_types: Vec<String> = Vec::new();
@@ -382,7 +427,7 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
                                 array_element_counts.insert(obj_id, element_count);
 
                                 let existing = node_store.index_of(obj_id);
-                                let node_idx = if let Some(idx) = existing {
+                                let _node_idx = if let Some(idx) = existing {
                                     let node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::ObjectArray;
@@ -405,21 +450,9 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
                                     idx
                                 };
 
-                                // Add array element edges immediately (no layout needed)
-                                for ref_id in element_refs {
-                                    // Target may not exist yet; we'll filter later
-                                    // For now, store the raw edge data
-                                    // We use a temporary buffer and resolve after all nodes
-                                    // Actually, we can't resolve node indices yet for targets
-                                    // that haven't been created. Store as deferred.
-                                    // But we want to avoid re-parsing. Let's store edges
-                                    // with HPROF IDs and resolve later.
-                                    // Actually, to keep it simple, we'll do a second pass
-                                    // for object array edges below. For now, cache refs.
-                                    let _ = (node_idx, ref_id);
-                                }
-                                // We'll re-extract array refs in the edge pass below.
-                                // For now, just the node is recorded.
+                                // Object array element edges are extracted in Phase 2
+                                // (requires a second file scan since target nodes may
+                                // not exist yet during Phase 1).
                             }
 
                             // ---- Primitive Array ----
@@ -581,59 +614,242 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
     drop(field_name_intern);
 
     // ========================================================================
-    // Pass 2 (in-memory): Extract edges from deferred instances + waste data
+    // Build class histogram from shallow sizes (no retained sizes yet)
     // ========================================================================
 
-    // Look up class IDs for waste analysis targets
-    let string_class_id: Option<u64> = class_name_map
-        .iter()
-        .find(|(_, name)| name.as_ref() == "java.lang.String")
-        .map(|(id, _)| *id);
-    let hashmap_class_id: Option<u64> = class_name_map
-        .iter()
-        .find(|(_, name)| name.as_ref() == "java.util.HashMap")
-        .map(|(id, _)| *id);
-    let linked_hashmap_class_id: Option<u64> = class_name_map
-        .iter()
-        .find(|(_, name)| name.as_ref() == "java.util.LinkedHashMap")
-        .map(|(id, _)| *id);
-    let arraylist_class_id: Option<u64> = class_name_map
-        .iter()
-        .find(|(_, name)| name.as_ref() == "java.util.ArrayList")
-        .map(|(id, _)| *id);
+    let mut histogram_map: HashMap<String, (u64, u64)> = HashMap::new();
+    for i in 0..node_store.len() {
+        let node = node_store.get_by_index(i as u32);
+        match node.node_type {
+            NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+            _ => continue,
+        }
+        let shallow = node.shallow_size as u64;
+        let class_name = node.class_name.to_string();
+        let entry = histogram_map.entry(class_name).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += shallow;
+    }
 
-    let boxed_primitive_names: [(&str, u32); 8] = [
-        ("java.lang.Boolean", 1),
-        ("java.lang.Byte", 1),
-        ("java.lang.Character", 2),
-        ("java.lang.Short", 2),
-        ("java.lang.Integer", 4),
-        ("java.lang.Float", 4),
-        ("java.lang.Long", 8),
-        ("java.lang.Double", 8),
-    ];
-    let boxed_ids: HashMap<u64, (&str, u32)> = boxed_primitive_names
-        .iter()
-        .filter_map(|&(name, ps)| {
-            class_name_map
-                .iter()
-                .find(|(_, n)| n.as_ref() == name)
-                .map(|(id, _)| (*id, (name, ps)))
+    let mut class_histogram: Vec<crate::ClassHistogramEntry> = histogram_map
+        .into_iter()
+        .map(|(class_name, (instance_count_val, shallow_size))| {
+            crate::ClassHistogramEntry {
+                class_name,
+                instance_count: instance_count_val,
+                shallow_size,
+                retained_size: 0, // Not yet computed — requires dominators
+            }
         })
         .collect();
+    class_histogram.sort_by(|a, b| b.shallow_size.cmp(&a.shallow_size));
 
-    let mut waste_data = WasteRawData::new();
-    waste_data.array_element_counts = array_element_counts;
+    // ========================================================================
+    // Build waste_raw with array_element_counts (Phase 1 portion)
+    // ========================================================================
+
+    let mut waste_raw = WasteRawData::new();
+    // Collect waste data from deferred instances (in-memory, no file scan needed)
+    {
+        let string_class_id: Option<u64> = class_name_map
+            .iter()
+            .find(|(_, name)| name.as_ref() == "java.lang.String")
+            .map(|(id, _)| *id);
+        let hashmap_class_id: Option<u64> = class_name_map
+            .iter()
+            .find(|(_, name)| name.as_ref() == "java.util.HashMap")
+            .map(|(id, _)| *id);
+        let linked_hashmap_class_id: Option<u64> = class_name_map
+            .iter()
+            .find(|(_, name)| name.as_ref() == "java.util.LinkedHashMap")
+            .map(|(id, _)| *id);
+        let arraylist_class_id: Option<u64> = class_name_map
+            .iter()
+            .find(|(_, name)| name.as_ref() == "java.util.ArrayList")
+            .map(|(id, _)| *id);
+
+        let boxed_primitive_names: [(&str, u32); 8] = [
+            ("java.lang.Boolean", 1),
+            ("java.lang.Byte", 1),
+            ("java.lang.Character", 2),
+            ("java.lang.Short", 2),
+            ("java.lang.Integer", 4),
+            ("java.lang.Float", 4),
+            ("java.lang.Long", 8),
+            ("java.lang.Double", 8),
+        ];
+        let boxed_ids: HashMap<u64, (&str, u32)> = boxed_primitive_names
+            .iter()
+            .filter_map(|&(name, ps)| {
+                class_name_map
+                    .iter()
+                    .find(|(_, n)| n.as_ref() == name)
+                    .map(|(id, _)| (*id, (name, ps)))
+            })
+            .collect();
+
+        waste_raw.array_element_counts = array_element_counts.clone();
+
+        for di in &deferred_instances {
+            let fields = &di.field_bytes;
+            let class_obj_id = di.class_obj_id;
+
+            if let Some(field_layout) = class_index.field_layout(class_obj_id) {
+                let ft = types_only(field_layout);
+
+                // Waste: String value references
+                if string_class_id == Some(class_obj_id) {
+                    if let Some(value_array_id) = extract_nth_field_of_type(
+                        fields,
+                        id_size,
+                        &ft,
+                        jvm_hprof::heap_dump::FieldType::ObjectId,
+                        0,
+                    ) {
+                        if value_array_id != 0 {
+                            let shallow = class_instance_sizes
+                                .get(&class_obj_id)
+                                .copied()
+                                .unwrap_or(fields.len() as u32);
+                            waste_raw.string_instances.push(StringInstanceInfo {
+                                value_array_id,
+                                shallow_size: shallow,
+                            });
+                        }
+                    }
+                }
+
+                // Waste: empty + over-allocated collections
+                let is_collection = hashmap_class_id == Some(class_obj_id)
+                    || linked_hashmap_class_id == Some(class_obj_id)
+                    || arraylist_class_id == Some(class_obj_id);
+                if is_collection {
+                    if let Some(size_val) = extract_nth_field_of_type(
+                        fields,
+                        id_size,
+                        &ft,
+                        jvm_hprof::heap_dump::FieldType::Int,
+                        0,
+                    ) {
+                        let cname = class_name_map
+                            .get(&class_obj_id)
+                            .map(|s| s.to_string())
+                            .unwrap_or_default();
+                        let shallow = class_instance_sizes
+                            .get(&class_obj_id)
+                            .copied()
+                            .unwrap_or(fields.len() as u32);
+                        if size_val == 0 {
+                            waste_raw.empty_collections.push(EmptyCollectionInfo {
+                                class_name: cname,
+                                shallow_size: shallow,
+                            });
+                        } else if let Some(backing_array_id) = extract_nth_field_of_type(
+                            fields,
+                            id_size,
+                            &ft,
+                            jvm_hprof::heap_dump::FieldType::ObjectId,
+                            0,
+                        ) {
+                            if let Some(&capacity) =
+                                waste_raw.array_element_counts.get(&backing_array_id)
+                            {
+                                let size_u32 = size_val as u32;
+                                if capacity > 4 * size_u32 && capacity > 16 {
+                                    waste_raw
+                                        .over_allocated_collections
+                                        .push(OverAllocatedCollectionInfo {
+                                            class_name: cname,
+                                            size: size_u32,
+                                            capacity,
+                                        });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Waste: boxed primitives
+                if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
+                    let shallow = class_instance_sizes
+                        .get(&class_obj_id)
+                        .copied()
+                        .unwrap_or(fields.len() as u32);
+                    waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
+                        class_name: bp_name.to_string(),
+                        shallow_size: shallow,
+                    });
+                }
+            }
+        }
+    }
+
+    let summary = HeapSummary {
+        total_heap_size: total_shallow_size,
+        reachable_heap_size: total_shallow_size,
+        total_instances: instance_count,
+        total_classes: class_count,
+        total_arrays: array_count,
+        total_gc_roots: gc_root_count,
+        hprof_version,
+        heap_types,
+    };
+
+    let deferred = DeferredEdgeData {
+        deferred_instances,
+        class_name_map,
+        class_instance_sizes,
+        id_size,
+        array_element_counts,
+        classloader_ids,
+    };
+
+    let phase1 = Phase1Result {
+        node_store,
+        class_index,
+        string_table,
+        gc_root_ids,
+        summary,
+        waste_raw,
+        class_histogram,
+    };
+
+    Ok((phase1, deferred))
+}
+
+/// Phase 2: Extract edges from deferred instances and re-scan file for
+/// object array edges, class edges, and primitive array waste data.
+///
+/// Takes ~38s on a 14 GB dump. Requires the original memory-mapped data.
+pub fn parse_indexed_phase2(
+    phase1: &Phase1Result,
+    deferred: DeferredEdgeData,
+    data: &[u8],
+) -> Result<Phase2Result> {
+    let hprof = parse_hprof(data)
+        .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
+
+    let node_store = &phase1.node_store;
+    let class_index = &phase1.class_index;
+    let id_size = deferred.id_size;
+    let class_name_map = &deferred.class_name_map;
+    let class_instance_sizes = &deferred.class_instance_sizes;
+
+    let estimated_nodes = node_store.len();
+    let mut edge_builder = EdgeBuilder::with_capacity(estimated_nodes * 2);
+
+    // Start with Phase 1's waste data and add backing arrays from the file scan
+    let mut waste_data = phase1.waste_raw.clone();
 
     // SuperRoot -> GC root edges
-    for &gc_id in &gc_root_ids {
+    for &gc_id in &phase1.gc_root_ids {
         if let Some(root_idx) = node_store.index_of(gc_id) {
             edge_builder.add_edge(0, root_idx, label::GC_ROOT);
         }
     }
 
     // Instance edges from deferred data
-    for di in &deferred_instances {
+    for di in &deferred.deferred_instances {
         let fields = &di.field_bytes;
         let class_obj_id = di.class_obj_id;
 
@@ -643,92 +859,6 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
                     edge_builder.add_edge(di.node_idx, ref_idx, label::INSTANCE_FIELD);
                 }
             });
-
-            let ft = types_only(field_layout);
-
-            // Waste: String value references
-            if string_class_id == Some(class_obj_id) {
-                if let Some(value_array_id) = extract_nth_field_of_type(
-                    fields,
-                    id_size,
-                    &ft,
-                    jvm_hprof::heap_dump::FieldType::ObjectId,
-                    0,
-                ) {
-                    if value_array_id != 0 {
-                        let shallow = class_instance_sizes
-                            .get(&class_obj_id)
-                            .copied()
-                            .unwrap_or(fields.len() as u32);
-                        waste_data.string_instances.push(StringInstanceInfo {
-                            value_array_id,
-                            shallow_size: shallow,
-                        });
-                    }
-                }
-            }
-
-            // Waste: empty + over-allocated collections
-            let is_collection = hashmap_class_id == Some(class_obj_id)
-                || linked_hashmap_class_id == Some(class_obj_id)
-                || arraylist_class_id == Some(class_obj_id);
-            if is_collection {
-                if let Some(size_val) = extract_nth_field_of_type(
-                    fields,
-                    id_size,
-                    &ft,
-                    jvm_hprof::heap_dump::FieldType::Int,
-                    0,
-                ) {
-                    let cname = class_name_map
-                        .get(&class_obj_id)
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    let shallow = class_instance_sizes
-                        .get(&class_obj_id)
-                        .copied()
-                        .unwrap_or(fields.len() as u32);
-                    if size_val == 0 {
-                        waste_data.empty_collections.push(EmptyCollectionInfo {
-                            class_name: cname,
-                            shallow_size: shallow,
-                        });
-                    } else if let Some(backing_array_id) = extract_nth_field_of_type(
-                        fields,
-                        id_size,
-                        &ft,
-                        jvm_hprof::heap_dump::FieldType::ObjectId,
-                        0,
-                    ) {
-                        if let Some(&capacity) =
-                            waste_data.array_element_counts.get(&backing_array_id)
-                        {
-                            let size_u32 = size_val as u32;
-                            if capacity > 4 * size_u32 && capacity > 16 {
-                                waste_data
-                                    .over_allocated_collections
-                                    .push(OverAllocatedCollectionInfo {
-                                        class_name: cname,
-                                        size: size_u32,
-                                        capacity,
-                                    });
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Waste: boxed primitives
-            if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
-                let shallow = class_instance_sizes
-                    .get(&class_obj_id)
-                    .copied()
-                    .unwrap_or(fields.len() as u32);
-                waste_data.boxed_primitives.push(BoxedPrimitiveInfo {
-                    class_name: bp_name.to_string(),
-                    shallow_size: shallow,
-                });
-            }
         } else {
             // Fallback: brute-force reference extraction
             extract_object_references_fallback(fields, id_size, |ref_id| {
@@ -738,7 +868,6 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
             });
         }
     }
-    drop(deferred_instances);
 
     // ========================================================================
     // Pass 2b: Re-scan heap for object array edges, class edges, and
@@ -746,11 +875,6 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
     //          This requires the file data but is the same single scan.
     // ========================================================================
 
-    // We need to re-scan for:
-    // 1. Object array element edges (need target node indices)
-    // 2. Class -> superclass/classloader edges
-    // 3. Class -> static field edges
-    // 4. Primitive array content for waste (backing arrays)
     for record_result in hprof.records_iter() {
         let record = record_result
             .map_err(|e| anyhow::anyhow!("Failed to parse record (pass 2): {:?}", e))?;
@@ -924,24 +1048,8 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
 
     let edge_store = edge_builder.build(node_store.len());
 
-    let summary = HeapSummary {
-        total_heap_size: total_shallow_size,
-        reachable_heap_size: total_shallow_size,
-        total_instances: instance_count,
-        total_classes: class_count,
-        total_arrays: array_count,
-        total_gc_roots: gc_root_count,
-        hprof_version,
-        heap_types,
-    };
-
-    Ok(ParseResult {
-        node_store,
+    Ok(Phase2Result {
         edge_store,
-        class_index,
-        string_table,
-        gc_root_ids,
-        summary,
         waste_raw: waste_data,
     })
 }
@@ -1002,5 +1110,59 @@ mod tests {
         let idx = ns.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
         assert_eq!(idx, 0);
         assert_eq!(ns.get_by_index(0).node_type, NodeType::SuperRoot);
+    }
+
+    /// Verifies Phase1Result and DeferredEdgeData structs can be constructed.
+    #[test]
+    fn phase1_result_fields_accessible() {
+        let pr = Phase1Result {
+            node_store: NodeStore::new(),
+            class_index: ClassIndex::new(),
+            string_table: StringTable::new(),
+            gc_root_ids: Vec::new(),
+            summary: HeapSummary {
+                total_heap_size: 0,
+                reachable_heap_size: 0,
+                total_instances: 0,
+                total_classes: 0,
+                total_arrays: 0,
+                total_gc_roots: 0,
+                hprof_version: String::new(),
+                heap_types: Vec::new(),
+            },
+            waste_raw: WasteRawData::new(),
+            class_histogram: Vec::new(),
+        };
+
+        assert_eq!(pr.node_store.len(), 0);
+        assert!(pr.class_histogram.is_empty());
+        assert_eq!(pr.summary.total_heap_size, 0);
+    }
+
+    /// Verifies that parse_indexed_phase1 fails on empty input.
+    #[test]
+    fn parse_phase1_invalid_data_returns_error() {
+        let result = parse_indexed_phase1(&[]);
+        assert!(result.is_err());
+    }
+
+    /// Verifies that parse_indexed_phase1 fails on garbage input.
+    #[test]
+    fn parse_phase1_garbage_data_returns_error() {
+        let result = parse_indexed_phase1(b"not a valid hprof file");
+        assert!(result.is_err());
+    }
+
+    /// Verifies DeferredInstance is public.
+    #[test]
+    fn deferred_instance_is_pub() {
+        let di = DeferredInstance {
+            node_idx: 0,
+            class_obj_id: 42,
+            field_bytes: vec![1, 2, 3],
+        };
+        assert_eq!(di.node_idx, 0);
+        assert_eq!(di.class_obj_id, 42);
+        assert_eq!(di.field_bytes.len(), 3);
     }
 }

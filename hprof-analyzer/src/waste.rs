@@ -5,12 +5,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 /// Info about a java.lang.String instance collected during Pass 2.
+#[derive(Clone)]
 pub(crate) struct StringInstanceInfo {
     pub value_array_id: u64,
     pub shallow_size: u32,
 }
 
 /// Info about a backing array (byte[] or char[]) for string dedup.
+#[derive(Clone)]
 pub(crate) struct BackingArrayInfo {
     pub content_hash: u64,
     pub size: u32,
@@ -18,12 +20,14 @@ pub(crate) struct BackingArrayInfo {
 }
 
 /// Info about an empty collection instance.
+#[derive(Clone)]
 pub(crate) struct EmptyCollectionInfo {
     pub class_name: String,
     pub shallow_size: u32,
 }
 
 /// Info about an over-allocated collection instance.
+#[derive(Clone)]
 pub(crate) struct OverAllocatedCollectionInfo {
     pub class_name: String,
     pub size: u32,
@@ -31,12 +35,14 @@ pub(crate) struct OverAllocatedCollectionInfo {
 }
 
 /// Info about a boxed primitive instance.
+#[derive(Clone)]
 pub(crate) struct BoxedPrimitiveInfo {
     pub class_name: String,
     pub shallow_size: u32,
 }
 
 /// Raw waste data collected during graph building.
+#[derive(Clone)]
 pub struct WasteRawData {
     pub(crate) string_instances: Vec<StringInstanceInfo>,
     pub(crate) backing_arrays: HashMap<u64, BackingArrayInfo>,

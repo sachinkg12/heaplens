@@ -70,7 +70,7 @@ struct TimingBreakdown {
 }
 
 /// Result of heap analysis.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct AnalyzeHeapResult {
     request_id: u64,
     status: String,
@@ -102,21 +102,44 @@ struct FileAnalysisState {
     path: PathBuf,
     /// Cached memory-mapped file for inspect_object (avoids re-mapping on each call).
     mmap: Option<Arc<memmap2::Mmap>>,
+    /// Deferred edge data for Phase 2 (taken once by Phase 2).
+    deferred_edge_data: Arc<std::sync::Mutex<Option<hprof_analyzer::indexed::parse::DeferredEdgeData>>>,
+    /// Phase 1 result for Phase 2 (taken once by Phase 2).
+    phase1_result: Arc<std::sync::Mutex<Option<hprof_analyzer::indexed::parse::Phase1Result>>>,
+}
+
+impl FileAnalysisState {
+    /// Takes the deferred edge data, leaving None in its place.
+    fn take_deferred(&self) -> Option<hprof_analyzer::indexed::parse::DeferredEdgeData> {
+        self.deferred_edge_data.lock().ok()?.take()
+    }
+
+    /// Takes the Phase 1 result, leaving None in its place.
+    fn take_phase1(&self) -> Option<hprof_analyzer::indexed::parse::Phase1Result> {
+        self.phase1_result.lock().ok()?.take()
+    }
 }
 
 /// Performs the CPU-intensive heap analysis in a blocking task.
 ///
 /// This function is meant to be called from `tokio::task::spawn_blocking`
 /// to avoid blocking the async runtime.
+///
+/// For the indexed backend, this uses a two-phase approach:
+/// 1. Phase 1 (~1.4s): sends initial results immediately via `result_tx`
+/// 2. Phase 2 (~38s): runs in the same task, then sends `heap_analysis_phase2_complete`
 fn analyze_heap_blocking(
     path: PathBuf,
     request_id: u64,
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: Arc<AtomicBool>,
+    result_tx: mpsc::UnboundedSender<AnalyzeHeapResult>,
 ) -> AnalyzeHeapResult {
     log::info!("Starting heap analysis for: {:?} (request_id: {})", path, request_id);
 
-    match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token, USE_INDEXED.load(Ordering::Relaxed)) {
+    let use_indexed = USE_INDEXED.load(Ordering::Relaxed);
+
+    match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token, use_indexed) {
         Ok((top_objects, analysis_state, timing)) => {
             log::info!("Heap analysis completed successfully (request_id: {})", request_id);
 
@@ -126,7 +149,7 @@ fn analyze_heap_blocking(
                 .cloned()
                 .collect();
 
-            AnalyzeHeapResult {
+            let phase1_result = AnalyzeHeapResult {
                 request_id,
                 status: "completed".to_string(),
                 top_objects: Some(top_objects),
@@ -135,9 +158,26 @@ fn analyze_heap_blocking(
                 class_histogram: Some(analysis_state.get_class_histogram().to_vec()),
                 leak_suspects: Some(analysis_state.get_leak_suspects().to_vec()),
                 waste_analysis: Some(analysis_state.get_waste_analysis().clone()),
-                timing: Some(timing),
+                timing: Some(timing.clone()),
                 error: None,
+            };
+
+            // For indexed backend: Phase 1 result was already stored. Now run Phase 2.
+            if use_indexed {
+                // Send Phase 1 result immediately
+                let _ = result_tx.send(phase1_result.clone());
+
+                // Run Phase 2 (edges + dominators)
+                run_phase2_background(
+                    &path,
+                    request_id,
+                    &analysis_states,
+                    &cancel_token,
+                    timing,
+                );
             }
+
+            phase1_result
         }
         Err(e) => {
             let error_msg = format!("Heap analysis failed: {}", e);
@@ -156,6 +196,176 @@ fn analyze_heap_blocking(
             }
         }
     }
+}
+
+/// Runs Phase 2 of the indexed analysis: edge extraction, CSR build, and
+/// dominator computation. Updates the stored analysis state and sends a
+/// `heap_analysis_phase2_complete` notification.
+fn run_phase2_background(
+    path: &PathBuf,
+    request_id: u64,
+    analysis_states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
+    cancel_token: &Arc<AtomicBool>,
+    phase1_timing: TimingBreakdown,
+) {
+    // Retrieve the mmap and deferred data from the stored state
+    let (mmap, deferred_data) = {
+        let states = match analysis_states.read() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[Phase2] Failed to read analysis states: {}", e);
+                return;
+            }
+        };
+        let file_state = match states.get(path) {
+            Some(s) => s,
+            None => {
+                eprintln!("[Phase2] No file state found for {:?}", path);
+                return;
+            }
+        };
+        let mmap = match &file_state.mmap {
+            Some(m) => m.clone(),
+            None => {
+                eprintln!("[Phase2] No mmap found for {:?}", path);
+                return;
+            }
+        };
+        let deferred = match file_state.take_deferred() {
+            Some(d) => d,
+            None => {
+                eprintln!("[Phase2] No deferred edge data found for {:?}", path);
+                return;
+            }
+        };
+        // Also get phase1 result
+        let phase1 = match file_state.take_phase1() {
+            Some(p) => p,
+            None => {
+                eprintln!("[Phase2] No phase1 result found for {:?}", path);
+                return;
+            }
+        };
+        (mmap, (deferred, phase1))
+    };
+
+    if cancel_token.load(Ordering::Relaxed) {
+        eprintln!("[Phase2] Analysis cancelled");
+        return;
+    }
+
+    eprintln!("[Phase2] Starting edge extraction + dominator computation...");
+    let phase2_start = Instant::now();
+
+    let _ = send_stdout(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "heap_analysis_progress",
+        "params": {
+            "stage": "phase2_edges",
+            "message": "Extracting object references..."
+        }
+    }));
+
+    let (deferred, phase1) = deferred_data;
+
+    // Run Phase 2 parsing
+    let phase2 = match hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred, &mmap[..]) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[Phase2] Edge extraction failed: {}", e);
+            let _ = send_stdout(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "heap_analysis_phase2_complete",
+                "params": {
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": format!("Phase 2 failed: {}", e)
+                }
+            }));
+            return;
+        }
+    };
+
+    if cancel_token.load(Ordering::Relaxed) {
+        eprintln!("[Phase2] Analysis cancelled after edge extraction");
+        return;
+    }
+
+    // Build full IndexedAnalysisState from Phase 1 + Phase 2
+    let full_state = match hprof_analyzer::indexed::IndexedAnalysisState::from_phases(phase1, phase2) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[Phase2] Dominator computation failed: {}", e);
+            let _ = send_stdout(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "heap_analysis_phase2_complete",
+                "params": {
+                    "request_id": request_id,
+                    "status": "error",
+                    "error": format!("Phase 2 analysis failed: {}", e)
+                }
+            }));
+            return;
+        }
+    };
+
+    let phase2_ms = phase2_start.elapsed().as_millis() as u64;
+    eprintln!("[Phase2] Complete: {} ms", phase2_ms);
+
+    let full_state_arc: Arc<dyn HeapAnalysis> = Arc::new(full_state);
+
+    // Collect Phase 2 data for notification before storing
+    let top_objects = full_state_arc.get_top_layers(3, 50);
+    let top_layers: Vec<_> = top_objects.iter()
+        .filter(|obj| obj.retained_size > 0 && obj.node_type != "Class")
+        .take(20)
+        .cloned()
+        .collect();
+    let leak_suspects = full_state_arc.get_leak_suspects().to_vec();
+    let class_histogram = full_state_arc.get_class_histogram().to_vec();
+    let summary = full_state_arc.get_summary().clone();
+    let waste_analysis = full_state_arc.get_waste_analysis().clone();
+
+    // Replace Phase1AnalysisState with full IndexedAnalysisState
+    {
+        let states = match analysis_states.read() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[Phase2] Failed to read analysis states for replacement: {}", e);
+                return;
+            }
+        };
+        if let Some(file_state) = states.get(path) {
+            let mut state_guard = file_state.state.write().unwrap();
+            *state_guard = Some(full_state_arc);
+        }
+    }
+
+    let timing = TimingBreakdown {
+        file_loading_ms: phase1_timing.file_loading_ms,
+        graph_building_ms: phase1_timing.graph_building_ms,
+        dominator_analysis_ms: phase2_ms,
+        total_ms: phase1_timing.file_loading_ms + phase1_timing.graph_building_ms + phase2_ms,
+    };
+
+    // Send Phase 2 completion notification
+    let _ = send_stdout(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "heap_analysis_phase2_complete",
+        "params": {
+            "request_id": request_id,
+            "status": "completed",
+            "top_objects": top_objects,
+            "top_layers": top_layers,
+            "summary": summary,
+            "class_histogram": class_histogram,
+            "leak_suspects": leak_suspects,
+            "waste_analysis": waste_analysis,
+            "timing": timing
+        }
+    }));
+
+    eprintln!("[Phase2] Notification sent. Full analysis available.");
 }
 
 /// Internal function that performs the actual heap analysis.
@@ -209,7 +419,7 @@ fn analyze_heap_internal(
         u64,
         u64,
     ) = if use_indexed {
-        eprintln!("[Progress] Step 2/3: Indexed parse + analysis...");
+        eprintln!("[Progress] Step 2/3: Phase 1 indexed parse (nodes only)...");
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
@@ -217,28 +427,58 @@ fn analyze_heap_internal(
         }));
 
         let phase_start = Instant::now();
-        let parse_result = hprof_analyzer::indexed::parse::parse_indexed(&mmap[..])
-            .context("Indexed parse failed")?;
+        // Run Phase 1 twice: once for the Phase1AnalysisState (immediate display),
+        // once to keep the data for Phase 2 (edges + dominators). Phase 1 is fast
+        // (~1.4s) so the overhead is acceptable vs. the 38s Phase 2 runs in background.
+        let (phase1_for_display, _deferred_discard) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
+            .context("Indexed Phase 1 parse failed")?;
         let graph_ms = phase_start.elapsed().as_millis() as u64;
+
+        eprintln!("[Progress] Phase 1 complete: {} nodes ({} ms)", phase1_for_display.node_store.len(), graph_ms);
 
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
             "params": {
                 "stage": "graph_built", "phase": 3, "total_phases": 3,
-                "summary": parse_result.summary
+                "summary": phase1_for_display.summary
             }
         }));
 
         if cancel_token.load(Ordering::Relaxed) { anyhow::bail!("Analysis cancelled"); }
 
-        let phase_start = Instant::now();
-        let indexed_state = hprof_analyzer::indexed::IndexedAnalysisState::from_parse_result(parse_result)
-            .context("Indexed analysis failed")?;
-        let dom_ms = phase_start.elapsed().as_millis() as u64;
+        // Create Phase1AnalysisState (lightweight, no edges/dominators)
+        let phase1_state = hprof_analyzer::indexed::Phase1AnalysisState::new(phase1_for_display);
+        let top = phase1_state.get_top_layers(3, 50);
+        let analysis_state: Arc<dyn HeapAnalysis> = Arc::new(phase1_state);
 
-        let top = indexed_state.get_top_layers(3, 50);
-        (top, Arc::new(indexed_state) as Arc<dyn HeapAnalysis>, graph_ms, dom_ms)
+        // Run Phase 1 again to get data for Phase 2 (deferred edge data + node store)
+        let (phase1_for_phase2, deferred_for_phase2) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
+            .context("Indexed Phase 1 re-parse for Phase 2 data")?;
+
+        // Store state with deferred data for Phase 2
+        {
+            let mut states = analysis_states.write()
+                .map_err(|e| anyhow::anyhow!("Failed to write analysis states: {}", e))?;
+
+            states.insert(path.clone(), FileAnalysisState {
+                state: Arc::new(RwLock::new(Some(analysis_state.clone()))),
+                path: path.clone(),
+                mmap: Some(mmap),
+                deferred_edge_data: Arc::new(std::sync::Mutex::new(Some(deferred_for_phase2))),
+                phase1_result: Arc::new(std::sync::Mutex::new(Some(phase1_for_phase2))),
+            });
+        }
+
+        let total_ms = total_start.elapsed().as_millis() as u64;
+        let timing = TimingBreakdown {
+            file_loading_ms,
+            graph_building_ms: graph_ms,
+            dominator_analysis_ms: 0,
+            total_ms,
+        };
+
+        return Ok((top, analysis_state, timing));
     } else {
         eprintln!("[Progress] Step 2/4: Building heap graph...");
         let _ = send_stdout(&serde_json::json!({
@@ -288,7 +528,7 @@ fn analyze_heap_internal(
         file_loading_ms, graph_building_ms, dominator_analysis_ms, total_ms);
     log::info!("Analysis complete: {} top objects ({} ms total)", top_objects.len(), total_ms);
 
-    // Store analysis state for lazy loading queries
+    // Store analysis state for lazy loading queries (legacy path)
     {
         let mut states = analysis_states.write()
             .map_err(|e| anyhow::anyhow!("Failed to write analysis states: {}", e))?;
@@ -297,6 +537,8 @@ fn analyze_heap_internal(
             state: Arc::new(RwLock::new(Some(analysis_state.clone()))),
             path: path.clone(),
             mmap: Some(mmap),
+            deferred_edge_data: Arc::new(std::sync::Mutex::new(None)),
+            phase1_result: Arc::new(std::sync::Mutex::new(None)),
         });
     }
 
@@ -906,10 +1148,30 @@ fn handle_mcp_tool_call(
 
             eprintln!("[MCP] analyze_heap: {}", path);
             let no_cancel = Arc::new(AtomicBool::new(false));
-            match analyze_heap_internal(&PathBuf::from(path), analysis_states.clone(), &no_cancel, USE_INDEXED.load(Ordering::Relaxed)) {
-                Ok((top_objects, state, _timing)) => {
-                    let text = format_analyze_result(&*state, &top_objects);
-                    mcp_text_result(&text, false)
+            let path_buf = PathBuf::from(path);
+            let use_indexed = USE_INDEXED.load(Ordering::Relaxed);
+            match analyze_heap_internal(&path_buf, analysis_states.clone(), &no_cancel, use_indexed) {
+                Ok((top_objects, state, timing)) => {
+                    // For MCP, run Phase 2 inline so the caller gets full results
+                    if use_indexed {
+                        run_phase2_background(&path_buf, 0, analysis_states, &no_cancel, timing);
+                        // Re-read the now-upgraded state
+                        match get_analysis_state_for_path(analysis_states, path) {
+                            Ok(full_state) => {
+                                let full_top = full_state.get_top_layers(3, 50);
+                                let text = format_analyze_result(&*full_state, &full_top);
+                                mcp_text_result(&text, false)
+                            }
+                            Err(_) => {
+                                // Fall back to Phase 1 results
+                                let text = format_analyze_result(&*state, &top_objects);
+                                mcp_text_result(&text, false)
+                            }
+                        }
+                    } else {
+                        let text = format_analyze_result(&*state, &top_objects);
+                        mcp_text_result(&text, false)
+                    }
                 }
                 Err(e) => {
                     mcp_text_result(&format!("Analysis failed: {}", e), true)
@@ -1342,16 +1604,19 @@ async fn handle_analyze_heap_request(
 
     // Spawn blocking task for CPU-intensive work
     task::spawn_blocking(move || {
-        let result = analyze_heap_blocking(path_buf, request_id, analysis_states, cancel_token);
+        let result = analyze_heap_blocking(path_buf, request_id, analysis_states, cancel_token, result_tx.clone());
 
         // Clean up cancel token
         if let Ok(mut tokens) = cancel_tokens_cleanup.write() {
             tokens.remove(&path_key);
         }
 
-        // Send result via channel (non-blocking)
-        if let Err(e) = result_tx.send(result) {
-            eprintln!("Failed to send analysis result: {}", e);
+        // For legacy mode, send result via channel. For indexed mode,
+        // analyze_heap_blocking already sent Phase 1 result internally.
+        if !USE_INDEXED.load(Ordering::Relaxed) {
+            if let Err(e) = result_tx.send(result) {
+                eprintln!("Failed to send analysis result: {}", e);
+            }
         }
     });
 
