@@ -318,9 +318,10 @@ export function getLeakSuspectsJs(): string {
             var bufferKey = msg.objectId ? objSanitized : classSanitized;
             if (!_explainLeakBuffers[bufferKey]) _explainLeakBuffers[bufferKey] = '';
             _explainLeakBuffers[bufferKey] += msg.text;
-            // Try both object-view and class-view explain areas
-            var area = document.getElementById('explain-' + classSanitized) ||
-                       document.getElementById('explain-obj-' + objSanitized);
+            // Try object-view first when objectId is present, then class-view
+            var area = msg.objectId
+                ? (document.getElementById('explain-obj-' + objSanitized) || document.getElementById('explain-' + classSanitized))
+                : (document.getElementById('explain-' + classSanitized) || document.getElementById('explain-obj-' + objSanitized));
             if (area) {
                 area.textContent = _explainLeakBuffers[bufferKey];
                 area.scrollTop = area.scrollHeight;

@@ -392,14 +392,136 @@ impl HeapAnalysis for IndexedAnalysisState {
         self.top_objects.iter().take(max_nodes).cloned().collect()
     }
 
-    fn inspect_object(&self, _hprof_path: &Path, _object_id: u64) -> Option<Vec<FieldInfo>> {
-        // TODO: Phase 4 — implement field inspection using ClassIndex field layouts
-        // and re-reading the HPROF file for instance field bytes.
-        None
+    fn inspect_object(&self, hprof_path: &Path, object_id: u64) -> Option<Vec<FieldInfo>> {
+        let data = std::fs::read(hprof_path).ok()?;
+        self.inspect_object_bytes(&data, object_id)
     }
 
-    fn inspect_object_bytes(&self, _hprof_bytes: &[u8], _object_id: u64) -> Option<Vec<FieldInfo>> {
-        // TODO: Phase 4 — implement field inspection using ClassIndex field layouts
+    fn inspect_object_bytes(&self, hprof_bytes: &[u8], object_id: u64) -> Option<Vec<FieldInfo>> {
+        use jvm_hprof::heap_dump::FieldType;
+        use jvm_hprof::{parse_hprof, RecordTag};
+
+        // Verify object exists and is an Instance
+        let node_idx = self.node_store.index_of(object_id)?;
+        let node = self.node_store.get_by_index(node_idx);
+        if node.node_type != NodeType::Instance {
+            return None;
+        }
+
+        let hprof = parse_hprof(hprof_bytes).ok()?;
+        let id_size = hprof.header().id_size();
+        let id_bytes: usize = match id_size {
+            jvm_hprof::IdSize::U32 => 4,
+            jvm_hprof::IdSize::U64 => 8,
+        };
+
+        // Scan for the Instance record with matching obj_id
+        for record_result in hprof.records_iter() {
+            let record = match record_result {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if record.tag() != RecordTag::HeapDump && record.tag() != RecordTag::HeapDumpSegment {
+                continue;
+            }
+            let heap_dump = match record.as_heap_dump_segment() {
+                Some(Ok(hd)) => hd,
+                _ => continue,
+            };
+            for sub_result in heap_dump.sub_records() {
+                let sub = match sub_result {
+                    Ok(sr) => sr,
+                    Err(_) => continue,
+                };
+                if let jvm_hprof::heap_dump::SubRecord::Instance(instance) = sub {
+                    if instance.obj_id().id() != object_id {
+                        continue;
+                    }
+                    let class_obj_id = instance.class_obj_id().id();
+                    let layout = self.class_index.field_layout(class_obj_id)?;
+                    let field_data = instance.fields();
+
+                    let mut fields = Vec::with_capacity(layout.len());
+                    let mut offset = 0;
+
+                    for (name, ft) in layout {
+                        let size = crate::field_type_size(ft, id_size);
+                        if offset + size > field_data.len() {
+                            break;
+                        }
+
+                        let type_str = match *ft {
+                            FieldType::ObjectId => "ref",
+                            FieldType::Boolean => "boolean",
+                            FieldType::Byte => "byte",
+                            FieldType::Char => "char",
+                            FieldType::Short => "short",
+                            FieldType::Int => "int",
+                            FieldType::Float => "float",
+                            FieldType::Long => "long",
+                            FieldType::Double => "double",
+                        };
+
+                        let bytes = &field_data[offset..offset + size];
+                        let raw_value = match size {
+                            1 => bytes[0] as u64,
+                            2 => u16::from_be_bytes([bytes[0], bytes[1]]) as u64,
+                            4 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
+                            8 => u64::from_be_bytes([
+                                bytes[0], bytes[1], bytes[2], bytes[3],
+                                bytes[4], bytes[5], bytes[6], bytes[7],
+                            ]),
+                            _ => 0,
+                        };
+
+                        let (primitive_value, ref_object_id, ref_summary) = match *ft {
+                            FieldType::ObjectId => {
+                                if raw_value == 0 {
+                                    (Some("null".to_string()), None, None)
+                                } else {
+                                    let ref_id = raw_value;
+                                    let summary = self.node_store.get_by_id(ref_id).map(|n| {
+                                        let idx = self.node_store.index_of(ref_id).unwrap_or(0) as usize;
+                                        let retained = self.dominator.retained_sizes[idx];
+                                        let node_type_str = match n.node_type {
+                                            NodeType::Instance => "Instance",
+                                            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                                            NodeType::Class => "Class",
+                                            NodeType::GcRoot => "Root",
+                                            NodeType::SuperRoot => "SuperRoot",
+                                        };
+                                        crate::RefSummary {
+                                            class_name: n.class_name.to_string(),
+                                            node_type: node_type_str.to_string(),
+                                            shallow_size: n.shallow_size as u64,
+                                            retained_size: retained,
+                                        }
+                                    });
+                                    (None, Some(ref_id), summary)
+                                }
+                            }
+                            FieldType::Boolean => (Some(if raw_value != 0 { "true" } else { "false" }.to_string()), None, None),
+                            FieldType::Char => (Some(format!("'{}'", char::from_u32(raw_value as u32).unwrap_or('?'))), None, None),
+                            FieldType::Float => (Some(format!("{}", f32::from_bits(raw_value as u32))), None, None),
+                            FieldType::Double => (Some(format!("{}", f64::from_bits(raw_value))), None, None),
+                            _ => (Some(raw_value.to_string()), None, None),
+                        };
+
+                        fields.push(FieldInfo {
+                            name: name.to_string(),
+                            field_type: type_str.to_string(),
+                            primitive_value,
+                            ref_object_id,
+                            ref_summary,
+                        });
+
+                        offset += size;
+                    }
+
+                    return Some(fields);
+                }
+            }
+        }
         None
     }
 
