@@ -93,6 +93,7 @@ export function getLeakSuspectsJs(): string {
                     : '';
                 var sanitizedId = (s.class_name + '_' + s.object_id).replace(/[^a-zA-Z0-9]/g, '_');
                 var explainLink = ' | <a class="suspect-explain-link" data-class="' + escapeHtml(s.class_name) +
+                    '" data-object-id="' + (s.object_id || '') +
                     '" data-retained="' + s.retained_size +
                     '" data-pct="' + s.retained_percentage +
                     '" data-desc="' + escapeHtml(s.description) +
@@ -263,13 +264,17 @@ export function getLeakSuspectsJs(): string {
                     area.classList.add('visible', 'streaming');
                     area.classList.remove('error');
                     area.textContent = '';
-                    vscode.postMessage({
+                    var msgPayload = {
                         command: 'explainLeakSuspect',
                         className: link.dataset.class,
                         retainedSize: parseFloat(link.dataset.retained),
                         retainedPercentage: parseFloat(link.dataset.pct),
                         description: link.dataset.desc
-                    });
+                    };
+                    if (link.dataset.objectId) {
+                        msgPayload.objectId = parseInt(link.dataset.objectId, 10);
+                    }
+                    vscode.postMessage(msgPayload);
                 });
             });
 
@@ -307,47 +312,66 @@ export function getLeakSuspectsJs(): string {
         });
 
         onMessage('explainLeakChunk', function(msg) {
-            var sanitizedId = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
-            if (!_explainLeakBuffers[sanitizedId]) _explainLeakBuffers[sanitizedId] = '';
-            _explainLeakBuffers[sanitizedId] += msg.text;
+            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
+            // For object-level suspects, the explain area ID includes the objectId
+            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var bufferKey = msg.objectId ? objSanitized : classSanitized;
+            if (!_explainLeakBuffers[bufferKey]) _explainLeakBuffers[bufferKey] = '';
+            _explainLeakBuffers[bufferKey] += msg.text;
             // Try both object-view and class-view explain areas
-            var area = document.getElementById('explain-' + sanitizedId) ||
-                       document.getElementById('explain-obj-' + sanitizedId);
+            var area = document.getElementById('explain-' + classSanitized) ||
+                       document.getElementById('explain-obj-' + objSanitized);
             if (area) {
-                area.textContent = _explainLeakBuffers[sanitizedId];
+                area.textContent = _explainLeakBuffers[bufferKey];
                 area.scrollTop = area.scrollHeight;
             }
         });
 
         onMessage('explainLeakDone', function(msg) {
-            var sanitizedId = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
-            // Try both views
-            ['explain-', 'explain-obj-'].forEach(function(prefix) {
-                var area = document.getElementById(prefix + sanitizedId);
-                if (area) {
-                    area.classList.remove('streaming');
-                    area.classList.add('rendered');
-                    area.innerHTML = renderMarkdown(_explainLeakBuffers[sanitizedId] || '');
-                    area.scrollTop = 0;
-                }
-            });
-            delete _explainLeakBuffers[sanitizedId];
+            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
+            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var bufferKey = msg.objectId ? objSanitized : classSanitized;
+            // Try class-view explain area
+            var classArea = document.getElementById('explain-' + classSanitized);
+            if (classArea) {
+                classArea.classList.remove('streaming');
+                classArea.classList.add('rendered');
+                classArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                classArea.scrollTop = 0;
+            }
+            // Try object-view explain area
+            var objArea = document.getElementById('explain-obj-' + objSanitized);
+            if (objArea) {
+                objArea.classList.remove('streaming');
+                objArea.classList.add('rendered');
+                objArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                objArea.scrollTop = 0;
+            }
+            delete _explainLeakBuffers[bufferKey];
             document.querySelectorAll('.suspect-explain-link[data-class="' + msg.className + '"]').forEach(function(link) {
                 link.textContent = 'Explain';
             });
         });
 
         onMessage('explainLeakError', function(msg) {
-            var sanitizedId = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
-            delete _explainLeakBuffers[sanitizedId];
-            ['explain-', 'explain-obj-'].forEach(function(prefix) {
-                var area = document.getElementById(prefix + sanitizedId);
-                if (area) {
-                    area.classList.remove('streaming');
-                    area.classList.add('error', 'visible');
-                    area.textContent = msg.message || 'An error occurred';
-                }
-            });
+            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
+            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var bufferKey = msg.objectId ? objSanitized : classSanitized;
+            delete _explainLeakBuffers[bufferKey];
+            // Try class-view explain area
+            var classArea = document.getElementById('explain-' + classSanitized);
+            if (classArea) {
+                classArea.classList.remove('streaming');
+                classArea.classList.add('error', 'visible');
+                classArea.textContent = msg.message || 'An error occurred';
+            }
+            // Try object-view explain area
+            var objArea = document.getElementById('explain-obj-' + objSanitized);
+            if (objArea) {
+                objArea.classList.remove('streaming');
+                objArea.classList.add('error', 'visible');
+                objArea.textContent = msg.message || 'An error occurred';
+            }
             document.querySelectorAll('.suspect-explain-link[data-class="' + msg.className + '"]').forEach(function(link) {
                 link.textContent = 'Explain';
             });

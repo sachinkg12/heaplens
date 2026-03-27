@@ -90,11 +90,13 @@ export const explainLeakSuspectHandler: MessageHandler = {
         };
 
         const className = message.className;
+        const objectId = message.objectId || 0;
 
         if (!llmConfig.apiKey) {
             ctx.webviewPanel.webview.postMessage({
                 command: 'explainLeakError',
                 className,
+                objectId,
                 message: 'No API key configured. Go to Settings and search for "heaplens.llm.apiKey" to set your API key.'
             });
             return;
@@ -118,14 +120,14 @@ export const explainLeakSuspectHandler: MessageHandler = {
             llmConfig,
             messages,
             (chunk) => {
-                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakChunk', className, text: chunk });
+                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakChunk', className, objectId, text: chunk });
             },
             () => {
-                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakDone', className });
+                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakDone', className, objectId });
             },
             (error) => {
                 ctx.outputChannel.appendLine(`[HeapLens] Explain leak error: ${error}`);
-                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakError', className, message: error });
+                ctx.webviewPanel.webview.postMessage({ command: 'explainLeakError', className, objectId, message: error });
             }
         );
     }

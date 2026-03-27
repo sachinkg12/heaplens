@@ -271,6 +271,28 @@ impl IndexedAnalysisState {
                     .partial_cmp(&a.retained_percentage)
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
+
+            // Deduplicate: remove objects whose dominator parent is also a suspect.
+            // This prevents showing the same dominator chain multiple times
+            // (e.g., ConnectionPool -> ArrayList -> Object[] all showing ~76.8%).
+            let suspect_indices: std::collections::HashSet<u32> = object_leak_suspects
+                .iter()
+                .filter_map(|s| node_store.index_of(s.object_id))
+                .collect();
+
+            object_leak_suspects.retain(|s| {
+                if let Some(idx) = node_store.index_of(s.object_id) {
+                    let parent = dominator.dominator_parent[idx as usize];
+                    if parent != u32::MAX {
+                        // If parent is also a suspect, remove this child
+                        !suspect_indices.contains(&parent)
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                }
+            });
         }
 
         // 4. Finalize top-50 objects

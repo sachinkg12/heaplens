@@ -462,10 +462,33 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     }
 
     // Split into object-level suspects (individual objects with object_id != 0)
-    let object_leak_suspects: Vec<LeakSuspect> = leak_suspects.iter()
+    let mut object_leak_suspects: Vec<LeakSuspect> = leak_suspects.iter()
         .filter(|s| s.object_id != 0)
         .cloned()
         .collect();
+
+    // Deduplicate: remove objects whose dominator parent is also a suspect.
+    // This prevents showing the same dominator chain multiple times
+    // (e.g., ConnectionPool -> ArrayList -> Object[] all showing ~76.8%).
+    {
+        let suspect_node_indices: std::collections::HashSet<NodeIndex> = object_leak_suspects
+            .iter()
+            .filter_map(|s| id_to_node.get(&s.object_id).copied())
+            .collect();
+
+        object_leak_suspects.retain(|s| {
+            if let Some(&node_idx) = id_to_node.get(&s.object_id) {
+                if let Some(parent) = doms.immediate_dominator(node_idx) {
+                    // If parent is also a suspect, remove this child
+                    !suspect_node_indices.contains(&parent)
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        });
+    }
 
     log::info!("Detected {} leak suspects ({} object-level)", leak_suspects.len(), object_leak_suspects.len());
 
