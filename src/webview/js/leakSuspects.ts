@@ -328,6 +328,24 @@ export function getLeakSuspectsJs(): string {
             }
         });
 
+        function addExplainCloseBtn(area) {
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'explain-close-btn';
+            closeBtn.textContent = '\u00d7';
+            closeBtn.title = 'Close';
+            closeBtn.addEventListener('click', function() {
+                area.classList.remove('visible', 'rendered', 'streaming');
+                area.innerHTML = '';
+                // Reset the explain link text in the parent suspect card
+                var card = area.closest('.suspect-card');
+                if (card) {
+                    var link = card.querySelector('.suspect-explain-link');
+                    if (link) link.textContent = 'Explain';
+                }
+            });
+            area.insertBefore(closeBtn, area.firstChild);
+        }
+
         onMessage('explainLeakDone', function(msg) {
             var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
             var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
@@ -339,6 +357,7 @@ export function getLeakSuspectsJs(): string {
                 classArea.classList.add('rendered');
                 classArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
                 classArea.scrollTop = 0;
+                addExplainCloseBtn(classArea);
             }
             // Try object-view explain area
             var objArea = document.getElementById('explain-obj-' + objSanitized);
@@ -347,6 +366,7 @@ export function getLeakSuspectsJs(): string {
                 objArea.classList.add('rendered');
                 objArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
                 objArea.scrollTop = 0;
+                addExplainCloseBtn(objArea);
             }
             delete _explainLeakBuffers[bufferKey];
             document.querySelectorAll('.suspect-explain-link[data-class="' + msg.className + '"]').forEach(function(link) {

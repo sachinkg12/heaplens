@@ -900,6 +900,17 @@ export function getStyles(): string {
         .inspector-ref-link:hover { text-decoration: underline; }
         .inspector-sizes { opacity: 0.5; font-size: 11px; flex-shrink: 0; }
         .inspector-loading { padding: 20px; text-align: center; opacity: 0.5; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--vscode-foreground);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            opacity: 0.6;
+        }
 
         /* Explain button & area (inspector) */
         .inspector-explain-btn {
@@ -948,6 +959,7 @@ export function getStyles(): string {
         .suspect-explain-link:hover { text-decoration: underline; }
         .suspect-explain-area {
             display: none;
+            position: relative;
             margin-top: 10px;
             padding: 10px 12px;
             border: 1px solid var(--vscode-panel-border);
@@ -958,6 +970,22 @@ export function getStyles(): string {
             word-wrap: break-word;
             max-height: 400px;
             overflow-y: auto;
+        }
+        .explain-close-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: none;
+            border: none;
+            color: var(--vscode-foreground);
+            font-size: 18px;
+            cursor: pointer;
+            opacity: 0.6;
+            padding: 4px 8px;
+            line-height: 1;
+        }
+        .explain-close-btn:hover {
+            opacity: 1;
         }
         .suspect-explain-area.visible { display: block; }
         .suspect-explain-area.streaming {

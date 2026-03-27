@@ -93,6 +93,11 @@ export const inspectObjectHandler: MessageHandler = {
     async handle(message, ctx) {
         trackEvent('feature/inspectObject');
         ctx.outputChannel.appendLine(`[HeapLens] inspectObject request for objectId: ${message.objectId}`);
+        // Show loading state in webview while waiting for RPC response
+        ctx.webviewPanel.webview.postMessage({
+            command: 'inspectObjectLoading',
+            objectId: message.objectId
+        });
         try {
             const fields = await ctx.client.sendRequest('inspect_object', {
                 path: ctx.hprofPath,

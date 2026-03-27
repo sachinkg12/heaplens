@@ -724,9 +724,15 @@ impl HeapAnalysis for IndexedAnalysisState {
         Some((report, child_count, ref_count))
     }
 
-    fn get_dominator_subtree(&self, _object_id: u64, _max_depth: usize, _max_children: usize) -> Option<crate::DominatorTreeNode> {
-        // TODO: implement for indexed backend
-        None
+    fn get_dominator_subtree(&self, object_id: u64, max_depth: usize, max_children: usize) -> Option<crate::DominatorTreeNode> {
+        let node_idx = if object_id == 0 {
+            0u32 // super root
+        } else {
+            self.node_store.index_of(object_id)?
+        };
+
+        let mut total_nodes = 0;
+        Some(self.build_dominator_subtree(node_idx, 0, max_depth, max_children, &mut total_nodes))
     }
 
     fn get_timeline_snapshot(&self, path: &str, top_n: usize) -> crate::TimelineSnapshot {
@@ -743,6 +749,84 @@ impl HeapAnalysis for IndexedAnalysisState {
 }
 
 impl IndexedAnalysisState {
+    /// Recursively builds a `DominatorTreeNode` subtree for flame graph rendering.
+    fn build_dominator_subtree(
+        &self,
+        node_idx: u32,
+        depth: usize,
+        max_depth: usize,
+        max_children: usize,
+        total_nodes: &mut usize,
+    ) -> crate::DominatorTreeNode {
+        let node = self.node_store.get_by_index(node_idx);
+        let retained = self.dominator.retained_sizes[node_idx as usize];
+        let shallow = node.shallow_size as u64;
+        let node_type_str = match node.node_type {
+            NodeType::SuperRoot => "SuperRoot",
+            NodeType::GcRoot => "Root",
+            NodeType::Class => "Class",
+            NodeType::Instance => "Instance",
+            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+        };
+
+        *total_nodes += 1;
+        let mut children = Vec::new();
+
+        if depth < max_depth && *total_nodes < 10000 {
+            let child_indices = &self.dominator.dominator_children[node_idx as usize];
+            let mut child_data: Vec<(u32, u64)> = child_indices
+                .iter()
+                .filter_map(|&ci| {
+                    let cn = self.node_store.get_by_index(ci);
+                    if matches!(cn.node_type, NodeType::Class) {
+                        return None;
+                    }
+                    let ret = self.dominator.retained_sizes[ci as usize];
+                    if ret == 0 {
+                        return None;
+                    }
+                    Some((ci, ret))
+                })
+                .collect();
+
+            child_data.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let show_count = child_data.len().min(max_children);
+            for &(ci, _) in &child_data[..show_count] {
+                children.push(self.build_dominator_subtree(ci, depth + 1, max_depth, max_children, total_nodes));
+                if *total_nodes >= 10000 {
+                    break;
+                }
+            }
+
+            if child_data.len() > max_children {
+                let others = &child_data[max_children..];
+                let agg_retained: u64 = others.iter().map(|(_, r)| r).sum();
+                let agg_shallow: u64 = others
+                    .iter()
+                    .map(|(ci, _)| self.node_store.get_by_index(*ci).shallow_size as u64)
+                    .sum();
+                children.push(crate::DominatorTreeNode {
+                    name: format!("[{} others]", others.len()),
+                    retained_size: agg_retained,
+                    shallow_size: agg_shallow,
+                    object_id: 0,
+                    node_type: "Aggregated".to_string(),
+                    children: Vec::new(),
+                });
+            }
+        }
+
+        crate::DominatorTreeNode {
+            name: node.class_name.to_string(),
+            retained_size: retained,
+            shallow_size: shallow,
+            object_id: node.id,
+            node_type: node_type_str.to_string(),
+            children,
+        }
+    }
+
     /// Builds an `IndexedAnalysisState` from Phase 1 + Phase 2 results.
     ///
     /// This is the two-phase counterpart of `from_parse_result`.

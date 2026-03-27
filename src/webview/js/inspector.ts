@@ -98,6 +98,16 @@ export function getInspectorJs(): string {
         }
 
         // ---- Self-register ----
+        onMessage('inspectObjectLoading', function(msg) {
+            var panel = document.getElementById('inspector-panel');
+            if (!panel || !panel.classList.contains('visible')) return;
+            var body = panel.querySelector('.inspector-loading, .inspector-body');
+            if (body) {
+                body.className = 'inspector-loading';
+                body.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:20px;"><span class="spinner"></span> Loading fields\u2026 This may take a moment for large heap dumps.</div>';
+            }
+        });
+
         onMessage('inspectObjectResponse', function(msg) {
             renderInspectorFields(msg.objectId, msg.fields);
         });
