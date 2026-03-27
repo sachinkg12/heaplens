@@ -44,6 +44,14 @@ impl<'a> PrimitiveArray<'a> {
         self.num_elements
     }
 
+    /// Returns the raw byte content of this primitive array.
+    ///
+    /// This is the raw bytes as stored in the HPROF file, suitable for
+    /// hashing to detect duplicate backing arrays (e.g. for string dedup).
+    pub fn contents(&self) -> &'a [u8] {
+        self.contents
+    }
+
     pub(crate) fn parse(input: &[u8], id_size: IdSize) -> nom::IResult<&[u8], PrimitiveArray> {
         // https://github.com/openjdk/jdk/blob/08822b4e0526fe001c39fe08e241b849eddf481d/src/hotspot/share/services/heapDumper.cpp#L279
         let (input, obj_id) = Id::parse(input, id_size)?;

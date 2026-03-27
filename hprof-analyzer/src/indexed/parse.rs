@@ -17,8 +17,8 @@ use crate::graph_builder::{
     extract_typed_references_named, types_only,
 };
 use crate::waste::{
-    extract_nth_field_of_type,
-    BoxedPrimitiveInfo, EmptyCollectionInfo,
+    extract_nth_field_of_type, hash_bytes,
+    BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo,
     OverAllocatedCollectionInfo, StringInstanceInfo, WasteRawData,
 };
 use crate::HeapSummary;
@@ -180,6 +180,9 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     let mut classloader_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     // Array element counts for waste analysis
     let mut array_element_counts: HashMap<u64, u32> = HashMap::new();
+
+    // Backing array info for string dedup waste analysis (byte[] and char[] content hashes)
+    let mut backing_arrays: HashMap<u64, BackingArrayInfo> = HashMap::new();
 
     // Counters
     let mut instance_count = 0u64;
@@ -527,6 +530,41 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                 let size = elem_count * elem_size;
                                 array_element_counts.insert(obj_id, elem_count);
 
+                                // Hash byte[] and char[] content for string dedup waste analysis
+                                if matches!(prim_type,
+                                    jvm_hprof::heap_dump::PrimitiveArrayType::Byte |
+                                    jvm_hprof::heap_dump::PrimitiveArrayType::Char
+                                ) {
+                                    let raw_data = array.contents();
+                                    if !raw_data.is_empty() {
+                                        let content_hash = hash_bytes(raw_data);
+                                        // Build a short preview (first 120 chars or equivalent)
+                                        let preview = match prim_type {
+                                            jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
+                                                // char[] is big-endian u16 pairs
+                                                let chars: Vec<char> = raw_data.chunks_exact(2)
+                                                    .take(120)
+                                                    .filter_map(|c| {
+                                                        let val = u16::from_be_bytes([c[0], c[1]]);
+                                                        char::from_u32(val as u32)
+                                                    })
+                                                    .collect();
+                                                chars.into_iter().collect::<String>()
+                                            }
+                                            _ => {
+                                                // byte[] — try UTF-8 decode
+                                                let len = raw_data.len().min(120);
+                                                String::from_utf8_lossy(&raw_data[..len]).to_string()
+                                            }
+                                        };
+                                        backing_arrays.insert(obj_id, BackingArrayInfo {
+                                            content_hash,
+                                            size,
+                                            preview,
+                                        });
+                                    }
+                                }
+
                                 let existing = node_store.index_of(obj_id);
                                 if let Some(idx) = existing {
                                     let node = node_store.get_by_index_mut(idx);
@@ -683,6 +721,8 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     // ========================================================================
 
     let mut waste_raw = WasteRawData::new();
+    // Merge backing array content hashes collected during PrimitiveArray parsing
+    waste_raw.backing_arrays = backing_arrays;
     // Collect waste data from deferred instances (in-memory, no file scan needed)
     {
         let string_class_id: Option<u64> = class_name_map

@@ -78,10 +78,18 @@ impl IndexedAnalysisState {
         // 1. Compute dominator tree
         let dominator = compute_dominators(&node_store, &edge_store, &gc_root_indices);
 
-        // For now, set reachable = total (same as parse.rs does initially).
-        // The dominator computation already handles unreachable nodes by
-        // attaching them to root.
-        summary.reachable_heap_size = summary.total_heap_size;
+        // Compute reachable heap size by subtracting unreachable node sizes
+        // (same logic as the legacy dominator.rs path).
+        let unreachable_size = dominator.unreachable_shallow_size;
+        if unreachable_size < summary.total_heap_size {
+            summary.reachable_heap_size = summary.total_heap_size - unreachable_size;
+        } else {
+            summary.reachable_heap_size = summary.total_heap_size;
+        }
+        log::info!("Heap sizes: total={:.2} MB, unreachable={:.2} MB, reachable={:.2} MB",
+            summary.total_heap_size as f64 / (1024.0 * 1024.0),
+            unreachable_size as f64 / (1024.0 * 1024.0),
+            summary.reachable_heap_size as f64 / (1024.0 * 1024.0));
 
         // 2. Build class histogram, collect leak candidates, and select top-50
         //    objects in a single pass over all nodes.

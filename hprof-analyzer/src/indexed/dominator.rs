@@ -15,6 +15,8 @@ pub struct DominatorResult {
     pub dominator_parent: Vec<u32>,
     /// Children in dominator tree per node index.
     pub dominator_children: Vec<Vec<u32>>,
+    /// Total shallow size of unreachable nodes (not reachable from any GC root).
+    pub unreachable_shallow_size: u64,
 }
 
 /// Computes the dominator tree and retained sizes for a heap graph.
@@ -40,6 +42,7 @@ pub fn compute_dominators(
             retained_sizes: Vec::new(),
             dominator_parent: Vec::new(),
             dominator_children: Vec::new(),
+            unreachable_shallow_size: 0,
         };
     }
 
@@ -94,10 +97,12 @@ pub fn compute_dominators(
             .collect();
         let dominator_parent = vec![u32::MAX; n];
         let dominator_children = vec![Vec::new(); n];
+        let unreachable_shallow_size: u64 = retained_sizes.iter().sum();
         return DominatorResult {
             retained_sizes,
             dominator_parent,
             dominator_children,
+            unreachable_shallow_size,
         };
     }
 
@@ -228,10 +233,12 @@ pub fn compute_dominators(
     // Actually, unreachable nodes' retained sizes are already accounted for since
     // they are dominator children of root and will be added to root's retained size.
     // But we need to add them to root's retained size.
+    let mut unreachable_shallow_size: u64 = 0;
     for i in 0..n {
         if dfnum[i] == u32::MAX && (i as u32) != root {
             let p = dominator_parent[i] as usize;
             retained_sizes[p] += retained_sizes[i];
+            unreachable_shallow_size += node_store.get_by_index(i as u32).shallow_size as u64;
         }
     }
 
@@ -239,6 +246,7 @@ pub fn compute_dominators(
         retained_sizes,
         dominator_parent,
         dominator_children,
+        unreachable_shallow_size,
     }
 }
 
