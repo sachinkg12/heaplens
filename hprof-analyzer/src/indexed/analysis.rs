@@ -388,23 +388,113 @@ impl HeapAnalysis for IndexedAnalysisState {
         None
     }
 
-    fn execute_query(&self, _query_str: &str) -> Result<QueryResult, HeapQlError> {
-        // TODO: Phase 4 — wire HeapQL to work with IndexedAnalysisState
-        Err(HeapQlError::Execution(
-            "HeapQL not yet supported on indexed backend".to_string(),
-        ))
+    fn execute_query(&self, query_str: &str) -> Result<QueryResult, HeapQlError> {
+        crate::heapql::HeapQlEngine::new(self).execute_query(query_str)
     }
 
     fn execute_query_paged(
         &self,
-        _query_str: &str,
-        _page: u64,
-        _page_size: u64,
+        query_str: &str,
+        page: u64,
+        page_size: u64,
     ) -> Result<QueryResult, HeapQlError> {
-        // TODO: Phase 4 — wire HeapQL to work with IndexedAnalysisState
-        Err(HeapQlError::Execution(
-            "HeapQL not yet supported on indexed backend".to_string(),
-        ))
+        crate::heapql::HeapQlEngine::new(self).execute_query_paged(query_str, page, page_size)
+    }
+
+    fn scan_instances_table(&self) -> Vec<Vec<serde_json::Value>> {
+        let mut rows = Vec::new();
+        for i in 0..self.node_store.len() {
+            let node = self.node_store.get_by_index(i as u32);
+            match node.node_type {
+                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+                _ => continue,
+            }
+            let retained = self.dominator.retained_sizes[i];
+            if retained == 0 { continue; }
+            let node_type_str = match node.node_type {
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                _ => unreachable!(),
+            };
+            rows.push(vec![
+                serde_json::json!(node.id),
+                serde_json::json!(node_type_str),
+                serde_json::json!(node.class_name.as_ref()),
+                serde_json::json!(node.shallow_size as u64),
+                serde_json::json!(retained),
+            ]);
+        }
+        rows
+    }
+
+    fn scan_dominator_children(&self, parent_id: Option<u64>) -> Result<Vec<Vec<serde_json::Value>>, HeapQlError> {
+        let parent_idx = match parent_id {
+            Some(id) => {
+                self.node_store.index_of(id)
+                    .ok_or_else(|| HeapQlError::Execution(format!("Object {} not found", id)))?
+            }
+            None => 0u32, // super root
+        };
+
+        let children = &self.dominator.dominator_children[parent_idx as usize];
+        let mut rows = Vec::new();
+        for &child_idx in children {
+            let node = self.node_store.get_by_index(child_idx);
+            if matches!(node.node_type, NodeType::Class) { continue; }
+            let retained = self.dominator.retained_sizes[child_idx as usize];
+            if retained == 0 { continue; }
+            let node_type_str = match node.node_type {
+                NodeType::SuperRoot => "SuperRoot",
+                NodeType::GcRoot => "Root",
+                NodeType::Class => "Class",
+                NodeType::Instance => "Instance",
+                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+            };
+            rows.push(vec![
+                serde_json::json!(node.id),
+                serde_json::json!(node_type_str),
+                serde_json::json!(node.class_name.as_ref()),
+                serde_json::json!(node.shallow_size as u64),
+                serde_json::json!(retained),
+            ]);
+        }
+        Ok(rows)
+    }
+
+    fn gc_root_path(&self, _object_id: u64, _max_depth: usize) -> Option<Vec<ObjectReport>> {
+        // The indexed backend does not yet store forward/reverse edges needed
+        // for BFS path finding. Return None for now.
+        None
+    }
+
+    fn get_referrers(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
+        // The indexed backend does not yet store reverse reference edges.
+        None
+    }
+
+    fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)> {
+        let node_idx = self.node_store.index_of(object_id)?;
+        let node = self.node_store.get_by_index(node_idx);
+        let retained = self.dominator.retained_sizes[node_idx as usize];
+        let node_type_str = match node.node_type {
+            NodeType::SuperRoot => "SuperRoot",
+            NodeType::GcRoot => "Root",
+            NodeType::Class => "Class",
+            NodeType::Instance => "Instance",
+            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+        };
+        let report = ObjectReport::new(
+            node.id,
+            node_type_str.to_string(),
+            node.class_name.to_string(),
+            node.shallow_size as u64,
+            retained,
+            NodeIndex::new(node_idx as usize),
+        );
+        let child_count = self.dominator.dominator_children[node_idx as usize].len();
+        // Referrer count not available in indexed backend yet
+        let ref_count = 0;
+        Some((report, child_count, ref_count))
     }
 }
 
@@ -565,12 +655,15 @@ mod tests {
     }
 
     #[test]
-    fn execute_query_returns_error() {
+    fn execute_query_works() {
         let pr = build_test_parse_result();
         let state = IndexedAnalysisState::from_parse_result(pr).unwrap();
 
         let result = state.execute_query("SELECT * FROM class_histogram");
-        assert!(result.is_err());
+        assert!(result.is_ok());
+        let qr = result.unwrap();
+        assert_eq!(qr.columns, vec!["class_name", "instance_count", "shallow_size", "retained_size"]);
+        assert!(!qr.rows.is_empty());
     }
 
     #[test]

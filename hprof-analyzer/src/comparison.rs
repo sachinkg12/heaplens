@@ -1,7 +1,8 @@
 //! Heap dump comparison: computes deltas between two analysis states.
 
 use std::collections::HashMap;
-use crate::{AnalysisState, ClassHistogramEntry, LeakSuspect};
+use crate::indexed::types::HeapAnalysis;
+use crate::{ClassHistogramEntry, LeakSuspect};
 
 /// Summary delta between two heap dumps.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -86,13 +87,13 @@ pub struct HeapComparisonResult {
 
 /// Compares two heap analysis states and returns a detailed delta.
 pub fn compare_heaps(
-    baseline: &AnalysisState,
-    current: &AnalysisState,
+    baseline: &dyn HeapAnalysis,
+    current: &dyn HeapAnalysis,
     baseline_path: &str,
     current_path: &str,
 ) -> HeapComparisonResult {
-    let bs = &baseline.summary;
-    let cs = &current.summary;
+    let bs = baseline.get_summary();
+    let cs = current.get_summary();
 
     // Summary delta
     let summary_delta = HeapSummaryDelta {
@@ -117,20 +118,20 @@ pub fn compare_heaps(
     };
 
     // Histogram delta
-    let baseline_hist: HashMap<&str, &ClassHistogramEntry> = baseline
-        .class_histogram
+    let baseline_histogram = baseline.get_class_histogram();
+    let current_histogram = current.get_class_histogram();
+    let baseline_hist: HashMap<&str, &ClassHistogramEntry> = baseline_histogram
         .iter()
         .map(|e| (e.class_name.as_str(), e))
         .collect();
-    let current_hist: HashMap<&str, &ClassHistogramEntry> = current
-        .class_histogram
+    let current_hist: HashMap<&str, &ClassHistogramEntry> = current_histogram
         .iter()
         .map(|e| (e.class_name.as_str(), e))
         .collect();
 
     let mut histogram_delta: Vec<ClassHistogramDelta> = Vec::new();
 
-    for ce in &current.class_histogram {
+    for ce in current_histogram {
         if let Some(be) = baseline_hist.get(ce.class_name.as_str()) {
             let inst_delta = ce.instance_count as i64 - be.instance_count as i64;
             let shallow_delta = ce.shallow_size as i64 - be.shallow_size as i64;
@@ -172,7 +173,7 @@ pub fn compare_heaps(
         }
     }
 
-    for be in &baseline.class_histogram {
+    for be in baseline_histogram {
         if !current_hist.contains_key(be.class_name.as_str()) {
             histogram_delta.push(ClassHistogramDelta {
                 class_name: be.class_name.clone(),
@@ -197,20 +198,20 @@ pub fn compare_heaps(
     });
 
     // Leak suspect changes
-    let baseline_suspects: HashMap<&str, &LeakSuspect> = baseline
-        .leak_suspects
+    let baseline_leak_suspects = baseline.get_leak_suspects();
+    let current_leak_suspects = current.get_leak_suspects();
+    let baseline_suspects: HashMap<&str, &LeakSuspect> = baseline_leak_suspects
         .iter()
         .map(|s| (s.class_name.as_str(), s))
         .collect();
-    let current_suspects: HashMap<&str, &LeakSuspect> = current
-        .leak_suspects
+    let current_suspects: HashMap<&str, &LeakSuspect> = current_leak_suspects
         .iter()
         .map(|s| (s.class_name.as_str(), s))
         .collect();
 
     let mut leak_suspect_changes: Vec<LeakSuspectChange> = Vec::new();
 
-    for cs_entry in &current.leak_suspects {
+    for cs_entry in current_leak_suspects {
         if let Some(bs_entry) = baseline_suspects.get(cs_entry.class_name.as_str()) {
             leak_suspect_changes.push(LeakSuspectChange {
                 class_name: cs_entry.class_name.clone(),
@@ -239,7 +240,7 @@ pub fn compare_heaps(
         }
     }
 
-    for bs_entry in &baseline.leak_suspects {
+    for bs_entry in baseline_leak_suspects {
         if !current_suspects.contains_key(bs_entry.class_name.as_str()) {
             leak_suspect_changes.push(LeakSuspectChange {
                 class_name: bs_entry.class_name.clone(),
@@ -256,8 +257,8 @@ pub fn compare_heaps(
     }
 
     // Waste delta
-    let bw = &baseline.waste_analysis;
-    let cw = &current.waste_analysis;
+    let bw = baseline.get_waste_analysis();
+    let cw = current.get_waste_analysis();
     let waste_delta = WasteDelta {
         baseline_total_wasted_bytes: bw.total_wasted_bytes,
         current_total_wasted_bytes: cw.total_wasted_bytes,

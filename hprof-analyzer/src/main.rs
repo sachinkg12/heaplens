@@ -1009,7 +1009,7 @@ fn handle_mcp_tool_call(
                 Ok(s) => s,
                 Err(e) => return mcp_text_result(&format!("Baseline file: {}", e), true),
             };
-            let result = compare_heaps(&baseline_state, &current_state, baseline_path, current_path);
+            let result = compare_heaps(&*baseline_state, &*current_state, baseline_path, current_path);
             mcp_text_result(&format_comparison_result(&result), false)
         }
         _ => {
@@ -1714,7 +1714,7 @@ async fn handle_compare_heaps_request(
     let baseline_state = get_analysis_state_for_path(analysis_states, baseline_path)
         .map_err(|e| anyhow::anyhow!(e))?;
 
-    let result = compare_heaps(&baseline_state, &current_state, baseline_path, current_path);
+    let result = compare_heaps(&*baseline_state, &*current_state, baseline_path, current_path);
 
     let response = serde_json::json!({
         "jsonrpc": "2.0",

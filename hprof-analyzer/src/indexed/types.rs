@@ -51,6 +51,27 @@ pub trait HeapAnalysis: Send + Sync {
         page: u64,
         page_size: u64,
     ) -> Result<QueryResult, HeapQlError>;
+
+    // ----- HeapQL table-scan methods -----
+
+    /// Scans the instances table, returning rows as JSON arrays.
+    /// Each row: [object_id, node_type, class_name, shallow_size, retained_size].
+    /// Filters out SuperRoot, Root, Class nodes and zero-retained objects.
+    fn scan_instances_table(&self) -> Vec<Vec<serde_json::Value>>;
+
+    /// Scans children of a node in the dominator tree.
+    /// If `parent_id` is `None`, starts from the super root.
+    /// Returns rows as JSON arrays: [object_id, node_type, class_name, shallow_size, retained_size].
+    fn scan_dominator_children(&self, parent_id: Option<u64>) -> Result<Vec<Vec<serde_json::Value>>, HeapQlError>;
+
+    /// Finds the shortest path from a GC root to the given object.
+    fn gc_root_path(&self, object_id: u64, max_depth: usize) -> Option<Vec<ObjectReport>>;
+
+    /// Returns objects that directly reference the given object.
+    fn get_referrers(&self, object_id: u64) -> Option<Vec<ObjectReport>>;
+
+    /// Returns detailed info about a single object: (report, child_count, referrer_count).
+    fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)>;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +112,7 @@ impl HeapAnalysis for crate::AnalysisState {
     }
 
     fn execute_query(&self, query_str: &str) -> Result<QueryResult, HeapQlError> {
-        self.execute_query(query_str)
+        crate::heapql::HeapQlEngine::new(self).execute_query(query_str)
     }
 
     fn execute_query_paged(
@@ -100,7 +121,93 @@ impl HeapAnalysis for crate::AnalysisState {
         page: u64,
         page_size: u64,
     ) -> Result<QueryResult, HeapQlError> {
-        self.execute_query_paged(query_str, page, page_size)
+        crate::heapql::HeapQlEngine::new(self).execute_query_paged(query_str, page, page_size)
+    }
+
+    fn scan_instances_table(&self) -> Vec<Vec<serde_json::Value>> {
+        let mut rows = Vec::new();
+        for (i, (obj_id, node_type, class_name)) in self.node_data_map.iter().enumerate() {
+            if *node_type == "SuperRoot" || *node_type == "Root" || *node_type == "Class" {
+                continue;
+            }
+            let retained = self.retained_sizes.get(i).copied().unwrap_or(0);
+            if retained == 0 { continue; }
+            let shallow = self.shallow_sizes.get(i).copied().unwrap_or(0);
+            rows.push(vec![
+                serde_json::json!(*obj_id),
+                serde_json::json!(*node_type),
+                serde_json::json!(class_name.as_ref()),
+                serde_json::json!(shallow),
+                serde_json::json!(retained),
+            ]);
+        }
+        rows
+    }
+
+    fn scan_dominator_children(&self, parent_id: Option<u64>) -> Result<Vec<Vec<serde_json::Value>>, HeapQlError> {
+        let parent_idx = match parent_id {
+            Some(id) => {
+                *self.id_to_node.get(&id)
+                    .ok_or_else(|| HeapQlError::Execution(format!("Object {} not found", id)))?
+            }
+            None => self.super_root,
+        };
+
+        let mut rows = Vec::new();
+        if let Some(children) = self.children_map.get(&parent_idx) {
+            for &child_idx in children {
+                let i = child_idx.index();
+                let (obj_id, node_type, class_name) = if i < self.node_data_map.len() {
+                    let (id, nt, ref cn) = self.node_data_map[i];
+                    (id, nt, cn.clone())
+                } else {
+                    continue;
+                };
+
+                if node_type == "Class" { continue; }
+                let retained = self.retained_sizes.get(i).copied().unwrap_or(0);
+                if retained == 0 { continue; }
+                let shallow = self.shallow_sizes.get(i).copied().unwrap_or(0);
+                rows.push(vec![
+                    serde_json::json!(obj_id),
+                    serde_json::json!(node_type),
+                    serde_json::json!(class_name.as_ref()),
+                    serde_json::json!(shallow),
+                    serde_json::json!(retained),
+                ]);
+            }
+        }
+        Ok(rows)
+    }
+
+    fn gc_root_path(&self, object_id: u64, max_depth: usize) -> Option<Vec<ObjectReport>> {
+        self.gc_root_path(object_id, max_depth)
+    }
+
+    fn get_referrers(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
+        self.get_referrers(object_id)
+    }
+
+    fn get_object_info(&self, object_id: u64) -> Option<(ObjectReport, usize, usize)> {
+        let node_idx = *self.id_to_node.get(&object_id)?;
+        let i = node_idx.index();
+        if i >= self.node_data_map.len() {
+            return None;
+        }
+        let (obj_id, node_type, ref class_name) = self.node_data_map[i];
+        let shallow = self.shallow_sizes.get(i).copied().unwrap_or(0);
+        let retained = self.retained_sizes.get(i).copied().unwrap_or(0);
+        let report = ObjectReport::new(
+            obj_id,
+            node_type.to_string(),
+            class_name.to_string(),
+            shallow,
+            retained,
+            node_idx,
+        );
+        let child_count = self.children_map.get(&node_idx).map(|c| c.len()).unwrap_or(0);
+        let ref_count = self.get_reverse_refs().get(&node_idx).map(|r| r.len()).unwrap_or(0);
+        Some((report, child_count, ref_count))
     }
 }
 

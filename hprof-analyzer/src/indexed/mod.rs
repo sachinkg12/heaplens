@@ -7,7 +7,7 @@
 //! For now it defines the `HeapAnalysis` trait that abstracts over backends,
 //! and provides the impl for the existing `AnalysisState`.
 
-mod types;
+pub mod types;
 pub mod string_table;
 pub mod class_index;
 pub mod node_store;
