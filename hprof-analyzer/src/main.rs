@@ -33,9 +33,13 @@ struct Cli {
     #[arg(long)]
     mcp: bool,
 
-    /// Use the indexed (MAT-style) analysis backend for faster parsing
-    #[arg(long)]
+    /// Use the indexed (MAT-style) analysis backend (default)
+    #[arg(long, default_value_t = true)]
     indexed: bool,
+
+    /// Use the legacy petgraph-based analysis backend
+    #[arg(long)]
+    legacy: bool,
 }
 
 /// JSON-RPC 2.0 Request structure.
@@ -1854,7 +1858,10 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    if cli.indexed {
+    if cli.legacy {
+        USE_INDEXED.store(false, Ordering::Relaxed);
+        log::info!("Using legacy petgraph-based analysis backend");
+    } else {
         USE_INDEXED.store(true, Ordering::Relaxed);
         log::info!("Using indexed (MAT-style) analysis backend");
     }
