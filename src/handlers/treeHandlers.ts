@@ -102,7 +102,7 @@ export const inspectObjectHandler: MessageHandler = {
             const fields = await ctx.client.sendRequest('inspect_object', {
                 path: ctx.hprofPath,
                 object_id: message.objectId
-            });
+            }, 120000); // 2 minute timeout for large dumps
             ctx.webviewPanel.webview.postMessage({
                 command: 'inspectObjectResponse',
                 objectId: message.objectId,
