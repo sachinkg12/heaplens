@@ -10,6 +10,7 @@ pub mod waste;
 pub mod comparison;
 pub(crate) mod graph_builder;
 pub mod dominator;
+pub mod indexed;
 
 /// Test helpers for building synthetic AnalysisState instances.
 /// Available for both unit tests and integration tests.
