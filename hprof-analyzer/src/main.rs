@@ -208,8 +208,8 @@ fn run_phase2_background(
     cancel_token: &Arc<AtomicBool>,
     phase1_timing: TimingBreakdown,
 ) {
-    // Retrieve the mmap and deferred data from the stored state
-    let (mmap, deferred_data) = {
+    // Retrieve deferred data from the stored state (no mmap needed for Phase 2)
+    let deferred_data = {
         let states = match analysis_states.read() {
             Ok(s) => s,
             Err(e) => {
@@ -221,13 +221,6 @@ fn run_phase2_background(
             Some(s) => s,
             None => {
                 eprintln!("[Phase2] No file state found for {:?}", path);
-                return;
-            }
-        };
-        let mmap = match &file_state.mmap {
-            Some(m) => m.clone(),
-            None => {
-                eprintln!("[Phase2] No mmap found for {:?}", path);
                 return;
             }
         };
@@ -246,7 +239,7 @@ fn run_phase2_background(
                 return;
             }
         };
-        (mmap, (deferred, phase1))
+        (deferred, phase1)
     };
 
     if cancel_token.load(Ordering::Relaxed) {
@@ -268,8 +261,8 @@ fn run_phase2_background(
 
     let (deferred, phase1) = deferred_data;
 
-    // Run Phase 2 parsing
-    let phase2 = match hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred, &mmap[..]) {
+    // Run Phase 2 parsing (no file rescan needed — all data collected in Phase 1)
+    let phase2 = match hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("[Phase2] Edge extraction failed: {}", e);

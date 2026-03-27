@@ -17,8 +17,8 @@ use crate::graph_builder::{
     extract_typed_references_named, types_only,
 };
 use crate::waste::{
-    hash_bytes, extract_nth_field_of_type,
-    BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo,
+    extract_nth_field_of_type,
+    BoxedPrimitiveInfo, EmptyCollectionInfo,
     OverAllocatedCollectionInfo, StringInstanceInfo, WasteRawData,
 };
 use crate::HeapSummary;
@@ -36,6 +36,26 @@ pub struct DeferredInstance {
     pub class_obj_id: u64,
     /// Raw field bytes (copied from the HPROF data).
     pub field_bytes: Vec<u8>,
+}
+
+/// Cached object array element references for deferred edge extraction.
+pub struct DeferredObjectArray {
+    /// Index of the array node in the NodeStore.
+    pub node_idx: u32,
+    /// Non-zero HPROF IDs of referenced objects.
+    pub element_refs: Vec<u64>,
+}
+
+/// Cached class structural edges for deferred edge extraction.
+pub struct DeferredClassEdge {
+    /// Index of the class node in the NodeStore.
+    pub class_node_idx: u32,
+    /// Super class object ID (None if java.lang.Object or 0).
+    pub super_class_id: Option<u64>,
+    /// Classloader object ID (None if bootstrap/0).
+    pub classloader_id: Option<u64>,
+    /// Static field references: (ref_id,) for ObjectId-type statics with non-zero values.
+    pub static_field_refs: Vec<u64>,
 }
 
 /// The result of parsing an HPROF file with the indexed backend.
@@ -67,6 +87,8 @@ pub struct Phase1Result {
 /// Data deferred from Phase 1 that Phase 2 needs for edge extraction.
 pub struct DeferredEdgeData {
     pub deferred_instances: Vec<DeferredInstance>,
+    pub deferred_arrays: Vec<DeferredObjectArray>,
+    pub deferred_class_edges: Vec<DeferredClassEdge>,
     pub class_name_map: HashMap<u64, Arc<str>>,
     pub class_instance_sizes: HashMap<u64, u32>,
     pub id_size: jvm_hprof::IdSize,
@@ -74,10 +96,13 @@ pub struct DeferredEdgeData {
     pub classloader_ids: std::collections::HashSet<u64>,
 }
 
-/// Result of Phase 2 parsing (edges + CSR, ~38s on 14 GB dumps).
+/// Result of Phase 2 parsing (edges + CSR).
+///
+/// No longer requires a file rescan — all data is collected during Phase 1.
 pub struct Phase2Result {
     pub edge_store: EdgeStore,
-    /// Updated waste data with backing array info from Phase 2 file scan.
+    /// Waste data (backing array content hashing is unavailable without file rescan;
+    /// string instance counts, empty collections, and boxed primitives are still present).
     pub waste_raw: WasteRawData,
 }
 
@@ -102,7 +127,7 @@ fn add_gc_root(
 /// internally and returns a complete `ParseResult`.
 pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
     let (phase1, deferred) = parse_indexed_phase1(data)?;
-    let phase2 = parse_indexed_phase2(&phase1, deferred, data)?;
+    let phase2 = parse_indexed_phase2(&phase1, deferred)?;
 
     Ok(ParseResult {
         node_store: phase1.node_store,
@@ -141,6 +166,8 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     let mut node_store = NodeStore::with_capacity(estimated_nodes);
     let mut gc_root_ids: Vec<u64> = Vec::new();
     let mut deferred_instances: Vec<DeferredInstance> = Vec::with_capacity(estimated_nodes);
+    let mut deferred_arrays: Vec<DeferredObjectArray> = Vec::new();
+    let mut deferred_class_edges: Vec<DeferredClassEdge> = Vec::new();
     let mut heap_types: Vec<String> = Vec::new();
 
     // Class name map: class_obj_id -> human-readable name
@@ -266,8 +293,13 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                     class_count += 1;
                                 }
 
-                                // Static field edges (need string table, so extract now)
-                                if let Some(_class_idx) = node_store.index_of(obj_id) {
+                                // Collect class structural edges for Phase 2
+                                // (target nodes may not exist yet during Phase 1)
+                                if let Some(class_idx) = node_store.index_of(obj_id) {
+                                    let super_class_id = class.super_class_obj_id().map(|id| id.id()).filter(|&id| id != 0);
+                                    let classloader_id = class.class_loader_obj_id().map(|id| id.id()).filter(|&id| id != 0);
+
+                                    let mut static_field_refs = Vec::new();
                                     for sf_result in class.static_fields() {
                                         if let Ok(sf) = sf_result {
                                             if matches!(
@@ -280,23 +312,20 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                                 {
                                                     let ref_id_val = ref_id.id();
                                                     if ref_id_val != 0 {
-                                                        // We may not have the target node yet;
-                                                        // edges to unknown targets will be
-                                                        // filtered during build.
-                                                        // Store as deferred static edge.
-                                                        // For now, add directly — CSR dedup
-                                                        // handles duplicates.
-                                                        // Target node may not exist yet;
-                                                        // we'll filter in post-processing.
+                                                        static_field_refs.push(ref_id_val);
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                }
 
-                                // Superclass + classloader edges are also deferred
-                                // to after all nodes are created.
+                                    deferred_class_edges.push(DeferredClassEdge {
+                                        class_node_idx: class_idx,
+                                        super_class_id,
+                                        classloader_id,
+                                        static_field_refs,
+                                    });
+                                }
                             }
 
                             // ---- GC Roots ----
@@ -428,7 +457,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                 array_element_counts.insert(obj_id, element_count);
 
                                 let existing = node_store.index_of(obj_id);
-                                let _node_idx = if let Some(idx) = existing {
+                                let node_idx = if let Some(idx) = existing {
                                     let node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::ObjectArray;
@@ -451,9 +480,13 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                     idx
                                 };
 
-                                // Object array element edges are extracted in Phase 2
-                                // (requires a second file scan since target nodes may
-                                // not exist yet during Phase 1).
+                                // Store element refs for deferred edge extraction in Phase 2
+                                if !element_refs.is_empty() {
+                                    deferred_arrays.push(DeferredObjectArray {
+                                        node_idx,
+                                        element_refs,
+                                    });
+                                }
                             }
 
                             // ---- Primitive Array ----
@@ -798,6 +831,8 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
 
     let deferred = DeferredEdgeData {
         deferred_instances,
+        deferred_arrays,
+        deferred_class_edges,
         class_name_map,
         class_instance_sizes,
         id_size,
@@ -818,29 +853,28 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     Ok((phase1, deferred))
 }
 
-/// Phase 2: Extract edges from deferred instances and re-scan file for
-/// object array edges, class edges, and primitive array waste data.
+/// Phase 2: Extract edges from deferred data collected during Phase 1.
 ///
-/// Takes ~38s on a 14 GB dump. Requires the original memory-mapped data.
+/// No longer requires a file rescan. All object array element references,
+/// class structural edges, and instance field edges are resolved from
+/// in-memory deferred data.
+///
+/// Backing array content hashing (for string dedup waste detection) is
+/// unavailable without the file rescan. String instance counts, empty
+/// collections, and boxed primitives are still reported from Phase 1 data.
 pub fn parse_indexed_phase2(
     phase1: &Phase1Result,
     deferred: DeferredEdgeData,
-    data: &[u8],
 ) -> Result<Phase2Result> {
-    let hprof = parse_hprof(data)
-        .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
-
     let node_store = &phase1.node_store;
     let class_index = &phase1.class_index;
     let id_size = deferred.id_size;
-    let class_name_map = &deferred.class_name_map;
-    let class_instance_sizes = &deferred.class_instance_sizes;
 
     let estimated_nodes = node_store.len();
     let mut edge_builder = EdgeBuilder::with_capacity(estimated_nodes * 2);
 
-    // Start with Phase 1's waste data and add backing arrays from the file scan
-    let mut waste_data = phase1.waste_raw.clone();
+    // Carry forward Phase 1's waste data (no backing array content available)
+    let waste_data = phase1.waste_raw.clone();
 
     // SuperRoot -> GC root edges
     for &gc_id in &phase1.gc_root_ids {
@@ -884,174 +918,38 @@ pub fn parse_indexed_phase2(
     }
 
     // ========================================================================
-    // Pass 2b: Re-scan heap for object array edges, class edges, and
-    //          primitive array waste data (backing arrays for string dedup).
-    //          This requires the file data but is the same single scan.
+    // Object array element edges (from deferred data, no file rescan needed)
     // ========================================================================
 
-    for record_result in hprof.records_iter() {
-        let record = record_result
-            .map_err(|e| anyhow::anyhow!("Failed to parse record (pass 2): {:?}", e))?;
+    for da in &deferred.deferred_arrays {
+        for &ref_id in &da.element_refs {
+            if let Some(ref_idx) = node_store.index_of(ref_id) {
+                edge_builder.add_edge(da.node_idx, ref_idx, label::ARRAY_ELEMENT);
+            }
+        }
+    }
 
-        if record.tag() == RecordTag::HeapDump || record.tag() == RecordTag::HeapDumpSegment {
-            if let Some(hd_result) = record.as_heap_dump_segment() {
-                let heap_dump = hd_result
-                    .map_err(|e| anyhow::anyhow!("Failed to parse HeapDumpSegment: {:?}", e))?;
+    // ========================================================================
+    // Class structural edges (from deferred data, no file rescan needed)
+    // ========================================================================
 
-                for sub_result in heap_dump.sub_records() {
-                    let sub = sub_result
-                        .map_err(|e| anyhow::anyhow!("Failed to parse sub-record: {:?}", e))?;
-
-                    match sub {
-                        jvm_hprof::heap_dump::SubRecord::ObjectArray(array) => {
-                            let array_id = array.obj_id().id();
-                            if let Some(array_idx) = node_store.index_of(array_id) {
-                                for el_result in array.elements(id_size) {
-                                    if let Ok(Some(el_id)) = el_result {
-                                        let ref_id = el_id.id();
-                                        if let Some(ref_idx) = node_store.index_of(ref_id) {
-                                            edge_builder.add_edge(
-                                                array_idx,
-                                                ref_idx,
-                                                label::ARRAY_ELEMENT,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        jvm_hprof::heap_dump::SubRecord::Class(class) => {
-                            let class_id = class.obj_id().id();
-                            if let Some(class_idx) = node_store.index_of(class_id) {
-                                // Superclass edge
-                                if let Some(super_class_id) = class.super_class_obj_id() {
-                                    if let Some(super_idx) =
-                                        node_store.index_of(super_class_id.id())
-                                    {
-                                        edge_builder.add_edge(
-                                            class_idx,
-                                            super_idx,
-                                            label::SUPER_CLASS,
-                                        );
-                                    }
-                                }
-                                // Classloader edge
-                                if let Some(cl_id) = class.class_loader_obj_id() {
-                                    if let Some(cl_idx) = node_store.index_of(cl_id.id()) {
-                                        edge_builder.add_edge(
-                                            class_idx,
-                                            cl_idx,
-                                            label::CLASS_LOADER,
-                                        );
-                                    }
-                                }
-                                // Static field edges
-                                for sf_result in class.static_fields() {
-                                    if let Ok(sf) = sf_result {
-                                        if matches!(
-                                            sf.field_type(),
-                                            jvm_hprof::heap_dump::FieldType::ObjectId
-                                        ) {
-                                            if let jvm_hprof::heap_dump::FieldValue::ObjectId(
-                                                Some(ref_id),
-                                            ) = sf.value()
-                                            {
-                                                let ref_id_val = ref_id.id();
-                                                if ref_id_val != 0 {
-                                                    if let Some(ref_idx) =
-                                                        node_store.index_of(ref_id_val)
-                                                    {
-                                                        edge_builder.add_edge(
-                                                            class_idx,
-                                                            ref_idx,
-                                                            label::CLASS_STATIC,
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Backing arrays for string dedup waste
-                        jvm_hprof::heap_dump::SubRecord::PrimitiveArray(array) => {
-                            let arr_id = array.obj_id().id();
-                            let prim_type = array.primitive_type();
-                            match prim_type {
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Byte => {
-                                    if let Some(iter) = array.bytes() {
-                                        let bytes: Vec<u8> =
-                                            iter.filter_map(|r| r.ok()).map(|b| b as u8).collect();
-                                        let arr_size = bytes.len() as u32;
-                                        let content_hash = hash_bytes(&bytes);
-                                        let preview = if bytes.len() <= 10240 {
-                                            let s = String::from_utf8_lossy(&bytes);
-                                            let mut p =
-                                                s.chars().take(120).collect::<String>();
-                                            if s.chars().count() > 120 {
-                                                p.push_str("...");
-                                            }
-                                            p
-                                        } else {
-                                            String::new()
-                                        };
-                                        waste_data.backing_arrays.insert(
-                                            arr_id,
-                                            BackingArrayInfo {
-                                                content_hash,
-                                                size: arr_size,
-                                                preview,
-                                            },
-                                        );
-                                    }
-                                }
-                                jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
-                                    if let Some(iter) = array.chars() {
-                                        let chars: Vec<u16> =
-                                            iter.filter_map(|r| r.ok()).collect();
-                                        let arr_size = (chars.len() * 2) as u32;
-                                        let raw_bytes: Vec<u8> = chars
-                                            .iter()
-                                            .flat_map(|c| c.to_be_bytes())
-                                            .collect();
-                                        let content_hash = hash_bytes(&raw_bytes);
-                                        let preview = if chars.len() <= 5120 {
-                                            let s: String = chars
-                                                .iter()
-                                                .map(|&c| {
-                                                    std::char::from_u32(c as u32)
-                                                        .unwrap_or('\u{FFFD}')
-                                                })
-                                                .collect();
-                                            let mut p =
-                                                s.chars().take(120).collect::<String>();
-                                            if s.chars().count() > 120 {
-                                                p.push_str("...");
-                                            }
-                                            p
-                                        } else {
-                                            String::new()
-                                        };
-                                        waste_data.backing_arrays.insert(
-                                            arr_id,
-                                            BackingArrayInfo {
-                                                content_hash,
-                                                size: arr_size,
-                                                preview,
-                                            },
-                                        );
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        _ => {}
-                    }
-                }
+    for dce in &deferred.deferred_class_edges {
+        // Superclass edge
+        if let Some(super_id) = dce.super_class_id {
+            if let Some(super_idx) = node_store.index_of(super_id) {
+                edge_builder.add_edge(dce.class_node_idx, super_idx, label::SUPER_CLASS);
+            }
+        }
+        // Classloader edge
+        if let Some(cl_id) = dce.classloader_id {
+            if let Some(cl_idx) = node_store.index_of(cl_id) {
+                edge_builder.add_edge(dce.class_node_idx, cl_idx, label::CLASS_LOADER);
+            }
+        }
+        // Static field edges
+        for &ref_id in &dce.static_field_refs {
+            if let Some(ref_idx) = node_store.index_of(ref_id) {
+                edge_builder.add_edge(dce.class_node_idx, ref_idx, label::CLASS_STATIC);
             }
         }
     }
