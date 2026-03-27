@@ -13,5 +13,9 @@ pub mod class_index;
 pub mod node_store;
 pub mod edge_store;
 pub mod parse;
+pub mod dominator;
+pub mod waste;
+pub mod analysis;
 
 pub use types::HeapAnalysis;
+pub use analysis::IndexedAnalysisState;
