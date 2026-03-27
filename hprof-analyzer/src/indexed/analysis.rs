@@ -313,68 +313,9 @@ impl HeapAnalysis for IndexedAnalysisState {
         })
     }
 
-    fn get_top_layers(&self, max_depth: usize, max_nodes: usize) -> Vec<ObjectReport> {
-        let mut result = Vec::new();
-        let mut visited = std::collections::HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
-
-        // Start from super-root (index 0)
-        queue.push_back((0u32, 0usize));
-        visited.insert(0u32);
-
-        while let Some((node_idx, depth)) = queue.pop_front() {
-            if depth >= max_depth || result.len() >= max_nodes {
-                break;
-            }
-
-            let node = self.node_store.get_by_index(node_idx);
-            let retained = self.dominator.retained_sizes[node_idx as usize];
-
-            let node_type_str = match node.node_type {
-                NodeType::SuperRoot => "SuperRoot",
-                NodeType::GcRoot => "Root",
-                NodeType::Class => "Class",
-                NodeType::Instance => "Instance",
-                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
-            };
-
-            // Filter out Class nodes and zero-retained nodes (except SuperRoot)
-            if matches!(node.node_type, NodeType::Class)
-                || (retained == 0 && !matches!(node.node_type, NodeType::SuperRoot))
-            {
-                // Still explore children
-                if depth + 1 < max_depth {
-                    for &child in &self.dominator.dominator_children[node_idx as usize] {
-                        if !visited.contains(&child) && result.len() < max_nodes {
-                            visited.insert(child);
-                            queue.push_back((child, depth + 1));
-                        }
-                    }
-                }
-                continue;
-            }
-
-            result.push(ObjectReport::new(
-                node.id,
-                node_type_str.to_string(),
-                node.class_name.to_string(),
-                node.shallow_size as u64,
-                retained,
-                NodeIndex::new(node_idx as usize),
-            ));
-
-            if depth + 1 < max_depth {
-                for &child in &self.dominator.dominator_children[node_idx as usize] {
-                    if !visited.contains(&child) && result.len() < max_nodes {
-                        visited.insert(child);
-                        queue.push_back((child, depth + 1));
-                    }
-                }
-            }
-        }
-
-        result.sort();
-        result
+    fn get_top_layers(&self, _max_depth: usize, max_nodes: usize) -> Vec<ObjectReport> {
+        // Return top objects by retained size (pre-computed during construction)
+        self.top_objects.iter().take(max_nodes).cloned().collect()
     }
 
     fn inspect_object(&self, _hprof_path: &Path, _object_id: u64) -> Option<Vec<FieldInfo>> {
