@@ -591,10 +591,24 @@ impl Parser {
             };
             self.expect(&Token::RParen)?;
             let display = format!("{}({})", func, col_name);
+            // Optional column alias: COUNT(*) AS instance_count
+            let display = if matches!(self.peek(), Token::As) {
+                self.advance();
+                self.parse_column_name()?
+            } else {
+                display
+            };
             Ok((display, SelectColumn::Aggregate(func, col_name)))
         } else {
             let name = self.parse_column_name()?;
-            Ok((name.clone(), SelectColumn::Named(name)))
+            // Optional column alias: class_name AS cn
+            let display = if matches!(self.peek(), Token::As) {
+                self.advance();
+                self.parse_column_name()?
+            } else {
+                name.clone()
+            };
+            Ok((display, SelectColumn::Named(name)))
         }
     }
 
@@ -1241,9 +1255,14 @@ impl<'a> HeapQlEngine<'a> {
             return Err(HeapQlError::Parse("GROUP BY requires at least one aggregate function in SELECT".into()));
         }
 
-        // For non-aggregate queries, validate columns as before
+        // For non-aggregate queries, validate actual column names (not aliases)
         if !has_aggregates {
-            let _selected = validate_columns(&stmt.columns, &stmt.table)?;
+            let real_col_names: Vec<String> = stmt.select_columns.iter().map(|sc| match sc {
+                SelectColumn::Named(n) => n.clone(),
+                SelectColumn::Star => "*".to_string(),
+                SelectColumn::Aggregate(func, col) => format!("{}({})", func, col),
+            }).collect();
+            let _selected = validate_columns(&real_col_names, &stmt.table)?;
         }
 
         let has_order = stmt.order_by.is_some();
@@ -1370,15 +1389,8 @@ impl<'a> HeapQlEngine<'a> {
                     groups.entry(key).or_default().push(row.clone());
                 }
 
-                // Build result columns and rows
-                let mut agg_columns: Vec<String> = Vec::new();
-                for sc in &stmt.select_columns {
-                    match sc {
-                        SelectColumn::Named(n) => agg_columns.push(n.clone()),
-                        SelectColumn::Aggregate(func, col) => agg_columns.push(format!("{}({})", func, col)),
-                        SelectColumn::Star => agg_columns.push("*".into()),
-                    }
-                }
+                // Build result columns using display names (which include AS aliases)
+                let agg_columns: Vec<String> = stmt.columns.clone();
 
                 let mut agg_rows: Vec<Row> = Vec::new();
                 for key in &group_order {
@@ -1427,13 +1439,11 @@ impl<'a> HeapQlEngine<'a> {
                 });
             } else {
                 // No GROUP BY — single-row aggregate result
-                let mut agg_columns: Vec<String> = Vec::new();
+                let agg_columns: Vec<String> = stmt.columns.clone();
                 let mut agg_row: Vec<serde_json::Value> = Vec::new();
                 for sc in &stmt.select_columns {
                     match sc {
                         SelectColumn::Aggregate(func, col) => {
-                            let col_name = format!("{}({})", func, col);
-                            agg_columns.push(col_name);
                             agg_row.push(compute_aggregate(func, col, &rows, &all_columns));
                         }
                         _ => {
@@ -1456,7 +1466,23 @@ impl<'a> HeapQlEngine<'a> {
 
         // ORDER BY
         if let Some(ref ob) = stmt.order_by {
+            // Resolve ORDER BY column: try real column name first, then check if it's an alias
             let col_idx = all_columns.iter().position(|c| c == &ob.column)
+                .or_else(|| {
+                    // Check if ob.column is an alias, resolve to real column name
+                    stmt.columns.iter().zip(stmt.select_columns.iter()).find_map(|(display, sc)| {
+                        if display == &ob.column {
+                            let real = match sc {
+                                SelectColumn::Named(n) => n.clone(),
+                                SelectColumn::Aggregate(func, col) => format!("{}({})", func, col),
+                                SelectColumn::Star => "*".to_string(),
+                            };
+                            all_columns.iter().position(|c| c == &real)
+                        } else {
+                            None
+                        }
+                    })
+                })
                 .ok_or_else(|| HeapQlError::UnknownColumn(ob.column.clone(), stmt.table.to_string()))?;
             rows.sort_by(|a, b| {
                 let cmp = compare_json_values(&a[col_idx], &b[col_idx]);
@@ -1473,10 +1499,17 @@ impl<'a> HeapQlEngine<'a> {
         let (result_columns, result_rows) = if stmt.columns.len() == 1 && stmt.columns[0] == "*" {
             (all_columns, rows)
         } else {
-            let indices: Vec<usize> = stmt.columns.iter()
+            // Use real column names (from SelectColumn) for index lookup
+            let real_names: Vec<String> = stmt.select_columns.iter().map(|sc| match sc {
+                SelectColumn::Named(n) => n.clone(),
+                SelectColumn::Star => "*".to_string(),
+                SelectColumn::Aggregate(func, col) => format!("{}({})", func, col),
+            }).collect();
+            let indices: Vec<usize> = real_names.iter()
                 .filter_map(|c| all_columns.iter().position(|ac| ac == c))
                 .collect();
-            let proj_cols: Vec<String> = indices.iter().map(|&i| all_columns[i].clone()).collect();
+            // Use display names (which include AS aliases) for result columns
+            let proj_cols: Vec<String> = stmt.columns.clone();
             let proj_rows: Vec<Row> = rows.into_iter()
                 .map(|row| indices.iter().map(|&i| row[i].clone()).collect())
                 .collect();
@@ -2198,6 +2231,29 @@ mod tests {
             "SELECT node_type, SUM(retained_size) FROM instances GROUP BY node_type"
         ).unwrap();
         assert!(result.rows.len() >= 2);
+    }
+
+    #[test]
+    fn test_column_alias_with_order_by() {
+        let state = build_test_state();
+        let result = state.execute_query(
+            "SELECT node_type, COUNT(*) AS instance_count, SUM(retained_size) AS total_retained FROM instances GROUP BY node_type ORDER BY total_retained DESC"
+        ).unwrap();
+        assert_eq!(result.columns, vec!["node_type", "instance_count", "total_retained"]);
+        assert!(result.rows.len() >= 2);
+        // Verify descending order by the aliased column
+        let first: u64 = result.rows[0][2].as_u64().unwrap();
+        let second: u64 = result.rows[1][2].as_u64().unwrap();
+        assert!(first >= second);
+    }
+
+    #[test]
+    fn test_column_alias_named() {
+        let state = build_test_state();
+        let result = state.execute_query(
+            "SELECT class_name AS cn FROM instances LIMIT 1"
+        ).unwrap();
+        assert_eq!(result.columns, vec!["cn"]);
     }
 
     #[test]
