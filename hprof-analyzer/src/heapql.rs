@@ -455,13 +455,22 @@ impl Parser {
     }
 
     fn parse(&mut self) -> Result<Statement, HeapQlError> {
-        match self.peek() {
+        let stmt = match self.peek() {
             Token::Colon => self.parse_special(),
             Token::Select => self.parse_select(),
             other => Err(HeapQlError::Parse(format!(
                 "Expected SELECT or ':' command, got {:?}", other
             ))),
+        }?;
+
+        // Error on unconsumed tokens at the top level
+        if !matches!(self.peek(), Token::Eof) {
+            return Err(HeapQlError::Parse(format!(
+                "Unexpected token after query: {:?}", self.peek()
+            )));
         }
+
+        Ok(stmt)
     }
 
     fn parse_special(&mut self) -> Result<Statement, HeapQlError> {
@@ -666,6 +675,12 @@ impl Parser {
                 self.advance();
                 self.expect(&Token::Join)?;
                 JoinKind::Left
+            }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("RIGHT") || s.eq_ignore_ascii_case("FULL") || s.eq_ignore_ascii_case("CROSS") => {
+                let kw = s.to_uppercase();
+                return Err(HeapQlError::Parse(format!(
+                    "{} JOIN is not supported. Use INNER JOIN or LEFT JOIN.", kw
+                )));
             }
             _ => return Ok(None),
         };

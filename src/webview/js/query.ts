@@ -608,6 +608,11 @@ export function getQueryJs(): string {
 
         // ---- Self-register ----
         onMessage('queryResult', function(msg) {
+            // Update input box if the query came from elsewhere (e.g. Chat tab)
+            if (msg.query && _queryInput.value.trim() !== msg.query.trim()) {
+                _queryInput.value = msg.query;
+                syncHighlight();
+            }
             renderQueryResult(msg.result, msg.query);
         });
 
