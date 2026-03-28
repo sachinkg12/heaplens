@@ -452,6 +452,7 @@ export function getStyles(): string {
             font-size: 11px;
         }
         .chat-query-result th {
+            position: static;
             text-align: left;
             padding: 4px 8px;
             border-bottom: 1px solid var(--vscode-panel-border);
