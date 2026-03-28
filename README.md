@@ -18,7 +18,7 @@ HeapLens brings Java and Android heap dump analysis into VS Code. Open any `.hpr
 
 HeapLens includes a built-in AI assistant that explains heap analysis findings in plain English and suggests code-level fixes. Ask questions like *"Why is my app using 2 GB of memory?"* or *"What's causing this OutOfMemoryError?"* and get actionable answers powered by your choice of 10 LLM providers including local models via Ollama.
 
-Built on a native Rust engine using zero-copy mmap parsing, HeapLens handles production-sized heap dumps with ease. A 1 GB heap dump parses in approximately 60 seconds on an M1 Mac. HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, and export results, all without leaving your editor.
+Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 2 GB heap dump analyzes in about 1 second; a 14 GB dump completes in under 11 seconds on an M1 Mac. HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
 
 ---
 
@@ -64,11 +64,21 @@ SELECT * FROM instances
 WHERE class_name = 'java.util.HashMap' AND retained_size > 1MB
 ORDER BY retained_size DESC
 
--- Top 10 classes by total retained size
-SELECT class_name, COUNT(*), SUM(retained_size)
-FROM instances
+-- Top 10 classes by total retained size (with column aliases)
+SELECT class_name, COUNT(*) AS instance_count, SUM(retained_size) AS total_retained
+FROM class_histogram
 GROUP BY class_name
-ORDER BY SUM(retained_size) DESC LIMIT 10
+ORDER BY total_retained DESC LIMIT 10
+
+-- JOIN instances with class histogram
+SELECT * FROM instances i
+JOIN class_histogram c ON class_name = class_name
+WHERE i.retained_size > 1MB LIMIT 10
+
+-- Subquery: objects larger than average
+SELECT * FROM instances
+WHERE retained_size > (SELECT AVG(retained_size) FROM instances)
+ORDER BY retained_size DESC LIMIT 10
 
 -- GC root path for a specific object
 :path 123456789
@@ -77,9 +87,11 @@ ORDER BY SUM(retained_size) DESC LIMIT 10
 :refs 123456789
 ```
 
-**Tables:** `instances`, `class_histogram`, `dominator_tree`, `leak_suspects`
-**Aggregates:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
-**Size literals:** `1KB`, `5MB`, `1GB`
+- **Tables:** `instances`, `class_histogram`, `dominator_tree`, `leak_suspects`
+- **JOINs:** `INNER JOIN`, `LEFT JOIN` with table aliases
+- **Aggregates:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `AS` aliases
+- **Subqueries:** `WHERE col IN (SELECT ...)`, `WHERE col > (SELECT AVG(...) FROM ...)`
+- **Size literals:** `1KB`, `5MB`, `1GB`
 
 ![HeapQL Query](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/query.png)
 
@@ -126,8 +138,10 @@ Finds memory waste patterns automatically:
 
 ### Snapshot Comparison & Timeline
 
-- **Compare** two heap dumps: summary delta, class-level growth/shrinkage with change badges, leak suspect changes (new/resolved/persisted), waste delta, and a D3.js bar chart of top changes. **Copy Report** copies a full markdown diff report to clipboard; **Export CSV** saves all class changes to a file.
-- **Timeline** multiple snapshots: track heap growth trends over time with interactive charts
+- **Compare** two heap dumps: summary delta, class-level growth/shrinkage with change badges, leak suspect changes (new/resolved/persisted), waste delta, and a D3.js bar chart of top changes.
+- **Copy Report** copies a full markdown diff report to clipboard.
+- **Export CSV** saves all class changes to a file.
+- **Timeline** multiple snapshots: track heap growth trends over time with interactive charts.
 
 ![Compare](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/compare.png)
 
@@ -190,7 +204,7 @@ VS Code Extension (TypeScript)
                  HeapQL query engine, waste analysis)
 ```
 
-- **Rust engine** — zero-copy mmap parsing, petgraph-based dominator tree, O(n) retained size computation
+- **Rust engine** — two-phase architecture with zero-copy mmap parsing, CSR edge storage, Lengauer-Tarjan dominator tree, and rayon-parallelized edge extraction
 - **TypeScript extension** — VS Code custom editor, webview UI, LLM integration
 - **MCP server** — `hprof-server --mcp` for use with Claude Desktop, Cline, and other AI clients
 
@@ -228,13 +242,13 @@ VS Code Extension (TypeScript)
 
 ## Performance
 
-HeapLens uses a native Rust binary for parsing and analysis. Typical performance on Apple M1:
+HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing and analysis. Benchmarks on Apple M1 (median of 5 runs):
 
-| Heap Size | Parse + Analyze | Memory Usage |
-|-----------|----------------|--------------|
-| 50 MB | ~2 seconds | ~200 MB |
-| 250 MB | ~15 seconds | ~1 GB |
-| 1 GB | ~60 seconds | ~4 GB |
+| Heap Size | Analyze Time | Throughput |
+|-----------|-------------|------------|
+| 1.5 GB | ~0.9 s | 1,687 MB/s |
+| 2 GB | ~1.2 s | 1,645 MB/s |
+| 14 GB | ~10.5 s | 1,365 MB/s |
 
 ---
 
