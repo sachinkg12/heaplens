@@ -24,7 +24,7 @@ The library (`lib.rs`) and the server (`main.rs`) are cleanly separated. The lib
 | Crate | Version | Purpose |
 |-------|---------|---------|
 | `jvm-hprof` | 0.1 | HPROF binary format parser with zero-copy access |
-| `petgraph` | 0.6 | Graph data structure and Lengauer-Tarjan dominator algorithm |
+| `petgraph` | 0.6 | Graph data structure (legacy path); Lengauer-Tarjan dominator algorithm |
 | `memmap2` | 0.9 | Memory-mapped file I/O |
 | `tokio` | 1.x | Async runtime (stdin/stdout I/O, blocking task pool) |
 | `serde` / `serde_json` | 1.x | JSON serialization for RPC responses |
@@ -44,29 +44,33 @@ let mmap = loader.map_file()?;
 
 The file is memory-mapped (read-only). No data is copied — all subsequent parsing reads directly from the OS page cache.
 
-### Stage 2: Graph Building (`build_graph`)
+### Stage 2: Graph Building (Two-Phase Architecture)
 
-A two-pass scan of the HPROF records:
+The graph is built in two phases, enabling progressive results:
 
-**Pass 1 — Node creation:**
-- Scans UTF8, LoadClass, and HeapDump records in a single pass
+**Phase 1 — Node scan (via mmap):**
+- Memory-maps the HPROF file and scans UTF8, LoadClass, and HeapDump records in a single pass
 - Builds the string table (UTF8 record ID → string content)
 - Builds the class name map (class object ID → fully-qualified class name)
 - Collects class instance sizes and field descriptors
-- Creates graph nodes for every instance, array, class, and GC root
+- Creates nodes for every instance, array, class, and GC root in a flat packed node array
+- Produces a class histogram and heap summary immediately (sent to VS Code before Phase 2 begins)
 
-**Pass 2 — Edge creation + waste data collection:**
+**Phase 2 — Edge extraction (rayon + CSR + Lengauer-Tarjan dominator):**
+- Runs in the background using `rayon` for parallel HeapDumpSegment processing
 - For each instance: reads field data using class field descriptors, extracts object references as edges
 - For each object array: reads element IDs as edges
 - For each class: extracts superclass, classloader, and static field references as edges
 - Connects all GC roots to a synthetic SuperRoot node
+- Edges are stored in **CSR (Compressed Sparse Row)** format for cache-friendly traversal
+- Lengauer-Tarjan dominator tree is computed directly on the CSR representation
 - **Waste collection:** Identifies String instances (extracts `value` array reference), empty collections (reads `size` field), and hashes backing `byte[]`/`char[]` arrays
 
-**Output:** A `HeapGraph` (petgraph directed graph) and `WasteRawData` (intermediate waste data).
+**Output:** A `HeapGraph` (CSR edge storage with flat node array) and `WasteRawData` (intermediate waste data). The legacy `petgraph`-based path is still available via the `--legacy` flag.
 
 ### Stage 3: Dominator Analysis (`calculate_dominators_with_state`)
 
-1. **Dominator tree** — Runs Lengauer-Tarjan via `petgraph::algo::dominators::simple_fast`
+1. **Dominator tree** — Runs Lengauer-Tarjan directly on CSR edge storage (legacy path uses `petgraph::algo::dominators::simple_fast`)
 2. **Children map** — Builds a map from each node to its children in the dominator tree
 3. **Retained sizes** — Bottom-up traversal: `retained[node] = shallow[node] + sum(retained[child])`
 4. **Leak detection** — Four-phase algorithm (classloader suspects → accumulation points → individual suspects → class aggregates)
@@ -103,19 +107,38 @@ This eliminates false edges that occur when primitive values (ints, longs) happe
 | State caching | ~1x graph | Retained for query serving |
 | Peak | ~3-4x file size | During graph building |
 
-### Timing (approximate, single-threaded)
+### Timing (indexed path with rayon parallelism)
 
-| File Size | Nodes | Graph Build | Dominators | Total |
-|-----------|-------|-------------|------------|-------|
-| 26 MB | 400K | 1-2s | &lt;1s | ~3s |
-| 200 MB | 3M | 8-15s | 3-5s | ~20s |
-| 1 GB | 15M | 40-60s | 15-20s | ~80s |
+| File Size | Total |
+|-----------|-------|
+| 1.5 GB | ~0.9s |
+| 2 GB | ~1.2s |
+| 14 GB | ~10.5s |
 
 ## Data Structures
 
 ### HeapGraph
 
+The default indexed path uses CSR (Compressed Sparse Row) edge storage with a flat packed node array, replacing the `petgraph` directed graph:
+
 ```rust
+// CSR edge storage (indexed path — default)
+pub struct EdgeStore {
+    offsets: Vec<u32>,    // one entry per node + 1; offsets[i]..offsets[i+1] = edge range
+    targets: Vec<u32>,    // packed target node indices
+}
+
+// Node storage
+pub struct NodeStore {
+    nodes: Vec<PackedNode>,          // flat packed array
+    id_to_index: HashMap<u64, u32>,  // object ID → node index
+}
+```
+
+The legacy path (enabled via `--legacy`) still uses the `petgraph`-based representation:
+
+```rust
+// Legacy petgraph path
 pub struct HeapGraph {
     graph: Graph<(u64, Arc<str>), (), Directed>,  // (object_id, class_name) per node
     id_to_node: HashMap<u64, NodeIndex>,

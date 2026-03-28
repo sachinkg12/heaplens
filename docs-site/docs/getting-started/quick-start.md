@@ -30,10 +30,11 @@ Analysis time depends on file size:
 
 | Heap Dump Size | Approximate Time |
 |---------------|-----------------|
-| &lt; 50 MB | 2-5 seconds |
-| 50-200 MB | 5-15 seconds |
-| 200 MB - 1 GB | 15-60 seconds |
-| > 1 GB | 1-5 minutes |
+| &lt; 50 MB | &lt; 1 second |
+| 50-200 MB | 1-2 seconds |
+| 200 MB - 1 GB | 2-5 seconds |
+| 1-2 GB | ~1-2 seconds |
+| > 2 GB | ~10 seconds (tested up to 14 GB) |
 
 ## Step 3: Explore the Results
 

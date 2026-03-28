@@ -16,7 +16,7 @@ Guidelines for analyzing large heap dumps and optimizing HeapLens's resource usa
 | 500 MB - 2 GB | 16 GB | SSD required |
 | > 2 GB | 32 GB | SSD required |
 
-The Rust analysis server uses approximately **3-4x the HPROF file size** in peak memory during graph construction. This is temporary — after analysis completes, memory usage drops to ~1-2x for the cached state.
+The Rust analysis server uses approximately **2-3x the HPROF file size** in peak memory during edge extraction and dominator computation. This is temporary — after analysis completes, memory usage drops to ~1-2x for the cached state.
 
 ## Memory-Mapped I/O
 
@@ -39,6 +39,9 @@ HeapLens includes several performance optimizations:
 ### Dominator Computation
 - **O(V+E) retained size computation** — Stack-based DFS post-order traversal instead of iterative fixpoint
 - **Vec-indexed state** — `retained_sizes`, `shallow_sizes`, and `node_data_map` use `Vec<T>` indexed by `NodeIndex` for cache-friendly sequential access
+
+### Parallel Processing (Phase 2)
+- **Rayon parallelization** — Edge extraction in Phase 2 uses `rayon` to process HeapDumpSegment records in parallel across all available CPU cores, dramatically reducing wall-clock time for large files
 
 ### Memory Management
 - **Arc-wrapped AnalysisState** — Cloning state references for concurrent access is a single atomic increment
@@ -66,8 +69,8 @@ htop -p $(pgrep hprof-server)
 ```
 
 Expected behavior:
-- CPU usage: one core at 100% during graph building and dominator computation
-- Memory usage: climbs to 3-4x file size, then stabilizes at 1-2x
+- CPU usage: multiple cores active during Phase 2 edge extraction (rayon parallelism), single core during Phase 1 and dominator computation
+- Memory usage: climbs to 2-3x file size, then stabilizes at 1-2x
 
 ### If Analysis Fails
 
@@ -77,12 +80,14 @@ Expected behavior:
 
 ## Benchmarks
 
-Approximate analysis times on a MacBook Pro (M1, 16 GB RAM):
+Approximate analysis times on a MacBook Pro (M1, 16 GB RAM) with rayon parallelization:
 
-| File | Size | Objects | Edges | Graph Build | Dominators | Total |
-|------|------|---------|-------|-------------|------------|-------|
-| Small service | 26 MB | 400K | 1.2M | 1.2s | 0.5s | 2.5s |
-| Medium app | 212 MB | 3.1M | 12M | 12s | 4s | 18s |
-| Large monolith | 1.1 GB | 14M | 58M | 55s | 18s | 80s |
+| File | Size | Objects | Edges | Phase 1 (Nodes) | Phase 2 (Edges + Dominators) | Total |
+|------|------|---------|-------|------------------|------------------------------|-------|
+| Small service | 26 MB | 400K | 1.2M | < 0.2s | ~0.3s | ~0.5s |
+| Medium app | 212 MB | 3.1M | 12M | ~0.3s | ~0.8s | ~1.1s |
+| Large app | 1.5 GB | ~12M | ~50M | ~0.4s | ~0.5s | ~0.9s |
+| Large monolith | 2 GB | ~16M | ~65M | ~0.5s | ~0.7s | ~1.2s |
+| Very large | 14 GB | ~100M | ~400M | ~2s | ~8.5s | ~10.5s |
 
-These timings include all phases: file mapping, graph construction, dominator computation, leak detection, histogram, and waste analysis.
+These timings include all phases: file mapping, node extraction (Phase 1), parallel edge extraction, CSR construction, dominator computation, leak detection, histogram, and waste analysis.

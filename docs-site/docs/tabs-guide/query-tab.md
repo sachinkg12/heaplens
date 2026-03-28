@@ -143,6 +143,38 @@ Cap the number of returned rows. Essential when querying `instances` (which can 
 SELECT * FROM class_histogram ORDER BY retained_size DESC LIMIT 20
 ```
 
+### Column Aliases
+
+Use `AS` to rename columns in the result set. Aliases work on both plain columns and aggregate expressions, and can be referenced in `ORDER BY`.
+
+```sql
+-- Alias plain columns
+SELECT class_name AS name, retained_size AS total FROM class_histogram
+
+-- Alias aggregate expressions
+SELECT COUNT(*) AS instance_count, SUM(retained_size) AS total_retained
+FROM class_histogram
+GROUP BY class_name
+ORDER BY total_retained DESC LIMIT 10
+
+-- Aliases are reflected in the results table header
+SELECT class_name AS cls, instance_count AS count
+FROM class_histogram
+ORDER BY count DESC LIMIT 5
+```
+
+### Unsupported Features
+
+The following SQL features are **not supported** and will return a clear error message if used:
+
+| Feature | Status |
+|---------|--------|
+| `RIGHT JOIN` | Not supported |
+| `FULL JOIN` | Not supported |
+| `CROSS JOIN` | Not supported |
+
+Only `INNER JOIN` and `LEFT JOIN` are supported for combining tables.
+
 ## Special Commands
 
 HeapQL supports four special commands for object-level inspection. These bypass SQL parsing and operate directly on object IDs obtained from previous queries.

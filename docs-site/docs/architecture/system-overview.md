@@ -62,7 +62,7 @@ HeapLens is a two-process system: a TypeScript VS Code extension that provides t
 │                                                                   │
 │  lib.rs — Core analysis engine                                    │
 │  ├─ HPROF parsing via jvm-hprof crate (zero-copy, mmap)         │
-│  ├─ Graph construction (petgraph, 2-pass: nodes then edges)     │
+│  ├─ Graph construction (CSR edge storage, 2-phase: nodes then edges) │
 │  ├─ Dominator tree (Lengauer-Tarjan algorithm)                   │
 │  ├─ Retained size computation (O(V) bottom-up)                   │
 │  ├─ Leak suspect detection (4-phase heuristic)                   │
