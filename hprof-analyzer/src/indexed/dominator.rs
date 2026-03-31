@@ -226,19 +226,15 @@ pub fn compute_dominators(
         }
     }
 
-    // Then handle unreachable nodes (they are children of root but not in DFS order).
-    // Their retained size is just their shallow size (no children in dominator tree
-    // unless they dominate other unreachable nodes, which can't happen since they
-    // are all individually attached to root).
-    // Actually, unreachable nodes' retained sizes are already accounted for since
-    // they are dominator children of root and will be added to root's retained size.
-    // But we need to add them to root's retained size.
+    // Unreachable nodes: not visited during DFS from GC roots.
+    // Following Eclipse MAT's approach, exclude them from retained size
+    // computation entirely — they are already garbage and should not
+    // inflate ancestor retained sizes or leak suspect percentages.
     let mut unreachable_shallow_size: u64 = 0;
     for i in 0..n {
         if dfnum[i] == u32::MAX && (i as u32) != root {
-            let p = dominator_parent[i] as usize;
-            retained_sizes[p] += retained_sizes[i];
             unreachable_shallow_size += node_store.get_by_index(i as u32).shallow_size as u64;
+            retained_sizes[i] = 0;
         }
     }
 
