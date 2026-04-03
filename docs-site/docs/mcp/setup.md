@@ -104,7 +104,7 @@ Both modes use the same analysis engine and produce identical results. The diffe
 
 ### Analysis takes too long
 
-MCP mode runs analysis synchronously. Large files (>500 MB) may take 30-60 seconds. Claude Desktop may show a timeout warning — this is normal; the result will appear when done.
+MCP mode runs analysis synchronously. A 2 GB dump completes in ~1-2 seconds; a 14 GB dump takes ~11 seconds. Claude Desktop may show a timeout warning for very large files — this is normal; the result will appear when done.
 
 ### "No analysis found" errors
 

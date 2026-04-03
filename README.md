@@ -254,7 +254,7 @@ HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing
 
 ## Telemetry
 
-HeapLens collects anonymous usage telemetry (feature adoption, analysis performance) via Azure Application Insights to help improve the extension. **No PII, file paths, code content, or API keys are collected.** Telemetry respects VS Code's `telemetry.telemetryLevel` setting — set it to `off` to disable all telemetry.
+HeapLens collects anonymous usage telemetry (feature adoption, analysis performance, and aggregate geographic region) via Azure Application Insights to help improve the extension. **Heap file contents never leave your machine. No PII, file paths, code content, or API keys are collected.** Telemetry respects VS Code's `telemetry.telemetryLevel` setting — set it to `off` to disable all telemetry.
 
 ---
 
