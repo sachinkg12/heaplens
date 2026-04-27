@@ -171,7 +171,10 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                 this.outputChannel.appendLine(`[HeapLens] Server process exited for ${hprofPath}: code=${code}, signal=${signal}`);
                 // Notify only this editor's webview about the crash
                 if (code !== 0 && code !== null) {
-                    trackEvent('error/serverCrashed');
+                    trackEvent('error/serverCrashed', {
+                        exitCode: String(code),
+                        signal: signal || 'none'
+                    });
                     const state = this.editors.get(hprofPath);
                     if (state?.webviewReady) {
                         state.webviewPanel.webview.postMessage({ command: 'serverCrashed' });
@@ -342,7 +345,11 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                         progress.report({ increment: 100, message: 'Done!' });
                     }
                 } catch (error: any) {
-                    trackEvent('analysis/failed', { errorType: classifyError(error.message || 'unknown') });
+                    const errMsg = error.message || 'unknown';
+                    trackEvent('analysis/failed', {
+                        errorType: classifyError(errMsg),
+                        errorSummary: errMsg.substring(0, 200).replace(/[/\\]/g, '_')
+                    });
                     this.outputChannel.appendLine(`[HeapLens] ERROR: ${error.message}`);
                     vscode.window.showErrorMessage(`HeapLens: ${friendlyError(error.message)}`);
                 } finally {

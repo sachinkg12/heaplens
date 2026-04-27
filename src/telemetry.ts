@@ -44,11 +44,15 @@ export function trackEvent(
 
 export function classifyError(msg: string): string {
     const lower = msg.toLowerCase();
-    if (lower.includes('timeout')) { return 'timeout'; }
-    if (lower.includes('memory') || lower.includes('oom')) { return 'oom'; }
-    if (lower.includes('parse') || lower.includes('invalid')) { return 'parse'; }
-    if (lower.includes('not found') || lower.includes('enoent')) { return 'not_found'; }
-    if (lower.includes('permission') || lower.includes('eacces')) { return 'permission'; }
+    if (lower.includes('timeout') || lower.includes('timed out')) { return 'timeout'; }
+    if (lower.includes('memory') || lower.includes('oom') || lower.includes('alloc')) { return 'oom'; }
+    if (lower.includes('parse') || lower.includes('invalid') || lower.includes('corrupt') || lower.includes('unexpected') || lower.includes('malformed')) { return 'parse'; }
+    if (lower.includes('not found') || lower.includes('enoent') || lower.includes('no such file')) { return 'not_found'; }
+    if (lower.includes('permission') || lower.includes('eacces') || lower.includes('denied')) { return 'permission'; }
+    if (lower.includes('spawn') || lower.includes('binary') || lower.includes('server')) { return 'server_spawn'; }
+    if (lower.includes('cancel')) { return 'cancelled'; }
+    if (lower.includes('killed') || lower.includes('signal')) { return 'killed'; }
+    if (lower.includes('broken pipe') || lower.includes('epipe') || lower.includes('eof')) { return 'pipe_broken'; }
     return 'unknown';
 }
 
