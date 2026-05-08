@@ -111,13 +111,21 @@ impl IndexedAnalysisState {
 
         for i in 0..node_store.len() {
             let node = node_store.get_by_index(i as u32);
-            match node.node_type {
-                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
-                _ => continue,
-            }
-
             let shallow = node.shallow_size as u64;
             let retained = dominator.retained_sizes[i];
+
+            match node.node_type {
+                NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+                NodeType::Class => {
+                    // Include Class nodes only if they retain >1% of heap
+                    // (user-defined classes with large static fields)
+                    let total = summary.total_heap_size;
+                    if total == 0 || (retained as f64 / total as f64) < 0.01 {
+                        continue;
+                    }
+                }
+                _ => continue,
+            }
 
             // Histogram aggregation
             let class_name = node.class_name.to_string();
@@ -142,7 +150,8 @@ impl IndexedAnalysisState {
             let node_type_str = match node.node_type {
                 NodeType::Instance => "Instance",
                 NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
-                _ => unreachable!(),
+                NodeType::Class => "Class",
+                _ => continue,
             };
             let report = ObjectReport::new(
                 node.id,
@@ -178,10 +187,14 @@ impl IndexedAnalysisState {
 
         if reachable_heap_size > 0 {
             // Phase 1: Class-level suspects (>10% retained, multiple instances)
+            // Note: summing retained sizes across instances of the same class can exceed
+            // reachable heap size when one instance dominates another of the same class.
+            // We cap at 99.9% to avoid misleading percentages.
             for entry in &class_histogram {
-                let percentage =
+                let raw_percentage =
                     (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
-                if percentage > 10.0 && entry.instance_count > 1 {
+                let percentage = raw_percentage.min(99.9);
+                if raw_percentage > 10.0 && entry.instance_count > 1 {
                     leak_suspects.push(LeakSuspect {
                         class_name: entry.class_name.clone(),
                         object_id: 0,
@@ -333,9 +346,17 @@ impl HeapAnalysis for IndexedAnalysisState {
             let node = self.node_store.get_by_index(child_idx);
             let retained = self.dominator.retained_sizes[child_idx as usize];
 
-            // Filter out Class nodes and zero-retained-size nodes
-            if matches!(node.node_type, NodeType::Class) || retained == 0 {
+            // Filter out zero-retained-size nodes and small Class nodes.
+            // Class nodes with significant retained size (>1% of heap) are shown
+            // because they may be user-defined classes holding leaked data via static fields.
+            if retained == 0 {
                 continue;
+            }
+            if matches!(node.node_type, NodeType::Class) {
+                let total = self.summary.total_heap_size;
+                if total > 0 && (retained as f64 / total as f64) < 0.01 {
+                    continue;
+                }
             }
 
             let node_type_str = match node.node_type {

@@ -437,9 +437,12 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         }
 
         // Phase 3: Class-level suspects
+        // Cap at 99.9% — summing retained sizes across instances of the same class
+        // can exceed reachable heap when one instance dominates another of the same class.
         for entry in &class_histogram {
-            let percentage = (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
-            if percentage > 10.0 && entry.instance_count > 1 {
+            let raw_percentage = (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
+            let percentage = raw_percentage.min(99.9);
+            if raw_percentage > 10.0 && entry.instance_count > 1 {
                 let already_covered = leak_suspects.iter()
                     .any(|s| s.class_name == entry.class_name);
                 if !already_covered {

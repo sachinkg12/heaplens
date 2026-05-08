@@ -674,6 +674,18 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
         }
     }
 
+    // Fix up Class node names (they were stored as "Class" placeholder
+    // because LoadClass may not have been processed yet)
+    for i in 0..node_store.len() {
+        let node = node_store.get_by_index(i as u32);
+        if matches!(node.node_type, NodeType::Class) && node.class_name.as_ref() == "Class" {
+            if let Some(name) = class_name_map.get(&node.id) {
+                let node_mut = node_store.get_by_index_mut(i as u32);
+                node_mut.class_name = Arc::from(format!("class {}", name.as_ref()));
+            }
+        }
+    }
+
     // Fix up deferred instance class names (instances whose class was Unknown
     // because LoadClass hadn't been processed yet)
     for di in &deferred_instances {
