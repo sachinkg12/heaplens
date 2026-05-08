@@ -18,7 +18,7 @@ HeapLens brings Java and Android heap dump analysis into VS Code. Open any `.hpr
 
 HeapLens includes a built-in AI assistant that explains heap analysis findings in plain English and suggests code-level fixes. Ask questions like *"Why is my app using 2 GB of memory?"* or *"What's causing this OutOfMemoryError?"* and get actionable answers powered by your choice of 10 LLM providers including local models via Ollama.
 
-Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 2 GB heap dump analyzes in about 1 second; a 14 GB dump completes in under 11 seconds on an M1 Mac. HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
+Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 1.5 GB heap dump analyzes in about 1 second; a 14.8 GB dump completes in 10 seconds on an Apple M2 Max (1,400+ MB/s throughput). HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
 
 ---
 
