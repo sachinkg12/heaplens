@@ -1807,7 +1807,7 @@ pub struct AnalysisState {
     pub class_histogram: Vec<ClassHistogramEntry>,
     /// Detected leak suspects (class-level aggregations).
     pub leak_suspects: Vec<LeakSuspect>,
-    /// Individual object-level leak suspects (MAT-style).
+    /// Individual object-level leak suspects (per-object, not grouped by class).
     pub object_leak_suspects: Vec<LeakSuspect>,
     /// Heap summary statistics.
     pub summary: HeapSummary,

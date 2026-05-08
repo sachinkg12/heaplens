@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// Global flag: use the indexed (MAT-style) analysis backend.
+/// Global flag: use the indexed (CSR-based) analysis backend.
 static USE_INDEXED: AtomicBool = AtomicBool::new(false);
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -33,7 +33,7 @@ struct Cli {
     #[arg(long)]
     mcp: bool,
 
-    /// Use the indexed (MAT-style) analysis backend (default)
+    /// Use the indexed (CSR-based) analysis backend (default)
     #[arg(long, default_value_t = true)]
     indexed: bool,
 
@@ -2098,7 +2098,7 @@ async fn main() -> Result<()> {
         log::info!("Using legacy petgraph-based analysis backend");
     } else {
         USE_INDEXED.store(true, Ordering::Relaxed);
-        log::info!("Using indexed (MAT-style) analysis backend");
+        log::info!("Using indexed (CSR-based) analysis backend");
     }
 
     if cli.mcp {

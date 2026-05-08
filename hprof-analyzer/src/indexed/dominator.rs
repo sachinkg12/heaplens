@@ -227,7 +227,7 @@ pub fn compute_dominators(
     }
 
     // Unreachable nodes: not visited during DFS from GC roots.
-    // Following Eclipse MAT's approach, exclude them from retained size
+    // Exclude unreachable nodes from retained size
     // computation entirely — they are already garbage and should not
     // inflate ancestor retained sizes or leak suspect percentages.
     let mut unreachable_shallow_size: u64 = 0;

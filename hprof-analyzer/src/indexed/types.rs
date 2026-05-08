@@ -3,7 +3,7 @@
 //! `HeapAnalysis` defines the read-only query interface that the RPC/MCP
 //! layer uses to service client requests. The existing `AnalysisState`
 //! implements this trait directly, allowing us to swap in an indexed
-//! (MAT-style) backend later without touching the server code.
+//! (indexed) backend later without touching the server code.
 
 use std::path::Path;
 
@@ -29,7 +29,7 @@ pub trait HeapAnalysis: Send + Sync {
     /// Returns detected leak suspects (class-level aggregations).
     fn get_leak_suspects(&self) -> &[LeakSuspect];
 
-    /// Returns individual object-level leak suspects (MAT-style).
+    /// Returns individual object-level leak suspects (per-object, not grouped by class).
     fn get_object_leak_suspects(&self) -> &[LeakSuspect];
 
     /// Returns waste analysis (duplicate strings, empty collections, etc.).

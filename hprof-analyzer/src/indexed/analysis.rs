@@ -1,7 +1,7 @@
 //! Glue module combining all indexed data structures into a complete
 //! analysis state that implements the `HeapAnalysis` trait.
 //!
-//! `IndexedAnalysisState` is the MAT-style counterpart of the original
+//! `IndexedAnalysisState` is the indexed counterpart of the original
 //! `AnalysisState`, built from a `ParseResult` rather than a petgraph.
 
 use std::collections::HashMap;
