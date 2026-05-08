@@ -1746,6 +1746,11 @@ pub struct LeakSuspect {
     pub retained_percentage: f64,
     /// Human-readable description of why this is a suspect.
     pub description: String,
+    /// Accumulation point: the class name where memory concentrates.
+    /// Found by walking down the dominator tree until the biggest child
+    /// retains less than 70% of the parent. None for class-level suspects.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accumulation_point: Option<String>,
 }
 
 // Re-export comparison types for backward compatibility
@@ -2799,6 +2804,7 @@ mod tests {
             retained_size: 5000,
             retained_percentage: 50.0,
             description: "Retains 50% of heap".to_string(),
+            accumulation_point: None,
         }];
         baseline.waste_analysis = WasteAnalysis {
             total_wasted_bytes: 500,
@@ -2852,6 +2858,7 @@ mod tests {
             retained_size: 1500,
             retained_percentage: 10.0,
             description: "New suspect".to_string(),
+            accumulation_point: None,
         }];
         current.waste_analysis = WasteAnalysis {
             total_wasted_bytes: 800,

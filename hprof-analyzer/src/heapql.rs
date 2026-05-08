@@ -1850,6 +1850,7 @@ mod tests {
                 retained_size: 4096,
                 retained_percentage: 50.0,
                 description: "Retains 50% of heap".into(),
+                accumulation_point: None,
             },
         ];
 

@@ -68,6 +68,7 @@ pub fn build_test_state() -> AnalysisState {
             retained_size: 4096,
             retained_percentage: 50.0,
             description: "Retains 50% of heap".into(),
+                accumulation_point: None,
         },
     ];
 
@@ -179,6 +180,7 @@ pub fn build_second_test_state() -> AnalysisState {
             retained_size: 8192,
             retained_percentage: 50.0,
             description: "Retains 50% of heap".into(),
+                accumulation_point: None,
         },
         LeakSuspect {
             class_name: "com.app.SessionStore".into(),
@@ -186,6 +188,7 @@ pub fn build_second_test_state() -> AnalysisState {
             retained_size: 4096,
             retained_percentage: 25.0,
             description: "Retains 25% of heap".into(),
+                accumulation_point: None,
         },
     ];
 

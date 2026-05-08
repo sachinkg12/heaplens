@@ -349,7 +349,8 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
                 object_id: *object_id,
                 retained_size: *retained,
                 retained_percentage: *percentage,
-                description: format!(
+                accumulation_point: None,
+                        description: format!(
                     "Classloader {} retains {:.1}% of reachable heap ({:.2} MB){}",
                     class_name, percentage, *retained as f64 / (1024.0 * 1024.0), accum_info,
                 ),
@@ -429,7 +430,8 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
                 object_id,
                 retained_size: retained,
                 retained_percentage: percentage,
-                description: format!(
+                accumulation_point: None,
+                        description: format!(
                     "Single {} instance retains {:.1}% of reachable heap ({:.2} MB)",
                     display_name, percentage, retained as f64 / (1024.0 * 1024.0)
                 ),
@@ -451,6 +453,7 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
                         object_id: 0,
                         retained_size: entry.retained_size,
                         retained_percentage: percentage,
+                        accumulation_point: None,
                         description: format!(
                             "{} instances of {} collectively retain {:.1}% of reachable heap ({:.2} MB)",
                             entry.instance_count, entry.class_name, percentage,

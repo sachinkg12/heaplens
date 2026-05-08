@@ -51,6 +51,64 @@ pub struct IndexedAnalysisState {
 unsafe impl Send for IndexedAnalysisState {}
 unsafe impl Sync for IndexedAnalysisState {}
 
+/// Find the accumulation point for a suspect by walking down the dominator tree.
+/// Starting from the suspect node, follow the largest child at each level.
+/// Stop when the largest child retains less than 70% of the current node.
+/// Returns the class name of the accumulation point, or None if the suspect
+/// is a leaf or the walk exceeds 1000 levels.
+fn find_accumulation_point(
+    node_idx: u32,
+    dominator: &DominatorResult,
+    node_store: &NodeStore,
+) -> Option<String> {
+    const BIG_DROP_RATIO: f64 = 0.7;
+    const MAX_DEPTH: usize = 1000;
+
+    let mut current = node_idx;
+    let mut current_retained = dominator.retained_sizes[current as usize];
+
+    if current_retained == 0 {
+        return None;
+    }
+
+    for _ in 0..MAX_DEPTH {
+        let children = &dominator.dominator_children[current as usize];
+        if children.is_empty() {
+            // Leaf node: this is the accumulation point
+            let node = node_store.get_by_index(current);
+            let name = node.class_name.to_string();
+            if name.is_empty() { return None; }
+            return Some(name);
+        }
+
+        // Find the largest child by retained size
+        let mut largest_child = children[0];
+        let mut largest_retained = dominator.retained_sizes[children[0] as usize];
+        for &child in &children[1..] {
+            let r = dominator.retained_sizes[child as usize];
+            if r > largest_retained {
+                largest_retained = r;
+                largest_child = child;
+            }
+        }
+
+        // Check for big drop
+        if (largest_retained as f64) / (current_retained as f64) < BIG_DROP_RATIO {
+            // Current node is the accumulation point
+            let node = node_store.get_by_index(current);
+            let name = node.class_name.to_string();
+            if name.is_empty() { return None; }
+            return Some(name);
+        }
+
+        // Continue walking down
+        current_retained = largest_retained;
+        current = largest_child;
+    }
+
+    None // Exceeded max depth
+}
+
 impl IndexedAnalysisState {
     /// Builds an `IndexedAnalysisState` from a `ParseResult`.
     ///
@@ -59,6 +117,7 @@ impl IndexedAnalysisState {
     /// 2. Class histogram aggregation
     /// 3. Leak suspect identification (objects retaining >10% of heap)
     /// 4. Top-50 object selection by retained size
+    /// 5. Accumulation point detection for individual suspects
     pub fn from_parse_result(result: ParseResult) -> anyhow::Result<Self> {
         let ParseResult {
             node_store,
@@ -200,7 +259,8 @@ impl IndexedAnalysisState {
                         object_id: 0,
                         retained_size: entry.retained_size,
                         retained_percentage: percentage,
-                        description: format!(
+                        accumulation_point: None,
+                    description: format!(
                             "{} instances of {} collectively retain {:.1}% of reachable heap ({:.2} MB)",
                             entry.instance_count,
                             entry.class_name,
@@ -235,16 +295,19 @@ impl IndexedAnalysisState {
                     continue;
                 }
                 let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
+                let accum = find_accumulation_point(idx, &dominator, &node_store);
                 leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
                     object_id: node.id,
                     retained_size: retained,
                     retained_percentage: percentage,
+                    accumulation_point: accum.clone(),
                     description: format!(
-                        "Single {} instance retains {:.1}% of reachable heap ({:.2} MB)",
+                        "Single {} instance retains {:.1}% of reachable heap ({:.2} MB){}",
                         display_name,
                         percentage,
-                        retained as f64 / (1024.0 * 1024.0)
+                        retained as f64 / (1024.0 * 1024.0),
+                        if let Some(ref ap) = accum { format!(". Memory accumulates in {}", ap) } else { String::new() }
                     ),
                 });
             }
@@ -266,16 +329,19 @@ impl IndexedAnalysisState {
                     class_name
                 };
                 let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
+                let accum = find_accumulation_point(idx, &dominator, &node_store);
                 object_leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
                     object_id: node.id,
                     retained_size: retained,
                     retained_percentage: percentage,
+                    accumulation_point: accum.clone(),
                     description: format!(
-                        "Single {} instance retains {:.1}% of reachable heap ({:.2} MB)",
+                        "Single {} instance retains {:.1}% of reachable heap ({:.2} MB){}",
                         display_name,
                         percentage,
-                        retained as f64 / (1024.0 * 1024.0)
+                        retained as f64 / (1024.0 * 1024.0),
+                        if let Some(ref ap) = accum { format!(". Memory accumulates in {}", ap) } else { String::new() }
                     ),
                 });
             }
