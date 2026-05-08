@@ -2,7 +2,7 @@
   "name": "heaplens",
   "displayName": "HeapLens — Java & Android Heap Dump Analyzer",
   "description": "Analyze Java & Android heap dumps (.hprof) directly in VS Code — find memory leaks, explore dominator trees, and query heap data with HeapQL. Analyzes 1.5 GB dumps in 1 second, 14.8 GB in 10 seconds with a native Rust engine (1,400+ MB/s). 10 interactive views including HeapQL (SQL with JOINs for heap objects), leak detection, waste analysis, and AI-powered explanations. Free and open source.",
-  "version": "1.0.19",
+  "version": "1.0.20",
   "publisher": "guptasachinn",
   "license": "Apache-2.0",
   "icon": "icon.png",
