@@ -47,6 +47,20 @@ jobs:
             grep -q "^$YESTERDAY," traffic/views-history.csv || echo "$YESTERDAY,$VIEWS_ROW" >> traffic/views-history.csv
           fi
 
+          # --- Generate shields.io endpoint badges from accumulated history ---
+          # Sums every recorded day, so the totals grow past GitHub's 14-day window.
+          make_badge() {
+            csv="$1"; label="$2"; col="$3"; out="$4"; color="$5"
+            n=0
+            [ -f "$csv" ] && n=$(awk -F, -v c="$col" 'NR>1 {s+=$c} END {print s+0}' "$csv")
+            printf '{"schemaVersion":1,"label":"%s","message":"%s","color":"%s"}\n' \
+              "$label" "$n" "$color" > "$out"
+          }
+          make_badge traffic/clones-history.csv "clones"         2 traffic/clones-badge.json  blue
+          make_badge traffic/clones-history.csv "unique cloners" 3 traffic/cloners-badge.json blueviolet
+          make_badge traffic/views-history.csv  "views"          2 traffic/views-badge.json   green
+          make_badge traffic/views-history.csv  "unique visitors" 3 traffic/visitors-badge.json brightgreen
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"

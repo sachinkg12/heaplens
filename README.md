@@ -6,6 +6,8 @@
 [![Installs](https://img.shields.io/visual-studio-marketplace/i/guptasachinn.heaplens)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
 [![License](https://img.shields.io/github/license/sachinkg12/heaplens)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19121302-blue)](https://doi.org/10.5281/zenodo.19121302)
+[![Clones](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/clones-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
+[![Unique Cloners](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/cloners-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
 
 ![HeapLens Demo](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/demo.gif)
 ![HeapLens Overview](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/overview.png)
