@@ -12,11 +12,17 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
     steps:
+      # PAT_TOKEN (not the default GITHUB_TOKEN) is required because:
+      #  1. The Traffic API needs push/admin access, which GITHUB_TOKEN lacks.
+      #  2. Pushing to the protected `main` branch needs bypass rights.
+      # Same token the auto-version job in ci.yml uses.
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Fetch traffic and append yesterday's row
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p traffic
