@@ -1,0 +1,54 @@
+name: Snapshot GitHub Traffic
+
+on:
+  schedule:
+    - cron: '0 0 * * *'   # daily at 00:00 UTC
+  workflow_dispatch:      # allow manual run
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch traffic and append yesterday's row
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p traffic
+
+          # Raw 14-day API dumps (overwritten each run — always the freshest window)
+          gh api repos/${{ github.repository }}/traffic/clones > traffic/clones-latest.json
+          gh api repos/${{ github.repository }}/traffic/views  > traffic/views-latest.json
+
+          YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
+
+          # Append yesterday's clone row if present and not already recorded
+          CLONES_ROW=$(jq -r --arg d "$YESTERDAY" '.clones[]? | select(.timestamp | startswith($d)) | "\(.count),\(.uniques)"' traffic/clones-latest.json)
+          if [ -n "$CLONES_ROW" ]; then
+            [ ! -f traffic/clones-history.csv ] && echo "date,total,unique" > traffic/clones-history.csv
+            grep -q "^$YESTERDAY," traffic/clones-history.csv || echo "$YESTERDAY,$CLONES_ROW" >> traffic/clones-history.csv
+          fi
+
+          # Append yesterday's view row if present and not already recorded
+          VIEWS_ROW=$(jq -r --arg d "$YESTERDAY" '.views[]? | select(.timestamp | startswith($d)) | "\(.count),\(.uniques)"' traffic/views-latest.json)
+          if [ -n "$VIEWS_ROW" ]; then
+            [ ! -f traffic/views-history.csv ] && echo "date,total,unique" > traffic/views-history.csv
+            grep -q "^$YESTERDAY," traffic/views-history.csv || echo "$YESTERDAY,$VIEWS_ROW" >> traffic/views-history.csv
+          fi
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add traffic/
+          if ! git diff --staged --quiet; then
+            # [skip ci] prevents this commit from triggering the CI/CD workflow
+            # (which would otherwise auto-bump the version and publish to Marketplace).
+            git commit -m "chore(traffic): daily snapshot [skip ci]"
+            git push
+          fi
