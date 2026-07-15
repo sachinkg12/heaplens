@@ -2,7 +2,9 @@ name: Snapshot GitHub Traffic
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # daily at 00:00 UTC
+    # 12:00 UTC — well after midnight so GitHub has finalized the prior day's
+    # traffic bucket. The upsert logic below also self-heals regardless of timing.
+    - cron: '0 12 * * *'
   workflow_dispatch:      # allow manual run
 
 permissions:
@@ -20,7 +22,7 @@ jobs:
         with:
           token: ${{ secrets.TRAFFIC_TOKEN }}
 
-      - name: Fetch traffic and append yesterday's row
+      - name: Fetch traffic and merge into history
         env:
           GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
         run: |
@@ -31,21 +33,27 @@ jobs:
           gh api repos/${{ github.repository }}/traffic/clones > traffic/clones-latest.json
           gh api repos/${{ github.repository }}/traffic/views  > traffic/views-latest.json
 
-          YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
-
-          # Append yesterday's clone row if present and not already recorded
-          CLONES_ROW=$(jq -r --arg d "$YESTERDAY" '.clones[]? | select(.timestamp | startswith($d)) | "\(.count),\(.uniques)"' traffic/clones-latest.json)
-          if [ -n "$CLONES_ROW" ]; then
-            [ ! -f traffic/clones-history.csv ] && echo "date,total,unique" > traffic/clones-history.csv
-            grep -q "^$YESTERDAY," traffic/clones-history.csv || echo "$YESTERDAY,$CLONES_ROW" >> traffic/clones-history.csv
-          fi
-
-          # Append yesterday's view row if present and not already recorded
-          VIEWS_ROW=$(jq -r --arg d "$YESTERDAY" '.views[]? | select(.timestamp | startswith($d)) | "\(.count),\(.uniques)"' traffic/views-latest.json)
-          if [ -n "$VIEWS_ROW" ]; then
-            [ ! -f traffic/views-history.csv ] && echo "date,total,unique" > traffic/views-history.csv
-            grep -q "^$YESTERDAY," traffic/views-history.csv || echo "$YESTERDAY,$VIEWS_ROW" >> traffic/views-history.csv
-          fi
+          # Upsert every day the API currently reports into the history CSV.
+          # For any date present in both, the fresh API value wins (self-heals
+          # late-finalized or corrected days). Missing days are inserted. Because
+          # GitHub always returns the last 14 days, nothing is lost as long as
+          # this job runs at least once every 14 days. Output is sorted by date.
+          merge() {
+            json="$1"; arr="$2"; csv="$3"
+            # Fresh API rows: date,total,unique
+            jq -r ".${arr}[]? | \"\(.timestamp[:10]),\(.count),\(.uniques)\"" "$json" > /tmp/fresh.csv
+            [ -f "$csv" ] || echo "date,total,unique" > "$csv"
+            # Existing rows first (skip header), then fresh rows; awk keeps the LAST
+            # value seen per date, so fresh API rows override existing ones.
+            {
+              tail -n +2 "$csv"
+              cat /tmp/fresh.csv
+            } | awk -F, 'NF>=3 {v[$1]=$2","$3} END {for (d in v) print d","v[d]}' \
+              | sort > /tmp/merged.csv
+            { echo "date,total,unique"; cat /tmp/merged.csv; } > "$csv"
+          }
+          merge traffic/clones-latest.json clones traffic/clones-history.csv
+          merge traffic/views-latest.json  views  traffic/views-history.csv
 
           # --- Generate shields.io endpoint badges from accumulated history ---
           # Sums every recorded day, so the totals grow past GitHub's 14-day window.
