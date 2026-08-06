@@ -2,12 +2,15 @@
 
 **The fastest way to understand Java heap dumps — right inside VS Code.**
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/guptasachinn.heaplens)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/guptasachinn.heaplens)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
+[![Open VSX Version](https://img.shields.io/open-vsx/v/guptasachinn/heaplens?label=Open%20VSX)](https://open-vsx.org/extension/guptasachinn/heaplens)
+[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/guptasachinn/heaplens?label=downloads)](https://open-vsx.org/extension/guptasachinn/heaplens)
+[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-blue?logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
 [![License](https://img.shields.io/github/license/sachinkg12/heaplens)](LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19121302-blue)](https://doi.org/10.5281/zenodo.19121302)
 [![Clones](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/clones-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
 [![Unique Cloners](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/cloners-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
+
+![HeapLens usage map](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/heaplens-usage-map.png)
 
 ![HeapLens Demo](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/demo.gif)
 ![HeapLens Overview](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/overview.png)
@@ -16,17 +19,17 @@
 
 ## Why HeapLens?
 
-HeapLens brings Java and Android heap dump analysis into VS Code. Open any `.hprof` file and instantly explore memory usage through 10 interactive views — dominator trees, class histograms, leak suspects, waste detection, and more. No separate tools. No context switching. No uploading to cloud services.
+HeapLens brings Java and Android heap dump analysis into VS Code. Open any `.hprof` file and instantly explore memory usage through 11 interactive views — dominator trees, class histograms, leak suspects, waste detection, and more. No separate tools. No context switching. No uploading to cloud services.
 
 HeapLens includes a built-in AI assistant that explains heap analysis findings in plain English and suggests code-level fixes. Ask questions like *"Why is my app using 2 GB of memory?"* or *"What's causing this OutOfMemoryError?"* and get actionable answers powered by your choice of 10 LLM providers including local models via Ollama.
 
-Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 1.5 GB heap dump analyzes in about 1 second; a 14.8 GB dump completes in 10 seconds on an Apple M2 Max (1,400+ MB/s throughput). HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
+Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 1.5 GB heap dump analyzes in about 1 second; a 14.8 GB dump completes in about 9.5 seconds on an Apple M2 Max (1,500+ MB/s throughput). HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
 
 ---
 
 ## Features
 
-### 10 Interactive Tabs
+### 11 Interactive Tabs
 
 | Tab | What it does |
 |-----|-------------|
@@ -39,6 +42,7 @@ Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR 
 | **Query** | HeapQL: SQL-like queries with autocomplete, syntax highlighting, and query history |
 | **Compare** | Diff two heap dumps — class deltas, leak changes, waste delta, export as markdown or CSV |
 | **Timeline** | Multi-snapshot trend analysis with D3.js line charts |
+| **Monitor** | Live JVM monitoring — connect to a running JVM over TCP and stream heap statistics in real time |
 | **AI Chat** | Ask questions in English — get HeapQL queries and insights |
 
 ![Heap Composition](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/heap_composition.png)
@@ -153,7 +157,7 @@ Finds memory waste patterns automatically:
 
 1. **Install** HeapLens from the VS Code Marketplace
 2. **Open** any `.hprof` file — HeapLens activates automatically
-3. **Explore** the 10 tabs: Overview for a summary, Histogram to find big classes, Dominator Tree to drill down
+3. **Explore** the 11 tabs: Overview for a summary, Histogram to find big classes, Dominator Tree to drill down
 
 ![Loading HPROF](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/Hprof_loading.png)
 
@@ -227,12 +231,13 @@ VS Code Extension (TypeScript)
 |---------|-------------|
 | `HeapLens: Analyze HPROF File` | Open a file picker to select and analyze a `.hprof` file |
 | `HeapLens: Export Analysis to JSON` | Export the current analysis results to a JSON file |
+| `HeapLens: Start JVM Monitor` | Connect to a running JVM over TCP and stream live heap statistics |
 
 ---
 
 ## Requirements
 
-- VS Code 1.109.0 or later
+- VS Code 1.74.0 or later
 - No additional dependencies — the native Rust binary is bundled with the extension
 
 **Optional:**
@@ -244,13 +249,13 @@ VS Code Extension (TypeScript)
 
 ## Performance
 
-HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing and analysis. Benchmarks on Apple M1 (median of 5 runs):
+HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing and analysis. Benchmarks on Apple M2 Max (median of 5 runs):
 
 | Heap Size | Analyze Time | Throughput |
 |-----------|-------------|------------|
 | 1.5 GB | ~0.9 s | 1,687 MB/s |
 | 2 GB | ~1.2 s | 1,645 MB/s |
-| 14 GB | ~10.5 s | 1,365 MB/s |
+| 14.8 GB | ~9.5 s | 1,558 MB/s |
 
 ---
 

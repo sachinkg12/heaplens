@@ -36,9 +36,9 @@
   },
   "badges": [
     {
-      "url": "https://img.shields.io/visual-studio-marketplace/v/guptasachinn.heaplens",
-      "href": "https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens",
-      "description": "VS Code Marketplace Version"
+      "url": "https://img.shields.io/open-vsx/v/guptasachinn/heaplens?label=Open%20VSX",
+      "href": "https://open-vsx.org/extension/guptasachinn/heaplens",
+      "description": "Open VSX Version"
     },
     {
       "url": "https://img.shields.io/github/license/sachinkg12/heaplens",

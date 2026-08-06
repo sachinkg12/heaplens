@@ -22,6 +22,8 @@ CONTRIBUTING.md
 
 # Screenshots & media (served from GitHub, not needed in VSIX)
 media/screenshots/
+media/heaplens-usage-map.png
+media/heaplens-usage-map.svg
 
 # JVM agent source (users build separately)
 jvm-agent/
