@@ -4,13 +4,15 @@
 //! `IndexedAnalysisState` is the indexed counterpart of the original
 //! `AnalysisState`, built from a `ParseResult` rather than a petgraph.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use petgraph::graph::NodeIndex;
 
 use crate::heapql::{HeapQlError, QueryResult};
+use crate::class_histogram::{
+    aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
+};
 use crate::waste::{WasteAnalysis, WasteRawData};
 use crate::{ClassHistogramEntry, FieldInfo, HeapSummary, LeakSuspect, ObjectReport};
 
@@ -22,6 +24,46 @@ use super::parse::{ParseResult, Phase1Result, Phase2Result};
 use super::string_table::StringTable;
 use super::types::HeapAnalysis;
 use super::waste::compute_indexed_waste;
+
+struct IndexedClassHistogramTree<'a> {
+    node_store: &'a NodeStore,
+    dominator: &'a DominatorResult,
+    total_heap_size: u64,
+}
+
+impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
+    type Node = u32;
+
+    fn root(&self) -> Self::Node {
+        0
+    }
+
+    fn children(&self, node: Self::Node) -> &[Self::Node] {
+        &self.dominator.dominator_children[node as usize]
+    }
+
+    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample> {
+        let record = self.node_store.get_by_index(node);
+        let retained_size = self.dominator.retained_sizes[node as usize];
+        match record.node_type {
+            NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
+            NodeType::Class => {
+                if self.total_heap_size == 0
+                    || (retained_size as f64 / self.total_heap_size as f64) < 0.01
+                {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+
+        Some(ClassHistogramSample {
+            class_name: record.class_name.clone(),
+            shallow_size: record.shallow_size as u64,
+            retained_size,
+        })
+    }
+}
 
 /// Indexed analysis state implementing `HeapAnalysis`.
 ///
@@ -162,7 +204,6 @@ impl IndexedAnalysisState {
             u64::MAX
         };
 
-        let mut histogram_map: HashMap<String, (u64, u64, u64)> = HashMap::new();
         // Min-heap of top-10 leak candidates by retained size (keeps smallest on top)
         let mut leak_heap: BinaryHeap<std::cmp::Reverse<(u64, u32)>> = BinaryHeap::with_capacity(11);
         // Min-heap of top-50 objects by retained size
@@ -185,13 +226,6 @@ impl IndexedAnalysisState {
                 }
                 _ => continue,
             }
-
-            // Histogram aggregation
-            let class_name = node.class_name.to_string();
-            let entry = histogram_map.entry(class_name).or_insert((0, 0, 0));
-            entry.0 += 1;
-            entry.1 += shallow;
-            entry.2 += retained;
 
             if retained == 0 {
                 continue;
@@ -226,18 +260,11 @@ impl IndexedAnalysisState {
             }
         }
 
-        let mut class_histogram: Vec<ClassHistogramEntry> = histogram_map
-            .into_iter()
-            .map(|(class_name, (instance_count, shallow_size, retained_size))| {
-                ClassHistogramEntry {
-                    class_name,
-                    instance_count,
-                    shallow_size,
-                    retained_size,
-                }
-            })
-            .collect();
-        class_histogram.sort_by(|a, b| b.retained_size.cmp(&a.retained_size));
+        let class_histogram = aggregate_class_histogram(&IndexedClassHistogramTree {
+            node_store: &node_store,
+            dominator: &dominator,
+            total_heap_size: summary.total_heap_size,
+        });
 
         // 3. Build leak suspects — class-level aggregations first (matching legacy behavior),
         //    then individual suspects only if not already covered.
@@ -246,12 +273,11 @@ impl IndexedAnalysisState {
 
         if reachable_heap_size > 0 {
             // Phase 1: Class-level suspects (>10% retained, multiple instances)
-            // Note: summing retained sizes across instances of the same class can exceed
-            // reachable heap size when one instance dominates another of the same class.
-            // We cap at 99.9% to avoid misleading percentages.
             for entry in &class_histogram {
                 let raw_percentage =
                     (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
+                // Keep the established API guard for backend-specific unreachable
+                // object accounting. P0-2 changes retained-byte aggregation only.
                 let percentage = raw_percentage.min(99.9);
                 if raw_percentage > 10.0 && entry.instance_count > 1 {
                     leak_suspects.push(LeakSuspect {
@@ -1194,6 +1220,38 @@ mod tests {
         }
     }
 
+    /// Two instances of the same class where the first immediately dominates
+    /// the second. The outer retained subtree already contains the inner one.
+    fn build_nested_same_class_parse_result() -> ParseResult {
+        let mut node_store = NodeStore::new();
+        node_store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        node_store.add_node(100, 0, 100, NodeType::Instance, Arc::from("example.Cache"));
+        node_store.add_node(200, 0, 60, NodeType::Instance, Arc::from("example.Cache"));
+
+        let mut edges = EdgeBuilder::with_capacity(2);
+        edges.add_edge(0, 1, 0);
+        edges.add_edge(1, 2, 0);
+
+        ParseResult {
+            node_store,
+            edge_store: edges.build(3),
+            class_index: ClassIndex::new(),
+            string_table: StringTable::new(),
+            gc_root_ids: vec![100],
+            summary: HeapSummary {
+                total_heap_size: 160,
+                reachable_heap_size: 160,
+                total_instances: 2,
+                total_classes: 0,
+                total_arrays: 0,
+                total_gc_roots: 1,
+                hprof_version: "JAVA PROFILE 1.0.2".to_string(),
+                heap_types: Vec::new(),
+            },
+            waste_raw: WasteRawData::new(),
+        }
+    }
+
     #[test]
     fn from_parse_result_builds_successfully() {
         let pr = build_test_parse_result();
@@ -1226,6 +1284,24 @@ mod tests {
         for i in 1..hist.len() {
             assert!(hist[i - 1].retained_size >= hist[i].retained_size);
         }
+    }
+
+    #[test]
+    fn class_histogram_does_not_double_count_nested_same_class_subtrees() {
+        let state = IndexedAnalysisState::from_parse_result(
+            build_nested_same_class_parse_result(),
+        )
+        .unwrap();
+        let cache = state
+            .get_class_histogram()
+            .iter()
+            .find(|entry| entry.class_name == "example.Cache")
+            .unwrap();
+
+        assert_eq!(cache.instance_count, 2);
+        assert_eq!(cache.shallow_size, 160);
+        assert_eq!(cache.retained_size, 160);
+        assert!(cache.retained_size <= state.get_summary().reachable_heap_size);
     }
 
     #[test]

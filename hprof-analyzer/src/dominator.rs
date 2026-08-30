@@ -9,9 +9,49 @@ use std::sync::{Arc, OnceLock};
 
 use crate::{
     NodeData, EdgeLabel, HeapGraph, HeapGraphParts, ObjectReport,
-    ClassHistogramEntry, LeakSuspect, AnalysisState,
+    LeakSuspect, AnalysisState,
+};
+use crate::class_histogram::{
+    aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
 };
 use crate::waste::{WasteRawData, WasteAnalysis};
+
+struct LegacyClassHistogramTree<'a> {
+    graph: &'a petgraph::Graph<NodeData, EdgeLabel, petgraph::Directed>,
+    children_map: &'a HashMap<NodeIndex, Vec<NodeIndex>>,
+    retained_sizes: &'a [u64],
+    shallow_sizes: &'a [u64],
+    super_root: NodeIndex,
+}
+
+impl ClassHistogramTree for LegacyClassHistogramTree<'_> {
+    type Node = NodeIndex;
+
+    fn root(&self) -> Self::Node {
+        self.super_root
+    }
+
+    fn children(&self, node: Self::Node) -> &[Self::Node] {
+        self.children_map
+            .get(&node)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample> {
+        let class_name = match &self.graph[node] {
+            NodeData::Instance { class_name, .. } | NodeData::Array { class_name, .. } => {
+                class_name.clone()
+            }
+            _ => return None,
+        };
+        Some(ClassHistogramSample {
+            class_name,
+            shallow_size: self.shallow_sizes[node.index()],
+            retained_size: self.retained_sizes[node.index()],
+        })
+    }
+}
 
 /// Computes dominator tree and returns top 50 objects by retained size.
 ///
@@ -213,7 +253,6 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     // Use BinaryHeap to track top 50 without allocating for all nodes.
     use std::collections::BinaryHeap;
     let mut top_heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
-    let mut histogram_map: HashMap<String, (u64, u64, u64)> = HashMap::new();
 
     for node_idx in petgraph.node_indices() {
         let i = node_idx.index();
@@ -226,17 +265,9 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
             NodeData::Root => (0, "Root", empty_class.clone()),
             NodeData::Class => (0, "Class", empty_class.clone()),
             NodeData::Instance { id, class_name, .. } => {
-                let entry = histogram_map.entry(class_name.to_string()).or_insert((0, 0, 0));
-                entry.0 += 1;
-                entry.1 += shallow;
-                entry.2 += retained;
                 (*id, "Instance", class_name.clone())
             }
             NodeData::Array { id, class_name, .. } => {
-                let entry = histogram_map.entry(class_name.to_string()).or_insert((0, 0, 0));
-                entry.0 += 1;
-                entry.1 += shallow;
-                entry.2 += retained;
                 (*id, "Array", class_name.clone())
             }
         };
@@ -256,19 +287,20 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         }
     }
 
+    let class_histogram = aggregate_class_histogram(&LegacyClassHistogramTree {
+        graph: &petgraph,
+        children_map: &children_map,
+        retained_sizes: &retained_sizes,
+        shallow_sizes: &shallow_sizes,
+        super_root,
+    });
+
     let mut top_50: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
     // Drop the petgraph to free node/edge memory before leak detection
     drop(petgraph);
     log::info!("Dropped petgraph to free memory");
 
-    let mut class_histogram: Vec<ClassHistogramEntry> = histogram_map
-        .into_iter()
-        .map(|(class_name, (instance_count, shallow_size, retained_size))| {
-            ClassHistogramEntry { class_name, instance_count, shallow_size, retained_size }
-        })
-        .collect();
-    class_histogram.sort_by(|a, b| b.retained_size.cmp(&a.retained_size));
     log::info!("Computed class histogram: {} classes", class_histogram.len());
 
     // Step 7: Detect leak suspects
@@ -439,10 +471,10 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         }
 
         // Phase 3: Class-level suspects
-        // Cap at 99.9% — summing retained sizes across instances of the same class
-        // can exceed reachable heap when one instance dominates another of the same class.
         for entry in &class_histogram {
             let raw_percentage = (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
+            // Keep the established API guard for backend-specific unreachable
+            // object accounting. P0-2 changes retained-byte aggregation only.
             let percentage = raw_percentage.min(99.9);
             if raw_percentage > 10.0 && entry.instance_count > 1 {
                 let already_covered = leak_suspects.iter()
@@ -521,4 +553,61 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
     };
 
     Ok((top_50, state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jvm_hprof::IdSize;
+    use petgraph::{Directed, Graph};
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn legacy_histogram_does_not_double_count_nested_same_class_subtrees() {
+        let mut graph: Graph<NodeData, EdgeLabel, Directed> = Graph::new();
+        let super_root = graph.add_node(NodeData::SuperRoot);
+        let outer = graph.add_node(NodeData::Instance {
+            id: 100,
+            size: 100,
+            class_name: Arc::from("example.Cache"),
+        });
+        let inner = graph.add_node(NodeData::Instance {
+            id: 200,
+            size: 60,
+            class_name: Arc::from("example.Cache"),
+        });
+        graph.add_edge(super_root, outer, EdgeLabel::GcRoot);
+        graph.add_edge(outer, inner, EdgeLabel::Unknown);
+
+        let heap_graph = HeapGraph {
+            graph,
+            id_to_node: HashMap::from([(100, outer), (200, inner)]),
+            super_root,
+            summary: crate::HeapSummary {
+                total_heap_size: 160,
+                reachable_heap_size: 160,
+                total_instances: 2,
+                total_classes: 0,
+                total_arrays: 0,
+                total_gc_roots: 1,
+                hprof_version: "JAVA PROFILE 1.0.2".to_string(),
+                heap_types: Vec::new(),
+            },
+            classloader_ids: HashSet::new(),
+            field_name_table: Vec::new(),
+            class_field_layouts: HashMap::new(),
+            id_size: IdSize::U64,
+        };
+
+        let (_, state) = calculate_dominators_with_state(heap_graph, WasteRawData::new()).unwrap();
+        let cache = state
+            .class_histogram
+            .iter()
+            .find(|entry| entry.class_name == "example.Cache")
+            .unwrap();
+
+        assert_eq!(cache.instance_count, 2);
+        assert_eq!(cache.shallow_size, 160);
+        assert_eq!(cache.retained_size, 160);
+    }
 }

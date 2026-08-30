@@ -9,6 +9,7 @@ pub mod heapql;
 pub mod waste;
 pub mod comparison;
 pub(crate) mod graph_builder;
+pub(crate) mod class_histogram;
 pub mod dominator;
 pub mod indexed;
 
@@ -1729,7 +1730,9 @@ pub struct ClassHistogramEntry {
     pub instance_count: u64,
     /// Total shallow size of all instances of this class.
     pub shallow_size: u64,
-    /// Total retained size of all instances of this class.
+    /// Non-overlapping minimum retained size for this class. If one instance
+    /// dominates another instance of the same class, its retained subtree is
+    /// counted only once.
     pub retained_size: u64,
 }
 
