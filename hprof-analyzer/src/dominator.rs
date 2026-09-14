@@ -14,6 +14,9 @@ use crate::{
 use crate::class_histogram::{
     aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
 };
+use crate::classloader_leaks::{
+    detect_classloader_suspects, is_covered_by_classloader, ClassloaderTree,
+};
 use crate::waste::{WasteRawData, WasteAnalysis};
 
 struct LegacyClassHistogramTree<'a> {
@@ -50,6 +53,42 @@ impl ClassHistogramTree for LegacyClassHistogramTree<'_> {
             shallow_size: self.shallow_sizes[node.index()],
             retained_size: self.retained_sizes[node.index()],
         })
+    }
+}
+
+struct LegacyClassloaderTree<'a> {
+    id_to_node: &'a HashMap<u64, NodeIndex>,
+    node_data_map: &'a [(u64, &'static str, Arc<str>)],
+    retained_sizes: &'a [u64],
+    children_map: &'a HashMap<NodeIndex, Vec<NodeIndex>>,
+    dominators: &'a dominators::Dominators<NodeIndex>,
+}
+
+impl ClassloaderTree for LegacyClassloaderTree<'_> {
+    type Node = NodeIndex;
+
+    fn node_for_object_id(&self, object_id: u64) -> Option<Self::Node> {
+        self.id_to_node.get(&object_id).copied()
+    }
+
+    fn object_id(&self, node: Self::Node) -> u64 {
+        self.node_data_map[node.index()].0
+    }
+
+    fn class_name(&self, node: Self::Node) -> String {
+        self.node_data_map[node.index()].2.to_string()
+    }
+
+    fn retained_size(&self, node: Self::Node) -> u64 {
+        self.retained_sizes[node.index()]
+    }
+
+    fn parent(&self, node: Self::Node) -> Option<Self::Node> {
+        self.dominators.immediate_dominator(node)
+    }
+
+    fn children(&self, node: Self::Node) -> Vec<Self::Node> {
+        self.children_map.get(&node).cloned().unwrap_or_default()
     }
 }
 
@@ -316,89 +355,39 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
         reachable_heap_size as f64 / (1024.0 * 1024.0));
     summary.reachable_heap_size = reachable_heap_size;
     let mut leak_suspects = Vec::new();
+    let mut classloader_suspect_nodes = std::collections::HashSet::new();
 
     if reachable_heap_size > 0 {
-        let threshold_pct = 5.0;
-        let threshold_bytes = (reachable_heap_size as f64 * threshold_pct / 100.0) as u64;
-
         // Phase 1: Classloader suspects
-        let mut classloader_suspects: Vec<(NodeIndex, u64, f64, u64, String)> = Vec::new();
-        for &cl_id in &classloader_ids {
-            if let Some(&node_idx) = id_to_node.get(&cl_id) {
-                let ni = node_idx.index();
-                let retained = retained_sizes[ni];
-                if retained < threshold_bytes {
-                    continue;
-                }
-                let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
-                let (object_id, class_name) = {
-                    let (id, _, ref cn) = node_data_map[ni];
-                    (id, cn.to_string())
-                };
-                if class_name.is_empty() {
-                    continue;
-                }
-                classloader_suspects.push((node_idx, retained, percentage, object_id, class_name));
-            }
-        }
-        classloader_suspects.sort_by(|a, b| b.1.cmp(&a.1));
-
-        for (node_idx, retained, percentage, object_id, class_name) in classloader_suspects.iter().take(5) {
-            let mut accum_node = *node_idx;
-            let mut accum_retained = *retained;
-            loop {
-                if let Some(dom_children) = children_map.get(&accum_node) {
-                    let mut max_child = None;
-                    let mut max_child_ret = 0u64;
-                    for &child in dom_children {
-                        let child_ret = retained_sizes[child.index()];
-                        if child_ret > max_child_ret {
-                            max_child_ret = child_ret;
-                            max_child = Some(child);
-                        }
-                    }
-                    if let Some(child) = max_child {
-                        if max_child_ret > accum_retained * 4 / 5 {
-                            accum_node = child;
-                            accum_retained = max_child_ret;
-                            continue;
-                        }
-                    }
-                }
-                break;
-            }
-
-            let accum_info = if accum_node != *node_idx {
-                let (_, _, ref accum_cn) = node_data_map[accum_node.index()];
-                format!(". Memory accumulated in {} ({:.2} MB)",
-                    accum_cn, accum_retained as f64 / (1024.0 * 1024.0))
-            } else {
-                String::new()
-            };
-
-            leak_suspects.push(LeakSuspect {
-                class_name: class_name.clone(),
-                object_id: *object_id,
-                retained_size: *retained,
-                retained_percentage: *percentage,
-                accumulation_point: None,
-                        description: format!(
-                    "Classloader {} retains {:.1}% of reachable heap ({:.2} MB){}",
-                    class_name, percentage, *retained as f64 / (1024.0 * 1024.0), accum_info,
-                ),
-            });
-        }
+        let classloader_tree = LegacyClassloaderTree {
+            id_to_node: &id_to_node,
+            node_data_map: &node_data_map,
+            retained_sizes: &retained_sizes,
+            children_map: &children_map,
+            dominators: &doms,
+        };
+        let classloader_detections = detect_classloader_suspects(
+            &classloader_tree,
+            &classloader_ids,
+            reachable_heap_size,
+        );
+        classloader_suspect_nodes.extend(
+            classloader_detections
+                .iter()
+                .map(|detected| detected.node),
+        );
+        leak_suspects.extend(
+            classloader_detections
+                .iter()
+                .map(|detected| detected.suspect.clone()),
+        );
 
         // Phase 2: Non-classloader individual suspects
-        let classloader_suspect_nodes: std::collections::HashSet<NodeIndex> = leak_suspects
-            .iter().filter_map(|s| id_to_node.get(&s.object_id).copied()).collect();
+        let threshold_bytes = reachable_heap_size.saturating_mul(5) / 100;
 
         let mut other_candidates: Vec<(NodeIndex, u64, f64)> = Vec::new();
         for i in 0..node_count {
             let node_idx = NodeIndex::new(i);
-            if classloader_suspect_nodes.contains(&node_idx) {
-                continue;
-            }
             let ni = node_idx.index();
             let (_, node_type, _) = node_data_map[ni];
             if node_type != "Instance" && node_type != "Array" {
@@ -408,21 +397,11 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
             if retained < threshold_bytes {
                 continue;
             }
-            let mut is_under_cl_suspect = false;
-            if let Some(dominator) = doms.immediate_dominator(node_idx) {
-                let mut check = dominator;
-                for _ in 0..20 {
-                    if classloader_suspect_nodes.contains(&check) {
-                        is_under_cl_suspect = true;
-                        break;
-                    }
-                    match doms.immediate_dominator(check) {
-                        Some(parent) if parent != check => check = parent,
-                        _ => break,
-                    }
-                }
-            }
-            if is_under_cl_suspect {
+            if is_covered_by_classloader(
+                &classloader_tree,
+                node_idx,
+                &classloader_suspect_nodes,
+            ) {
                 continue;
             }
             let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
@@ -516,6 +495,11 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
 
         object_leak_suspects.retain(|s| {
             if let Some(&node_idx) = id_to_node.get(&s.object_id) {
+                // Keep explicitly selected classloaders visible even when a
+                // large structural ancestor is also a suspect.
+                if classloader_suspect_nodes.contains(&node_idx) {
+                    return true;
+                }
                 if let Some(parent) = doms.immediate_dominator(node_idx) {
                     // If parent is also a suspect, remove this child
                     !suspect_node_indices.contains(&parent)
@@ -609,5 +593,64 @@ mod tests {
         assert_eq!(cache.instance_count, 2);
         assert_eq!(cache.shallow_size, 160);
         assert_eq!(cache.retained_size, 160);
+    }
+
+    #[test]
+    fn legacy_keeps_classloader_visible_below_large_parent_suspect() {
+        let mut graph: Graph<NodeData, EdgeLabel, Directed> = Graph::new();
+        let super_root = graph.add_node(NodeData::SuperRoot);
+        let holder = graph.add_node(NodeData::Instance {
+            id: 100,
+            size: 800,
+            class_name: Arc::from("example.Holder"),
+        });
+        let loader = graph.add_node(NodeData::Instance {
+            id: 200,
+            size: 20,
+            class_name: Arc::from("example.LeakingClassLoader"),
+        });
+        let payload = graph.add_node(NodeData::Array {
+            id: 300,
+            size: 180,
+            class_name: Arc::from("byte[]"),
+        });
+        graph.add_edge(super_root, holder, EdgeLabel::GcRoot);
+        graph.add_edge(holder, loader, EdgeLabel::Unknown);
+        graph.add_edge(loader, payload, EdgeLabel::Unknown);
+
+        let heap_graph = HeapGraph {
+            graph,
+            id_to_node: HashMap::from([(100, holder), (200, loader), (300, payload)]),
+            super_root,
+            summary: crate::HeapSummary {
+                total_heap_size: 1000,
+                reachable_heap_size: 1000,
+                total_instances: 2,
+                total_classes: 0,
+                total_arrays: 1,
+                total_gc_roots: 1,
+                hprof_version: "JAVA PROFILE 1.0.2".to_string(),
+                heap_types: Vec::new(),
+            },
+            classloader_ids: HashSet::from([200]),
+            field_name_table: Vec::new(),
+            class_field_layouts: HashMap::new(),
+            id_size: IdSize::U64,
+        };
+
+        let (_, state) = calculate_dominators_with_state(heap_graph, WasteRawData::new()).unwrap();
+
+        assert!(state
+            .object_leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 100));
+        assert!(state
+            .object_leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 200));
+        assert!(!state
+            .object_leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 300));
     }
 }

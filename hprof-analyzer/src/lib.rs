@@ -10,6 +10,7 @@ pub mod waste;
 pub mod comparison;
 pub(crate) mod graph_builder;
 pub(crate) mod class_histogram;
+pub(crate) mod classloader_leaks;
 pub mod dominator;
 pub mod indexed;
 

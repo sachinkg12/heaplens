@@ -36,7 +36,7 @@ Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR 
 | **Overview** | Heap stats, top objects, D3.js pie & bar charts |
 | **Histogram** | Sortable class table with instance counts and sizes — click a class to list all instances |
 | **Dominator Tree** | Expandable lazy-loaded tree with retained size bars, field names, and action buttons |
-| **Leak Suspects** | Objects/classes retaining >10% of heap, with adjustable threshold slider |
+| **Leak Suspects** | Significant classloaders (5% threshold) and other large objects/classes, with adjustable threshold slider |
 | **Waste** | Duplicate strings, empty collections, over-allocated arrays, boxed primitives |
 | **Source** | Jump to Java source — workspace files, Maven/Gradle dependency JARs, or CFR decompilation |
 | **Query** | HeapQL: SQL-like queries with autocomplete, syntax highlighting, and query history |
@@ -196,6 +196,7 @@ adb pull /data/local/tmp/heap.hprof
 | `heaplens.sourceResolution.mavenHome` | — | Custom Maven repository path |
 | `heaplens.sourceResolution.gradleHome` | — | Custom Gradle cache path |
 | `heaplens.sourceResolution.decompilerEnabled` | `true` | Enable CFR decompilation fallback |
+| `heaplens.analysis.longRunningWarningMinutes` | `5` | Show a Continue Waiting or Cancel warning after this many minutes; `0` disables the warning |
 
 ---
 

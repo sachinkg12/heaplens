@@ -13,6 +13,9 @@ use crate::heapql::{HeapQlError, QueryResult};
 use crate::class_histogram::{
     aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
 };
+use crate::classloader_leaks::{
+    detect_classloader_suspects, is_covered_by_classloader, ClassloaderTree,
+};
 use crate::waste::{WasteAnalysis, WasteRawData};
 use crate::{ClassHistogramEntry, FieldInfo, HeapSummary, LeakSuspect, ObjectReport};
 
@@ -62,6 +65,40 @@ impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
             shallow_size: record.shallow_size as u64,
             retained_size,
         })
+    }
+}
+
+struct IndexedClassloaderTree<'a> {
+    node_store: &'a NodeStore,
+    dominator: &'a DominatorResult,
+}
+
+impl ClassloaderTree for IndexedClassloaderTree<'_> {
+    type Node = u32;
+
+    fn node_for_object_id(&self, object_id: u64) -> Option<Self::Node> {
+        self.node_store.index_of(object_id)
+    }
+
+    fn object_id(&self, node: Self::Node) -> u64 {
+        self.node_store.get_by_index(node).id
+    }
+
+    fn class_name(&self, node: Self::Node) -> String {
+        self.node_store.get_by_index(node).class_name.to_string()
+    }
+
+    fn retained_size(&self, node: Self::Node) -> u64 {
+        self.dominator.retained_sizes[node as usize]
+    }
+
+    fn parent(&self, node: Self::Node) -> Option<Self::Node> {
+        let parent = self.dominator.dominator_parent[node as usize];
+        (parent != u32::MAX).then_some(parent)
+    }
+
+    fn children(&self, node: Self::Node) -> Vec<Self::Node> {
+        self.dominator.dominator_children[node as usize].clone()
     }
 }
 
@@ -167,6 +204,7 @@ impl IndexedAnalysisState {
             class_index,
             string_table,
             gc_root_ids,
+            classloader_ids,
             mut summary,
             waste_raw,
         } = result;
@@ -272,7 +310,34 @@ impl IndexedAnalysisState {
         let mut object_leak_suspects = Vec::new();
 
         if reachable_heap_size > 0 {
-            // Phase 1: Class-level suspects (>10% retained, multiple instances)
+            // Phase 1: Classloader suspects (>5% retained). These IDs come
+            // from HPROF class definitions rather than class-name heuristics.
+            let classloader_tree = IndexedClassloaderTree {
+                node_store: &node_store,
+                dominator: &dominator,
+            };
+            let classloader_detections = detect_classloader_suspects(
+                &classloader_tree,
+                &classloader_ids,
+                reachable_heap_size,
+            );
+            let classloader_suspect_nodes: std::collections::HashSet<u32> =
+                classloader_detections
+                    .iter()
+                    .map(|detected| detected.node)
+                    .collect();
+            leak_suspects.extend(
+                classloader_detections
+                    .iter()
+                    .map(|detected| detected.suspect.clone()),
+            );
+            object_leak_suspects.extend(
+                classloader_detections
+                    .iter()
+                    .map(|detected| detected.suspect.clone()),
+            );
+
+            // Phase 2: Class-level suspects (>10% retained, multiple instances)
             for entry in &class_histogram {
                 let raw_percentage =
                     (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
@@ -297,9 +362,19 @@ impl IndexedAnalysisState {
                 }
             }
 
-            // Phase 2: Individual suspects (>10% retained), only if not already
-            // covered by a class-level suspect for the same class name.
-            let mut candidates: Vec<(u64, u32)> = leak_heap.into_iter().map(|r| r.0).collect();
+            // Phase 3: Individual suspects (>10% retained), excluding objects
+            // already explained by a classloader suspect.
+            let mut candidates: Vec<(u64, u32)> = leak_heap
+                .into_iter()
+                .map(|r| r.0)
+                .filter(|&(_, idx)| {
+                    !is_covered_by_classloader(
+                        &classloader_tree,
+                        idx,
+                        &classloader_suspect_nodes,
+                    )
+                })
+                .collect();
             candidates.sort_by(|a, b| b.0.cmp(&a.0));
 
             for &(retained, idx) in &candidates {
@@ -387,6 +462,12 @@ impl IndexedAnalysisState {
 
             object_leak_suspects.retain(|s| {
                 if let Some(idx) = node_store.index_of(s.object_id) {
+                    // A classloader is an explicitly selected root-cause
+                    // suspect. Keep it visible even when a large structural
+                    // ancestor (for example, a class object) is also listed.
+                    if classloader_suspect_nodes.contains(&idx) {
+                        return true;
+                    }
                     let parent = dominator.dominator_parent[idx as usize];
                     if parent != u32::MAX {
                         // If parent is also a suspect, remove this child
@@ -950,6 +1031,7 @@ impl IndexedAnalysisState {
             class_index: phase1.class_index,
             string_table: phase1.string_table,
             gc_root_ids: phase1.gc_root_ids,
+            classloader_ids: phase1.classloader_ids,
             summary: phase1.summary,
             waste_raw: phase2.waste_raw,
         };
@@ -1206,6 +1288,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: vec![100],
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 448,
                 reachable_heap_size: 448,
@@ -1238,6 +1321,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: vec![100],
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 160,
                 reachable_heap_size: 160,
@@ -1433,6 +1517,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: vec![1, 2],
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 1000,
                 reachable_heap_size: 1000,
@@ -1450,6 +1535,111 @@ mod tests {
         // big.B retains 90% of heap, should be a suspect
         assert!(!state.leak_suspects.is_empty());
         assert!(state.leak_suspects.iter().any(|s| s.class_name == "big.B"));
+    }
+
+    #[test]
+    fn indexed_reports_classloader_between_five_and_ten_percent() {
+        // The generic indexed detector starts at 10%. Classloaders use the
+        // established legacy threshold of 5%, so this 8% loader is a focused
+        // regression for the classloader-specific path.
+        let (phase1, phase2) = build_classloader_phase_results(10, 70, 920);
+        let state = IndexedAnalysisState::from_phases(phase1, phase2).unwrap();
+        let suspect = state
+            .leak_suspects
+            .iter()
+            .find(|suspect| suspect.object_id == 200)
+            .expect("5%-10% classloader should be reported by the indexed backend");
+
+        assert_eq!(suspect.class_name, "example.LeakingClassLoader");
+        assert_eq!(suspect.retained_size, 80);
+        assert!((suspect.retained_percentage - 8.0).abs() < f64::EPSILON);
+        assert!(suspect.description.starts_with("Classloader "));
+    }
+
+    #[test]
+    fn indexed_does_not_duplicate_object_suspect_below_classloader() {
+        let (phase1, phase2) = build_classloader_phase_results(20, 180, 800);
+        let state = IndexedAnalysisState::from_phases(phase1, phase2).unwrap();
+
+        assert!(state
+            .object_leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 200));
+        assert!(!state
+            .object_leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 300));
+    }
+
+    fn build_classloader_phase_results(
+        loader_shallow: u32,
+        child_shallow: u32,
+        filler_shallow: u32,
+    ) -> (Phase1Result, Phase2Result) {
+        let mut node_store = NodeStore::new();
+        node_store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        node_store.add_node(100, 0, 0, NodeType::GcRoot, Arc::from("GcRoot"));
+        node_store.add_node(
+            150,
+            0,
+            0,
+            NodeType::Class,
+            Arc::from("class ExampleHolder"),
+        );
+        node_store.add_node(
+            200,
+            0,
+            loader_shallow,
+            NodeType::Instance,
+            Arc::from("example.LeakingClassLoader"),
+        );
+        node_store.add_node(
+            300,
+            0,
+            child_shallow,
+            NodeType::PrimitiveArray,
+            Arc::from("byte[]"),
+        );
+        node_store.add_node(
+            400,
+            0,
+            filler_shallow,
+            NodeType::PrimitiveArray,
+            Arc::from("byte[]"),
+        );
+
+        let mut edges = EdgeBuilder::with_capacity(5);
+        edges.add_edge(0, 1, 0);
+        edges.add_edge(1, 2, 0);
+        edges.add_edge(2, 3, 0);
+        edges.add_edge(3, 4, 0);
+        edges.add_edge(2, 5, 0);
+
+        let phase1 = Phase1Result {
+            node_store,
+            class_index: ClassIndex::new(),
+            string_table: StringTable::new(),
+            gc_root_ids: vec![100],
+            classloader_ids: std::iter::once(200).collect(),
+            summary: HeapSummary {
+                total_heap_size: 1000,
+                reachable_heap_size: 1000,
+                total_instances: 1,
+                total_classes: 1,
+                total_arrays: 2,
+                total_gc_roots: 1,
+                hprof_version: String::new(),
+                heap_types: Vec::new(),
+            },
+            waste_raw: WasteRawData::new(),
+            class_histogram: Vec::new(),
+        };
+        let phase2 = Phase2Result {
+            edge_store: edges.build(6),
+            waste_raw: WasteRawData::new(),
+        };
+
+        (phase1, phase2)
     }
 
     // -----------------------------------------------------------------------
@@ -1472,6 +1662,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: vec![100],
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 448,
                 reachable_heap_size: 448,

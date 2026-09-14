@@ -65,6 +65,8 @@ pub struct ParseResult {
     pub class_index: ClassIndex,
     pub string_table: StringTable,
     pub gc_root_ids: Vec<u64>,
+    /// Object IDs used as classloaders by one or more class definitions.
+    pub classloader_ids: std::collections::HashSet<u64>,
     pub summary: HeapSummary,
     pub waste_raw: WasteRawData,
 }
@@ -78,6 +80,8 @@ pub struct Phase1Result {
     pub class_index: ClassIndex,
     pub string_table: StringTable,
     pub gc_root_ids: Vec<u64>,
+    /// Object IDs used as classloaders by one or more class definitions.
+    pub classloader_ids: std::collections::HashSet<u64>,
     pub summary: HeapSummary,
     pub waste_raw: WasteRawData,
     /// Class histogram computed from shallow sizes only.
@@ -93,7 +97,6 @@ pub struct DeferredEdgeData {
     pub class_instance_sizes: HashMap<u64, u32>,
     pub id_size: jvm_hprof::IdSize,
     pub array_element_counts: HashMap<u64, u32>,
-    pub classloader_ids: std::collections::HashSet<u64>,
 }
 
 /// Result of Phase 2 parsing (edges + CSR).
@@ -135,6 +138,7 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
         class_index: phase1.class_index,
         string_table: phase1.string_table,
         gc_root_ids: phase1.gc_root_ids,
+        classloader_ids: phase1.classloader_ids,
         summary: phase1.summary,
         waste_raw: phase2.waste_raw,
     })
@@ -911,7 +915,6 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
         class_instance_sizes,
         id_size,
         array_element_counts,
-        classloader_ids,
     };
 
     let phase1 = Phase1Result {
@@ -919,6 +922,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
         class_index,
         string_table,
         gc_root_ids,
+        classloader_ids,
         summary,
         waste_raw,
         class_histogram,
@@ -1066,6 +1070,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: Vec::new(),
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 0,
                 reachable_heap_size: 0,
@@ -1084,6 +1089,7 @@ mod tests {
         assert_eq!(pr.class_index.len(), 0);
         assert_eq!(pr.string_table.len(), 0);
         assert!(pr.gc_root_ids.is_empty());
+        assert!(pr.classloader_ids.is_empty());
         assert_eq!(pr.summary.total_heap_size, 0);
     }
 
@@ -1106,6 +1112,7 @@ mod tests {
             class_index: ClassIndex::new(),
             string_table: StringTable::new(),
             gc_root_ids: Vec::new(),
+            classloader_ids: std::collections::HashSet::new(),
             summary: HeapSummary {
                 total_heap_size: 0,
                 reachable_heap_size: 0,
@@ -1122,6 +1129,7 @@ mod tests {
 
         assert_eq!(pr.node_store.len(), 0);
         assert!(pr.class_histogram.is_empty());
+        assert!(pr.classloader_ids.is_empty());
         assert_eq!(pr.summary.total_heap_size, 0);
     }
 
