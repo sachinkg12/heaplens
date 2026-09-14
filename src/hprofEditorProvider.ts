@@ -13,6 +13,8 @@ import { MonitorService } from './monitorService';
 import { friendlyError } from './errorMessages';
 import { executeAiFix } from './aiFixProvider';
 import { trackEvent, classifyError } from './telemetry';
+import { AnalysisSession } from './analysisSession';
+import { deliverOrBufferWebviewMessage } from './webviewMessageDelivery';
 
 /**
  * Custom readonly editor provider for .hprof files.
@@ -38,6 +40,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     private heartbeatIntervals = new Map<string, ReturnType<typeof setInterval>>();
     /** Per-editor heartbeat failure counts. */
     private heartbeatFailures = new Map<string, number>();
+    /** Per-editor analysis lifecycle, kept separate from editor rendering state. */
+    private analysisSessions = new Map<string, AnalysisSession>();
     /** Active monitor service (one per extension, not per-editor). */
     private monitorService: MonitorService | null = null;
 
@@ -117,6 +121,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         // Clean up when the editor tab is closed
         webviewPanel.onDidDispose(() => {
             this.outputChannel.appendLine(`[HeapLens] Editor disposed for: ${hprofPath}`);
+            this.analysisSessions.get(hprofPath)?.dispose();
+            this.analysisSessions.delete(hprofPath);
             // Dispose the per-editor client (kills the subprocess)
             const state = this.editors.get(hprofPath);
             if (state?.client && !state.client.isDisposed) {
@@ -169,8 +175,11 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             };
             client.onProcessExit = (code: number | null, signal: string | null) => {
                 this.outputChannel.appendLine(`[HeapLens] Server process exited for ${hprofPath}: code=${code}, signal=${signal}`);
+                this.analysisSessions.get(hprofPath)?.serverExited(
+                    new Error(`Analysis server exited with code ${code}, signal ${signal}`)
+                );
                 // Notify only this editor's webview about the crash
-                if (code !== 0 && code !== null) {
+                if ((code !== 0 && code !== null) || signal !== null) {
                     trackEvent('error/serverCrashed', {
                         exitCode: String(code),
                         signal: signal || 'none'
@@ -196,9 +205,6 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         webviewPanel: vscode.WebviewPanel,
         client: RustClient
     ): Promise<void> {
-        let resolveAnalysis: (() => void) | null = null;
-        const analysisPromise = new Promise<void>((resolve) => { resolveAnalysis = resolve; });
-
         const phaseMessages: Record<string, string> = {
             loading: 'Loading file...',
             graph_building: 'Building heap graph...',
@@ -207,87 +213,6 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         };
         let lastPhase = 0;
         let progressRef: vscode.Progress<{ increment?: number; message?: string }> | null = null;
-
-        // Single handler for progress: forwards to webview + drives VS Code progress bar
-        client.onNotification('heap_analysis_progress', (params: any) => {
-            const state = this.editors.get(hprofPath);
-            this.outputChannel.appendLine(`[HeapLens] Progress: stage=${params.stage}, phase=${params.phase}/${params.total_phases}`);
-
-            // Forward to webview
-            const progressMsg: any = {
-                command: 'analysisProgress',
-                stage: params.stage,
-                phase: params.phase,
-                totalPhases: params.total_phases
-            };
-            if (params.summary) { progressMsg.summary = params.summary; }
-            if (params.file_metadata) { progressMsg.fileMetadata = params.file_metadata; }
-            if (state?.webviewReady) {
-                webviewPanel.webview.postMessage(progressMsg);
-            }
-
-            // Drive VS Code notification progress
-            const phase = params.phase || 0;
-            const msg = phaseMessages[params.stage] || 'Analyzing...';
-            const increment = Math.max(0, (phase - lastPhase) * 25);
-            lastPhase = phase;
-            progressRef?.report({ increment, message: msg });
-        });
-
-        client.onNotification('heap_analysis_complete', (params: any) => {
-            resolveAnalysis?.();
-            const state = this.editors.get(hprofPath);
-            this.outputChannel.appendLine(`[HeapLens] Received heap_analysis_complete notification, status: ${params.status}`);
-            if (params.status === 'completed') {
-                const topObjCount = (params.top_objects || []).length;
-                const histCount = (params.class_histogram || []).length;
-                const suspectCount = (params.leak_suspects || []).length;
-                this.outputChannel.appendLine(`[HeapLens] Data: ${topObjCount} objects, ${histCount} histogram entries, ${suspectCount} leak suspects`);
-
-                trackEvent('analysis/completed', {}, {
-                    durationMs: Math.round(Date.now() - analysisStartTime),
-                    objectCount: params.summary?.total_instances || 0,
-                    classCount: params.summary?.total_classes || 0,
-                    leakSuspectCount: suspectCount,
-                    heapSizeMB: Math.round((params.summary?.total_heap_size || 0) / (1024 * 1024))
-                });
-
-                // Store analysis data for LLM integrations (per-editor)
-                const analysisData: AnalysisData = {
-                    summary: params.summary || null,
-                    topObjects: params.top_objects || [],
-                    leakSuspects: params.leak_suspects || [],
-                    classHistogram: params.class_histogram || [],
-                    wasteAnalysis: params.waste_analysis || undefined
-                };
-                if (state) { state.analysisData = analysisData; }
-
-                const webviewMessage = {
-                    command: 'analysisComplete',
-                    topObjects: params.top_objects || [],
-                    topLayers: params.top_layers || [],
-                    summary: params.summary || null,
-                    classHistogram: params.class_histogram || [],
-                    leakSuspects: params.leak_suspects || [],
-                    objectLeakSuspects: params.object_leak_suspects || [],
-                    wasteAnalysis: params.waste_analysis || null
-                };
-
-                if (state?.webviewReady) {
-                    webviewPanel.webview.postMessage(webviewMessage);
-                    this.outputChannel.appendLine('[HeapLens] Posted analysisComplete to webview');
-                } else if (state) {
-                    state.pendingWebviewMessage = webviewMessage;
-                    this.outputChannel.appendLine('[HeapLens] Webview not ready yet, buffering analysisComplete');
-                }
-            } else if (params.status === 'error') {
-                this.outputChannel.appendLine(`[HeapLens] Analysis error: ${params.error}`);
-                webviewPanel.webview.postMessage({
-                    command: 'error',
-                    message: params.error || 'Unknown error'
-                });
-            }
-        });
 
         this.outputChannel.appendLine(`[HeapLens] Sending analyze_heap request for: ${hprofPath}`);
 
@@ -298,6 +223,65 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         } catch { /* ignore stat errors */ }
 
         const analysisStartTime = Date.now();
+        const configuredWarningMinutes = vscode.workspace
+            .getConfiguration('heaplens')
+            .get<number>('analysis.longRunningWarningMinutes', 5);
+        const warningMinutes = Number.isFinite(configuredWarningMinutes)
+            ? Math.max(0, configuredWarningMinutes)
+            : 5;
+
+        const session = new AnalysisSession(
+            client,
+            hprofPath,
+            { longRunningWarningMs: warningMinutes * 60_000 },
+            {
+                onProgress: (params: any) => {
+                    const state = this.editors.get(hprofPath);
+                    this.outputChannel.appendLine(`[HeapLens] Progress: stage=${params.stage}, phase=${params.phase}/${params.total_phases}`);
+
+                    const progressMsg: any = {
+                        command: 'analysisProgress',
+                        stage: params.stage,
+                        phase: params.phase,
+                        totalPhases: params.total_phases
+                    };
+                    if (params.summary) { progressMsg.summary = params.summary; }
+                    if (params.file_metadata) { progressMsg.fileMetadata = params.file_metadata; }
+                    if (state?.webviewReady) {
+                        webviewPanel.webview.postMessage(progressMsg);
+                    }
+
+                    const phase = params.phase || 0;
+                    const msg = phaseMessages[params.stage] || 'Analyzing...';
+                    const increment = Math.max(0, (phase - lastPhase) * 25);
+                    lastPhase = phase;
+                    progressRef?.report({ increment, message: msg });
+                },
+                onLongRunning: async elapsedMs => {
+                    const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
+                    trackEvent('analysis/longRunning', {}, { elapsedMinutes });
+                    this.outputChannel.appendLine(`[HeapLens] Analysis is still running after ${elapsedMinutes} minutes`);
+                    const choice = await vscode.window.showWarningMessage(
+                        `HeapLens analysis has been running for ${elapsedMinutes} minutes. Continue waiting or cancel it?`,
+                        'Continue Waiting',
+                        'Cancel Analysis'
+                    );
+                    return choice === 'Cancel Analysis' ? 'cancel' : 'continue';
+                },
+                onIgnoredNotification: (method, params) => {
+                    this.outputChannel.appendLine(
+                        `[HeapLens] Ignored stale ${method} notification for request ${params?.request_id}`
+                    );
+                },
+                onCancellationError: error => {
+                    this.outputChannel.appendLine(`[HeapLens] Cancellation request failed: ${error.message}`);
+                    void vscode.window.showWarningMessage(
+                        'HeapLens could not cancel the analysis. It will continue running.'
+                    );
+                }
+            }
+        );
+        this.analysisSessions.set(hprofPath, session);
 
         await vscode.window.withProgress(
             {
@@ -312,37 +296,39 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                 // Handle VS Code cancellation
                 cancellationToken.onCancellationRequested(() => {
                     trackEvent('analysis/cancelled');
-                    this.outputChannel.appendLine('[HeapLens] User cancelled analysis');
-                    // eslint-disable-next-line @typescript-eslint/no-empty-function
-                    client.sendRequest('cancel_analysis', { path: hprofPath }).catch(() => {});
-                    const state = this.editors.get(hprofPath);
-                    if (state?.webviewReady) {
-                        webviewPanel.webview.postMessage({ command: 'analysisCancelled' });
-                    }
+                    this.outputChannel.appendLine('[HeapLens] User requested analysis cancellation');
+                    void session.cancel();
                 });
 
                 try {
                     this.outputChannel.appendLine('[HeapLens] Awaiting analyze_heap response...');
-                    const response = await client.sendRequest('analyze_heap', { path: hprofPath });
-                    this.outputChannel.appendLine(`[HeapLens] Got response: ${JSON.stringify(response)}`);
+                    const outcome = await session.run();
 
-                    if (response.status === 'processing') {
-                        this.outputChannel.appendLine('[HeapLens] Status=processing, waiting for notification...');
-
-                        const startTime = Date.now();
-                        const timeoutPromise = new Promise<'timeout'>((resolve) =>
-                            setTimeout(() => resolve('timeout'), 300000)
+                    if (outcome.status === 'completed') {
+                        this.handleCompletedAnalysis(
+                            hprofPath,
+                            webviewPanel,
+                            outcome.result,
+                            analysisStartTime
                         );
-                        const result = await Promise.race([
-                            analysisPromise.then(() => 'done' as const),
-                            timeoutPromise
-                        ]);
-
-                        if (result === 'timeout') {
-                            throw new Error('Analysis timed out after 5 minutes');
-                        }
-                        this.outputChannel.appendLine(`[HeapLens] Analysis completed in ${Date.now() - startTime}ms`);
+                        this.outputChannel.appendLine(`[HeapLens] Analysis completed in ${Date.now() - analysisStartTime}ms`);
                         progress.report({ increment: 100, message: 'Done!' });
+                    } else if (outcome.status === 'cancelled') {
+                        this.outputChannel.appendLine('[HeapLens] Analysis cancelled');
+                        const state = this.editors.get(hprofPath);
+                        if (state) {
+                            const delivery = deliverOrBufferWebviewMessage(
+                                state,
+                                { command: 'analysisCancelled' },
+                                pending => webviewPanel.webview.postMessage(pending)
+                            );
+                            this.outputChannel.appendLine(
+                                delivery === 'posted'
+                                    ? '[HeapLens] Posted analysisCancelled to webview'
+                                    : '[HeapLens] Webview not ready yet, buffering analysisCancelled'
+                            );
+                        }
+                        progress.report({ message: 'Cancelled' });
                     }
                 } catch (error: any) {
                     const errMsg = error.message || 'unknown';
@@ -353,11 +339,95 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     this.outputChannel.appendLine(`[HeapLens] ERROR: ${error.message}`);
                     vscode.window.showErrorMessage(`HeapLens: ${friendlyError(error.message)}`);
                 } finally {
-                    client.offNotification('heap_analysis_progress');
-                    client.offNotification('heap_analysis_complete');
+                    if (this.analysisSessions.get(hprofPath) === session) {
+                        this.analysisSessions.delete(hprofPath);
+                    }
                 }
             }
         );
+    }
+
+    private handleCompletedAnalysis(
+        hprofPath: string,
+        webviewPanel: vscode.WebviewPanel,
+        params: any,
+        analysisStartTime: number
+    ): void {
+        const state = this.editors.get(hprofPath);
+        const topObjCount = (params.top_objects || []).length;
+        const histCount = (params.class_histogram || []).length;
+        const suspectCount = (params.leak_suspects || []).length;
+        this.outputChannel.appendLine(
+            `[HeapLens] Data: ${topObjCount} objects, ${histCount} histogram entries, ${suspectCount} leak suspects`
+        );
+
+        trackEvent('analysis/completed', {}, {
+            durationMs: Math.round(Date.now() - analysisStartTime),
+            objectCount: params.summary?.total_instances || 0,
+            classCount: params.summary?.total_classes || 0,
+            leakSuspectCount: suspectCount,
+            heapSizeMB: Math.round((params.summary?.total_heap_size || 0) / (1024 * 1024))
+        });
+
+        const analysisData: AnalysisData = {
+            summary: params.summary || null,
+            topObjects: params.top_objects || [],
+            leakSuspects: params.leak_suspects || [],
+            classHistogram: params.class_histogram || [],
+            wasteAnalysis: params.waste_analysis || undefined
+        };
+        if (state) { state.analysisData = analysisData; }
+
+        const webviewMessage = {
+            command: 'analysisComplete',
+            topObjects: params.top_objects || [],
+            topLayers: params.top_layers || [],
+            summary: params.summary || null,
+            classHistogram: params.class_histogram || [],
+            leakSuspects: params.leak_suspects || [],
+            objectLeakSuspects: params.object_leak_suspects || [],
+            wasteAnalysis: params.waste_analysis || null
+        };
+
+        if (state) {
+            const delivery = deliverOrBufferWebviewMessage(
+                state,
+                webviewMessage,
+                pending => webviewPanel.webview.postMessage(pending)
+            );
+            this.outputChannel.appendLine(
+                delivery === 'posted'
+                    ? '[HeapLens] Posted analysisComplete to webview'
+                    : '[HeapLens] Webview not ready yet, buffering analysisComplete'
+            );
+        }
+    }
+
+    public async cancelAnalysis(hprofPath: string): Promise<void> {
+        const session = this.analysisSessions.get(hprofPath);
+        if (!session) {
+            this.outputChannel.appendLine(`[HeapLens] No active analysis to cancel for: ${hprofPath}`);
+            return;
+        }
+        await session.cancel();
+    }
+
+    public async retryAnalysis(hprofPath: string): Promise<void> {
+        if (this.analysisSessions.has(hprofPath)) {
+            this.outputChannel.appendLine(`[HeapLens] Analysis is already active for: ${hprofPath}`);
+            return;
+        }
+
+        const state = this.editors.get(hprofPath);
+        if (!state || state.client.isDisposed) {
+            state?.webviewPanel.webview.postMessage({
+                command: 'error',
+                message: 'The analysis server is not available. Close and reopen the heap dump to restart it.'
+            });
+            return;
+        }
+
+        await this.analyzeFile(hprofPath, state.webviewPanel, state.client);
     }
 
     public handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): void {
@@ -782,14 +852,12 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                 const failures = (this.heartbeatFailures.get(hprofPath) || 0) + 1;
                 this.heartbeatFailures.set(hprofPath, failures);
                 this.outputChannel.appendLine(`[HeapLens] Heartbeat failure #${failures} for ${hprofPath}`);
-                if (failures >= 3) {
+                if (failures === 3) {
                     trackEvent('error/heartbeatFailed', {}, { consecutiveFailures: failures });
-                    this.outputChannel.appendLine(`[HeapLens] 3 consecutive heartbeat failures for ${hprofPath} — treating as crash`);
-                    this.stopHeartbeat(hprofPath);
-                    const state = this.editors.get(hprofPath);
-                    if (state?.webviewReady) {
-                        state.webviewPanel.webview.postMessage({ command: 'serverCrashed' });
-                    }
+                    this.outputChannel.appendLine(
+                        `[HeapLens] Server is temporarily unresponsive for ${hprofPath}; ` +
+                        'keeping the live analysis attached'
+                    );
                 }
             }
         }, 15000);
@@ -811,6 +879,10 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             this.monitorService.dispose();
             this.monitorService = null;
         }
+        for (const session of this.analysisSessions.values()) {
+            session.dispose();
+        }
+        this.analysisSessions.clear();
         // Dispose all per-editor clients and heartbeats
         for (const [hprofPath, state] of this.editors) {
             this.stopHeartbeat(hprofPath);

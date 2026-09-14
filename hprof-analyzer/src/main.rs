@@ -110,6 +110,20 @@ struct FileAnalysisState {
     phase1_result: Arc<std::sync::Mutex<Option<hprof_analyzer::indexed::parse::Phase1Result>>>,
 }
 
+#[derive(Clone)]
+struct AnalysisControl {
+    request_id: u64,
+    cancel_token: Arc<AtomicBool>,
+}
+
+impl AnalysisControl {
+    fn accepts_cancel(&self, requested_analysis_id: Option<u64>) -> bool {
+        requested_analysis_id
+            .map(|id| id == self.request_id)
+            .unwrap_or(true)
+    }
+}
+
 impl FileAnalysisState {
     /// Takes the deferred edge data, leaving None in its place.
     fn take_deferred(&self) -> Option<hprof_analyzer::indexed::parse::DeferredEdgeData> {
@@ -141,7 +155,13 @@ fn analyze_heap_blocking(
 
     let use_indexed = USE_INDEXED.load(Ordering::Relaxed);
 
-    match analyze_heap_internal(&path, analysis_states.clone(), &cancel_token, use_indexed) {
+    match analyze_heap_internal(
+        &path,
+        analysis_states.clone(),
+        &cancel_token,
+        use_indexed,
+        Some(request_id),
+    ) {
         Ok((top_objects, analysis_state, timing)) => {
             log::info!("Heap analysis completed successfully (request_id: {})", request_id);
 
@@ -168,6 +188,22 @@ fn analyze_heap_blocking(
             phase1_result
         }
         Err(e) => {
+            if cancel_token.load(Ordering::Relaxed) {
+                log::info!("Heap analysis cancelled (request_id: {})", request_id);
+                return AnalyzeHeapResult {
+                    request_id,
+                    status: "cancelled".to_string(),
+                    top_objects: None,
+                    top_layers: None,
+                    summary: None,
+                    class_histogram: None,
+                    leak_suspects: None,
+                    object_leak_suspects: None,
+                    waste_analysis: None,
+                    timing: None,
+                    error: None,
+                };
+            }
             let error_msg = format!("Heap analysis failed: {}", e);
             log::error!("{} (request_id: {})", error_msg, request_id);
             AnalyzeHeapResult {
@@ -243,6 +279,7 @@ fn run_phase2_background(
         "jsonrpc": "2.0",
         "method": "heap_analysis_progress",
         "params": {
+            "request_id": request_id,
             "stage": "phase2_edges",
             "message": "Extracting object references..."
         }
@@ -358,6 +395,7 @@ fn analyze_heap_internal(
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: &Arc<AtomicBool>,
     use_indexed: bool,
+    request_id: Option<u64>,
 ) -> Result<(Vec<hprof_analyzer::ObjectReport>, Arc<dyn HeapAnalysis>, TimingBreakdown)> {
     let total_start = Instant::now();
 
@@ -380,6 +418,7 @@ fn analyze_heap_internal(
         "jsonrpc": "2.0",
         "method": "heap_analysis_progress",
         "params": {
+            "request_id": request_id,
             "stage": "loading",
             "phase": 1,
             "total_phases": 4,
@@ -407,7 +446,10 @@ fn analyze_heap_internal(
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
-            "params": { "stage": "graph_building", "phase": 2, "total_phases": 3 }
+            "params": {
+                "request_id": request_id,
+                "stage": "graph_building", "phase": 2, "total_phases": 3
+            }
         }));
 
         let phase_start = Instant::now();
@@ -421,6 +463,7 @@ fn analyze_heap_internal(
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
             "params": {
+                "request_id": request_id,
                 "stage": "graph_built", "phase": 3, "total_phases": 4,
                 "summary": phase1.summary
             }
@@ -433,14 +476,23 @@ fn analyze_heap_internal(
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
-            "params": { "stage": "dominators", "phase": 4, "total_phases": 4 }
+            "params": {
+                "request_id": request_id,
+                "stage": "dominators", "phase": 4, "total_phases": 4
+            }
         }));
 
         let phase_start = Instant::now();
         let phase2 = hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred)
             .context("Indexed Phase 2 failed")?;
+        if cancel_token.load(Ordering::Relaxed) {
+            anyhow::bail!("Analysis cancelled");
+        }
         let indexed_state = hprof_analyzer::indexed::IndexedAnalysisState::from_phases(phase1, phase2)
             .context("Indexed analysis state construction failed")?;
+        if cancel_token.load(Ordering::Relaxed) {
+            anyhow::bail!("Analysis cancelled");
+        }
         let dom_ms = phase_start.elapsed().as_millis() as u64;
 
         let top = indexed_state.get_top_layers(3, 50);
@@ -452,7 +504,10 @@ fn analyze_heap_internal(
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
-            "params": { "stage": "graph_building", "phase": 2, "total_phases": 4 }
+            "params": {
+                "request_id": request_id,
+                "stage": "graph_building", "phase": 2, "total_phases": 4
+            }
         }));
 
         let phase_start = Instant::now();
@@ -467,6 +522,7 @@ fn analyze_heap_internal(
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
             "params": {
+                "request_id": request_id,
                 "stage": "graph_built", "phase": 3, "total_phases": 4,
                 "summary": graph.summary().clone()
             }
@@ -478,12 +534,18 @@ fn analyze_heap_internal(
         let _ = send_stdout(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
-            "params": { "stage": "dominators", "phase": 4, "total_phases": 4 }
+            "params": {
+                "request_id": request_id,
+                "stage": "dominators", "phase": 4, "total_phases": 4
+            }
         }));
 
         let phase_start = Instant::now();
         let (top_objects, state) = calculate_dominators_with_state(graph, waste_data)
             .context("Failed to calculate dominators")?;
+        if cancel_token.load(Ordering::Relaxed) {
+            anyhow::bail!("Analysis cancelled");
+        }
         let dom_ms = phase_start.elapsed().as_millis() as u64;
 
         (top_objects, Arc::new(state) as Arc<dyn HeapAnalysis>, graph_ms, dom_ms)
@@ -575,7 +637,7 @@ fn mcp_tool_definitions() -> serde_json::Value {
             },
             {
                 "name": "get_leak_suspects",
-                "description": "Get detected memory leak suspects from a previously analyzed heap dump. Shows objects or classes retaining >10% of the heap.",
+                "description": "Get detected memory leak suspects from a previously analyzed heap dump. Shows significant classloaders (5% threshold) and other large objects or classes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -807,7 +869,7 @@ fn format_analyze_result(
 /// Formats leak suspects as markdown.
 fn format_leak_suspects(suspects: &[hprof_analyzer::LeakSuspect]) -> String {
     if suspects.is_empty() {
-        return "No leak suspects detected. No single object or class retains more than 10% of the heap.".to_string();
+        return "No leak suspects detected above the configured classloader or general-object thresholds.".to_string();
     }
 
     let mut out = String::from("## Leak Suspects\n\n");
@@ -1118,7 +1180,13 @@ fn handle_mcp_tool_call(
             let no_cancel = Arc::new(AtomicBool::new(false));
             let path_buf = PathBuf::from(path);
             let use_indexed = USE_INDEXED.load(Ordering::Relaxed);
-            match analyze_heap_internal(&path_buf, analysis_states.clone(), &no_cancel, use_indexed) {
+            match analyze_heap_internal(
+                &path_buf,
+                analysis_states.clone(),
+                &no_cancel,
+                use_indexed,
+                None,
+            ) {
                 Ok((top_objects, state, timing)) => {
                     // For MCP, run Phase 2 inline so the caller gets full results
                     if use_indexed {
@@ -1379,7 +1447,7 @@ async fn run_jsonrpc_server() -> Result<()> {
     let request_id_counter = Arc::new(AtomicU64::new(1));
     let analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>> =
         Arc::new(RwLock::new(HashMap::new()));
-    let cancel_tokens: Arc<RwLock<HashMap<String, Arc<AtomicBool>>>> =
+    let cancel_tokens: Arc<RwLock<HashMap<String, AnalysisControl>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     // Spawn task to process results and send notifications
@@ -1531,7 +1599,7 @@ async fn handle_analyze_heap_request(
     result_tx: &mpsc::UnboundedSender<AnalyzeHeapResult>,
     request_id_counter: &Arc<AtomicU64>,
     analysis_states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
-    cancel_tokens: &Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
+    cancel_tokens: &Arc<RwLock<HashMap<String, AnalysisControl>>>,
 ) -> Result<()> {
     // Extract parameters
     let params = request.params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
@@ -1551,7 +1619,10 @@ async fn handle_analyze_heap_request(
     {
         let mut tokens = cancel_tokens.write()
             .map_err(|e| anyhow::anyhow!("Failed to write cancel tokens: {}", e))?;
-        tokens.insert(path_key.clone(), cancel_token.clone());
+        tokens.insert(path_key.clone(), AnalysisControl {
+            request_id,
+            cancel_token: cancel_token.clone(),
+        });
     }
 
     // Respond immediately with processing status
@@ -1576,7 +1647,12 @@ async fn handle_analyze_heap_request(
 
         // Clean up cancel token
         if let Ok(mut tokens) = cancel_tokens_cleanup.write() {
-            tokens.remove(&path_key);
+            let owns_path_entry = tokens.get(&path_key)
+                .map(|control| control.request_id == request_id)
+                .unwrap_or(false);
+            if owns_path_entry {
+                tokens.remove(&path_key);
+            }
         }
 
         if let Err(e) = result_tx.send(result) {
@@ -1590,31 +1666,41 @@ async fn handle_analyze_heap_request(
 /// Handles a cancel_analysis request.
 async fn handle_cancel_analysis_request(
     request: JsonRpcRequest,
-    cancel_tokens: &Arc<RwLock<HashMap<String, Arc<AtomicBool>>>>,
+    cancel_tokens: &Arc<RwLock<HashMap<String, AnalysisControl>>>,
 ) -> Result<()> {
     let params = request.params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
     let path = params
         .get("path")
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'path' parameter"))?;
+    let requested_analysis_id = params
+        .get("analysis_request_id")
+        .and_then(|v| v.as_u64());
 
     let request_id = request.id.ok_or_else(|| anyhow::anyhow!("Request ID required"))?;
 
-    let cancelled = if let Ok(tokens) = cancel_tokens.read() {
-        if let Some(token) = tokens.get(path) {
-            token.store(true, Ordering::Relaxed);
-            true
+    let (cancelled, analysis_request_id) = if let Ok(tokens) = cancel_tokens.read() {
+        if let Some(control) = tokens.get(path) {
+            if control.accepts_cancel(requested_analysis_id) {
+                control.cancel_token.store(true, Ordering::Relaxed);
+                (true, Some(control.request_id))
+            } else {
+                (false, Some(control.request_id))
+            }
         } else {
-            false
+            (false, None)
         }
     } else {
-        false
+        (false, None)
     };
 
     let response = serde_json::json!({
         "jsonrpc": "2.0",
         "id": request_id,
-        "result": { "cancelled": cancelled }
+        "result": {
+            "cancelled": cancelled,
+            "analysis_request_id": analysis_request_id
+        }
     });
     send_stdout(&response)?;
 
@@ -1624,6 +1710,7 @@ async fn handle_cancel_analysis_request(
             "jsonrpc": "2.0",
             "method": "heap_analysis_progress",
             "params": {
+                "request_id": analysis_request_id,
                 "stage": "cancelled"
             }
         });
@@ -2107,5 +2194,22 @@ async fn main() -> Result<()> {
     } else {
         log::info!("Starting HPROF analysis server (JSON-RPC mode)");
         run_jsonrpc_server().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_targets_only_the_requested_analysis() {
+        let control = AnalysisControl {
+            request_id: 42,
+            cancel_token: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(control.accepts_cancel(None), "legacy clients remain supported");
+        assert!(control.accepts_cancel(Some(42)));
+        assert!(!control.accepts_cancel(Some(99)));
     }
 }

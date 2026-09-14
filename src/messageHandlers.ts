@@ -32,6 +32,8 @@ export interface HandlerContext {
         handleCopyReport(hprofPath: string, webviewPanel: vscode.WebviewPanel): void;
         clearChatHistory(hprofPath: string): void;
         handleFixWithAi(message: any, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
+        cancelAnalysis(hprofPath: string): Promise<void>;
+        retryAnalysis(hprofPath: string): Promise<void>;
     };
 }
 

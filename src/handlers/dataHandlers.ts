@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { MessageHandler } from '../messageHandlers';
 import { trackEvent, extractQueryKeyword } from '../telemetry';
 import { evaluateAlerts } from '../diffAlerts';
+import { markWebviewReadyAndFlush } from '../webviewMessageDelivery';
 
 export const executeQueryHandler: MessageHandler = {
     command: 'executeQuery',
@@ -160,11 +161,14 @@ export const readyHandler: MessageHandler = {
     command: 'ready',
     async handle(_message, ctx) {
         ctx.outputChannel.appendLine('[HeapLens] Webview ready');
-        ctx.state.webviewReady = true;
-        if (ctx.state.pendingWebviewMessage) {
-            ctx.outputChannel.appendLine('[HeapLens] Resending buffered analysisComplete to webview');
-            ctx.webviewPanel.webview.postMessage(ctx.state.pendingWebviewMessage);
-            ctx.state.pendingWebviewMessage = null;
+        const delivered = markWebviewReadyAndFlush(
+            ctx.state,
+            pending => ctx.webviewPanel.webview.postMessage(pending)
+        );
+        if (delivered) {
+            ctx.outputChannel.appendLine(
+                `[HeapLens] Delivering buffered ${delivered.command || 'analysis message'} to webview`
+            );
         }
         if (ctx.state.chatHistory.length > 0) {
             ctx.webviewPanel.webview.postMessage({
@@ -187,13 +191,9 @@ export const clearChatHistoryHandler: MessageHandler = {
 
 export const cancelAnalysisHandler: MessageHandler = {
     command: 'cancelAnalysis',
-    async handle(message, ctx) {
+    async handle(_message, ctx) {
         ctx.outputChannel.appendLine('[HeapLens] Cancel analysis requested from webview');
-        try {
-            await ctx.client.sendRequest('cancel_analysis', { path: ctx.hprofPath });
-        } catch (error: any) {
-            ctx.outputChannel.appendLine(`[HeapLens] cancel_analysis error: ${error.message}`);
-        }
+        await ctx.provider.cancelAnalysis(ctx.hprofPath);
     }
 };
 
@@ -202,21 +202,7 @@ export const retryAnalysisHandler: MessageHandler = {
     async handle(_message, ctx) {
         ctx.outputChannel.appendLine('[HeapLens] Retry analysis requested from webview');
         ctx.webviewPanel.webview.postMessage({ command: 'analysisRetrying' });
-        try {
-            const response = await ctx.client.sendRequest('analyze_heap', { path: ctx.hprofPath });
-            if (response.status !== 'processing') {
-                ctx.webviewPanel.webview.postMessage({
-                    command: 'error',
-                    message: 'Unexpected response: ' + JSON.stringify(response)
-                });
-            }
-        } catch (error: any) {
-            ctx.outputChannel.appendLine(`[HeapLens] Retry error: ${error.message}`);
-            ctx.webviewPanel.webview.postMessage({
-                command: 'error',
-                message: error.message || String(error)
-            });
-        }
+        await ctx.provider.retryAnalysis(ctx.hprofPath);
     }
 };
 

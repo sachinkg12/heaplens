@@ -178,6 +178,13 @@
           "default": true,
           "description": "When source JARs are unavailable, decompile .class files using CFR decompiler (requires java on PATH)"
         },
+        "heaplens.analysis.longRunningWarningMinutes": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 1440,
+          "description": "Show a Continue Waiting or Cancel warning after this many minutes. This does not stop analysis. Set to 0 to disable the warning."
+        },
         "heaplens.alerts.enabled": {
           "type": "boolean",
           "default": true,
@@ -213,7 +220,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node --test ./out/test/analysisSession.test.js"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
