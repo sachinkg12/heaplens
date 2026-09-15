@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use jvm_hprof::heap_dump::FieldType;
 
+use crate::reference_strength::{classify_instance_field, ReferenceStrength};
+
 /// Descriptor for a single instance field within a class.
 #[derive(Debug, Clone)]
 pub struct FieldDescriptor {
@@ -40,6 +42,8 @@ pub struct ClassIndex {
     /// Resolved full field layouts (own + inherited), keyed by class object ID.
     /// Populated by `resolve_field_layouts()`.
     layouts: HashMap<u64, Vec<(Arc<str>, FieldType)>>,
+    /// Reference strength for each entry in `layouts`, indexed in parallel.
+    field_strengths: HashMap<u64, Vec<ReferenceStrength>>,
 }
 
 impl ClassIndex {
@@ -48,6 +52,7 @@ impl ClassIndex {
         Self {
             inner: HashMap::new(),
             layouts: HashMap::new(),
+            field_strengths: HashMap::new(),
         }
     }
 
@@ -56,12 +61,15 @@ impl ClassIndex {
         Self {
             inner: HashMap::with_capacity(capacity),
             layouts: HashMap::with_capacity(capacity),
+            field_strengths: HashMap::with_capacity(capacity),
         }
     }
 
     /// Inserts class metadata for the given class object ID.
     pub fn insert(&mut self, class_obj_id: u64, info: ClassInfo) {
         self.inner.insert(class_obj_id, info);
+        self.layouts.remove(&class_obj_id);
+        self.field_strengths.remove(&class_obj_id);
     }
 
     /// Returns the class metadata for the given class object ID.
@@ -88,6 +96,18 @@ impl ClassIndex {
     /// Returns a reference to the raw layouts map.
     pub fn layouts(&self) -> &HashMap<u64, Vec<(Arc<str>, FieldType)>> {
         &self.layouts
+    }
+
+    /// Returns whether the indexed field participates in strong reachability.
+    /// Unknown classes or indices remain strong for conservative handling of
+    /// incomplete or malformed class metadata.
+    pub fn is_strong_reference_field(&self, class_obj_id: u64, field_index: usize) -> bool {
+        self.field_strengths
+            .get(&class_obj_id)
+            .and_then(|strengths| strengths.get(field_index))
+            .copied()
+            .unwrap_or(ReferenceStrength::Strong)
+            .is_strong()
     }
 
     /// Resolves full field layouts by walking inheritance chains.
@@ -136,14 +156,26 @@ impl ClassIndex {
                     .filter(|&id| id != 0)
                     .and_then(|pid| self.layouts.get(&pid));
 
-                let own_fields: Vec<(Arc<str>, FieldType)> = self
+                let parent_strengths = self
+                    .inner
+                    .get(&cid)
+                    .and_then(|info| info.super_class_id)
+                    .filter(|&id| id != 0)
+                    .and_then(|pid| self.field_strengths.get(&pid));
+
+                let (own_fields, own_strengths): (Vec<_>, Vec<_>) = self
                     .inner
                     .get(&cid)
                     .map(|info| {
-                        info.field_descriptors
+                        let fields = info.field_descriptors
                             .iter()
                             .map(|fd| (fd.name.clone(), fd.field_type))
-                            .collect()
+                            .collect();
+                        let strengths = info.field_descriptors
+                            .iter()
+                            .map(|fd| classify_instance_field(&info.class_name, &fd.name))
+                            .collect();
+                        (fields, strengths)
                     })
                     .unwrap_or_default();
 
@@ -154,7 +186,15 @@ impl ClassIndex {
                 if let Some(parent) = parent_layout {
                     layout.extend_from_slice(parent);
                 }
+                let mut strengths = Vec::with_capacity(
+                    own_strengths.len() + parent_strengths.map_or(0, |p| p.len()),
+                );
+                strengths.extend(own_strengths);
+                if let Some(parent) = parent_strengths {
+                    strengths.extend_from_slice(parent);
+                }
                 self.layouts.insert(cid, layout);
+                self.field_strengths.insert(cid, strengths);
             }
         }
     }
@@ -268,6 +308,110 @@ mod tests {
     }
 
     #[test]
+    fn reference_strength_follows_the_declaring_class_through_inheritance() {
+        let mut ci = ClassIndex::new();
+        ci.insert(
+            1,
+            make_class(
+                "java.lang.ref.Reference",
+                16,
+                None,
+                vec![
+                    ("referent", FieldType::ObjectId),
+                    ("queue", FieldType::ObjectId),
+                ],
+            ),
+        );
+        ci.insert(
+            2,
+            make_class(
+                "example.CustomWeakReference",
+                24,
+                Some(1),
+                vec![("referent", FieldType::ObjectId)],
+            ),
+        );
+
+        ci.resolve_field_layouts();
+
+        let layout = ci.field_layout(2).unwrap();
+        assert_eq!(layout.len(), 3);
+        assert_eq!(layout[0].0.as_ref(), "referent");
+        assert_eq!(layout[1].0.as_ref(), "referent");
+        assert_eq!(layout[2].0.as_ref(), "queue");
+
+        assert!(
+            ci.is_strong_reference_field(2, 0),
+            "a subclass field that merely shares the name must remain strong"
+        );
+        assert!(
+            !ci.is_strong_reference_field(2, 1),
+            "the inherited java.lang.ref.Reference.referent must be non-strong"
+        );
+        assert!(ci.is_strong_reference_field(2, 2));
+        assert!(ci.is_strong_reference_field(999, 0));
+        assert!(ci.is_strong_reference_field(2, 999));
+    }
+
+    #[test]
+    fn generated_reference_subclass_chains_match_declaring_class_oracle() {
+        for subclass_depth in 1..=64u64 {
+            let mut ci = ClassIndex::new();
+            ci.insert(
+                1,
+                make_class(
+                    "java.lang.ref.Reference",
+                    16,
+                    None,
+                    vec![
+                        ("referent", FieldType::ObjectId),
+                        ("queue", FieldType::ObjectId),
+                    ],
+                ),
+            );
+
+            let mut parent = 1;
+            for class_id in 2..=subclass_depth + 1 {
+                let field_name = if class_id % 2 == 0 {
+                    "referent"
+                } else {
+                    "payload"
+                };
+                ci.insert(
+                    class_id,
+                    make_class(
+                        &format!("example.ReferenceSubclass{class_id}"),
+                        24,
+                        Some(parent),
+                        vec![(field_name, FieldType::ObjectId)],
+                    ),
+                );
+                parent = class_id;
+            }
+
+            ci.resolve_field_layouts();
+
+            let leaf = subclass_depth + 1;
+            let layout = ci.field_layout(leaf).unwrap();
+            assert_eq!(layout.len(), subclass_depth as usize + 2);
+            for field_index in 0..subclass_depth as usize {
+                assert!(
+                    ci.is_strong_reference_field(leaf, field_index),
+                    "subclass-declared field {field_index} at depth {subclass_depth}"
+                );
+            }
+            assert!(
+                !ci.is_strong_reference_field(leaf, subclass_depth as usize),
+                "inherited Reference.referent at depth {subclass_depth}"
+            );
+            assert!(ci.is_strong_reference_field(
+                leaf,
+                subclass_depth as usize + 1
+            ));
+        }
+    }
+
+    #[test]
     fn resolve_handles_missing_parent() {
         let mut ci = ClassIndex::new();
 
@@ -282,6 +426,7 @@ mod tests {
         let layout = ci.field_layout(10).unwrap();
         assert_eq!(layout.len(), 1);
         assert_eq!(layout[0].0.as_ref(), "x");
+        assert!(ci.is_strong_reference_field(10, 0));
     }
 
     #[test]
@@ -304,6 +449,12 @@ mod tests {
         // Both should have some layout (exact contents depend on traversal order)
         assert!(ci.field_layout(1).is_some());
         assert!(ci.field_layout(2).is_some());
+        for class_id in [1, 2] {
+            let layout_len = ci.field_layout(class_id).unwrap().len();
+            for field_index in 0..layout_len {
+                assert!(ci.is_strong_reference_field(class_id, field_index));
+            }
+        }
     }
 
     #[test]

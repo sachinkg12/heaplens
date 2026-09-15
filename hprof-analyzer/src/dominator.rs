@@ -106,6 +106,7 @@ pub fn calculate_dominators(graph: &HeapGraph) -> Result<Vec<ObjectReport>> {
 
     let node_count = petgraph.node_count();
     let mut children: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::with_capacity(node_count);
+    let mut unreachable_nodes = Vec::new();
 
     for node_idx in petgraph.node_indices() {
         if node_idx == super_root {
@@ -115,6 +116,7 @@ pub fn calculate_dominators(graph: &HeapGraph) -> Result<Vec<ObjectReport>> {
             children.entry(dominator).or_insert_with(Vec::new).push(node_idx);
         } else {
             children.entry(super_root).or_insert_with(Vec::new).push(node_idx);
+            unreachable_nodes.push(node_idx);
         }
     }
 
@@ -158,6 +160,12 @@ pub fn calculate_dominators(graph: &HeapGraph) -> Result<Vec<ObjectReport>> {
                 }
             }
         }
+    }
+
+    // Objects outside the strong graph are already collectable. Keep their
+    // shallow sizes for heap accounting, but do not rank them by retained size.
+    for node_idx in unreachable_nodes {
+        retained_sizes[node_idx.index()] = 0;
     }
 
     // Use BinaryHeap to find top 50 without allocating for all nodes.
@@ -217,6 +225,7 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
 
     // Step 2: Build children map
     let mut children_map: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::with_capacity(petgraph.node_count());
+    let mut unreachable_nodes = Vec::new();
     let mut unreachable_count = 0u64;
     let mut unreachable_shallow_size = 0u64;
     for node_idx in petgraph.node_indices() {
@@ -227,6 +236,7 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
             children_map.entry(dominator).or_insert_with(Vec::new).push(node_idx);
         } else {
             children_map.entry(super_root).or_insert_with(Vec::new).push(node_idx);
+            unreachable_nodes.push(node_idx);
             unreachable_count += 1;
             let node_size = match &petgraph[node_idx] {
                 NodeData::Instance { size, .. } | NodeData::Array { size, .. } => *size as u64,
@@ -280,6 +290,13 @@ pub fn calculate_dominators_with_state(graph: HeapGraph, waste_data: WasteRawDat
                 }
             }
         }
+    }
+
+    // Match the indexed backend: unreachable objects contribute to total heap
+    // and histogram shallow size, but never to retained-size rankings or leak
+    // suspects because no strong path keeps them alive.
+    for node_idx in unreachable_nodes {
+        retained_sizes[node_idx.index()] = 0;
     }
     log::info!("Calculated retained sizes for {} nodes", node_count);
 
@@ -652,5 +669,53 @@ mod tests {
             .object_leak_suspects
             .iter()
             .any(|suspect| suspect.object_id == 300));
+    }
+
+    #[test]
+    fn legacy_does_not_report_unreachable_objects_as_retained_or_suspect() {
+        let mut graph: Graph<NodeData, EdgeLabel, Directed> = Graph::new();
+        let super_root = graph.add_node(NodeData::SuperRoot);
+        let reachable = graph.add_node(NodeData::Instance {
+            id: 100,
+            size: 100,
+            class_name: Arc::from("example.ReferenceHolder"),
+        });
+        let collectable = graph.add_node(NodeData::Array {
+            id: 200,
+            size: 900,
+            class_name: Arc::from("byte[]"),
+        });
+        graph.add_edge(super_root, reachable, EdgeLabel::GcRoot);
+
+        let heap_graph = HeapGraph {
+            graph,
+            id_to_node: HashMap::from([(100, reachable), (200, collectable)]),
+            super_root,
+            summary: crate::HeapSummary {
+                total_heap_size: 1000,
+                reachable_heap_size: 1000,
+                total_instances: 1,
+                total_classes: 0,
+                total_arrays: 1,
+                total_gc_roots: 1,
+                hprof_version: "JAVA PROFILE 1.0.2".to_string(),
+                heap_types: Vec::new(),
+            },
+            classloader_ids: HashSet::new(),
+            field_name_table: Vec::new(),
+            class_field_layouts: HashMap::new(),
+            id_size: IdSize::U64,
+        };
+
+        let (top_objects, state) =
+            calculate_dominators_with_state(heap_graph, WasteRawData::new()).unwrap();
+
+        assert_eq!(state.summary.reachable_heap_size, 100);
+        assert_eq!(state.retained_sizes[collectable.index()], 0);
+        assert!(!top_objects.iter().any(|object| object.object_id == 200));
+        assert!(!state
+            .leak_suspects
+            .iter()
+            .any(|suspect| suspect.object_id == 200 || suspect.class_name == "byte[]"));
     }
 }

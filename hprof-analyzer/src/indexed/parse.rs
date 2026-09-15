@@ -971,11 +971,24 @@ pub fn parse_indexed_phase2(
                 let class_obj_id = di.class_obj_id;
 
                 if let Some(field_layout) = class_index.field_layout(class_obj_id) {
-                    extract_typed_references_named(fields, id_size, field_layout, |ref_id, _fname| {
-                        if let Some(ref_idx) = node_store.index_of(ref_id) {
-                            local_edges.push((di.node_idx, ref_idx, label::INSTANCE_FIELD));
-                        }
-                    });
+                    extract_typed_references_named(
+                        fields,
+                        id_size,
+                        field_layout,
+                        |ref_id, _fname, field_index| {
+                            if class_index
+                                .is_strong_reference_field(class_obj_id, field_index)
+                            {
+                                if let Some(ref_idx) = node_store.index_of(ref_id) {
+                                    local_edges.push((
+                                        di.node_idx,
+                                        ref_idx,
+                                        label::INSTANCE_FIELD,
+                                    ));
+                                }
+                            }
+                        },
+                    );
                 } else {
                     // Fallback: brute-force reference extraction
                     extract_object_references_fallback(fields, id_size, |ref_id| {
@@ -1047,6 +1060,7 @@ pub fn parse_indexed_phase2(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jvm_hprof::heap_dump::FieldType;
 
     /// Verifies that `parse_indexed` doesn't panic on empty-ish input.
     #[test]
@@ -1158,5 +1172,89 @@ mod tests {
         assert_eq!(di.node_idx, 0);
         assert_eq!(di.class_obj_id, 42);
         assert_eq!(di.field_bytes.len(), 3);
+    }
+
+    #[test]
+    fn reference_referent_is_not_a_strong_graph_edge() {
+        let mut class_index = ClassIndex::new();
+        class_index.insert(
+            10,
+            ClassInfo {
+                class_name: Arc::from("java.lang.ref.Reference"),
+                instance_size: 16,
+                super_class_id: None,
+                field_descriptors: vec![FieldDescriptor {
+                    name: Arc::from("referent"),
+                    field_type: FieldType::ObjectId,
+                }],
+            },
+        );
+        class_index.insert(
+            11,
+            ClassInfo {
+                class_name: Arc::from("java.lang.ref.WeakReference"),
+                instance_size: 16,
+                super_class_id: Some(10),
+                field_descriptors: Vec::new(),
+            },
+        );
+        class_index.resolve_field_layouts();
+
+        let mut node_store = NodeStore::new();
+        node_store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        let reference_idx = node_store.add_node(
+            100,
+            0,
+            16,
+            NodeType::Instance,
+            Arc::from("java.lang.ref.WeakReference"),
+        );
+        let payload_idx = node_store.add_node(
+            200,
+            0,
+            1024,
+            NodeType::Instance,
+            Arc::from("example.Payload"),
+        );
+
+        let phase1 = Phase1Result {
+            node_store,
+            class_index,
+            string_table: StringTable::new(),
+            gc_root_ids: vec![100],
+            classloader_ids: std::collections::HashSet::new(),
+            summary: HeapSummary {
+                total_heap_size: 1040,
+                reachable_heap_size: 1040,
+                total_instances: 2,
+                total_classes: 2,
+                total_arrays: 0,
+                total_gc_roots: 1,
+                hprof_version: String::new(),
+                heap_types: Vec::new(),
+            },
+            waste_raw: WasteRawData::new(),
+            class_histogram: Vec::new(),
+        };
+        let deferred = DeferredEdgeData {
+            deferred_instances: vec![DeferredInstance {
+                node_idx: reference_idx,
+                class_obj_id: 11,
+                field_bytes: 200u64.to_be_bytes().to_vec(),
+            }],
+            deferred_arrays: Vec::new(),
+            deferred_class_edges: Vec::new(),
+            class_name_map: HashMap::new(),
+            class_instance_sizes: HashMap::new(),
+            id_size: IdSize::U64,
+            array_element_counts: HashMap::new(),
+        };
+
+        let phase2 = parse_indexed_phase2(&phase1, deferred).unwrap();
+
+        assert!(
+            !phase2.edge_store.neighbors(reference_idx).contains(&payload_idx),
+            "java.lang.ref.Reference.referent must not keep its target strongly reachable"
+        );
     }
 }

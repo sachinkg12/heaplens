@@ -79,10 +79,10 @@ pub(crate) fn extract_typed_references_named<F>(
     mut callback: F,
 )
 where
-    F: FnMut(u64, &Arc<str>),
+    F: FnMut(u64, &Arc<str>, usize),
 {
     let mut offset = 0;
-    for (name, ft) in field_layout {
+    for (field_index, (name, ft)) in field_layout.iter().enumerate() {
         let size = field_type_size(ft, id_size);
         if offset + size > data.len() {
             break;
@@ -102,7 +102,7 @@ where
                 }
             };
             if id != 0 {
-                callback(id, name);
+                callback(id, name, field_index);
             }
         }
         offset += size;
@@ -135,4 +135,3 @@ where
         }
     }
 }
-

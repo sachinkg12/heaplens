@@ -11,6 +11,7 @@ pub mod comparison;
 pub(crate) mod graph_builder;
 pub(crate) mod class_histogram;
 pub(crate) mod classloader_leaks;
+pub(crate) mod reference_strength;
 pub mod dominator;
 pub mod indexed;
 
@@ -830,6 +831,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
 
     // Collect field descriptors and superclass info for typed reference extraction
     struct ClassFieldInfo {
+        class_name: Arc<str>,
         super_class_id: Option<u64>,
         own_fields: Vec<(Arc<str>, jvm_hprof::heap_dump::FieldType)>,
     }
@@ -878,10 +880,17 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                 Err(e) => log::warn!("Failed to parse field descriptor in class 0x{:x}: {:?}", obj_id, e),
                             }
                         }
-                        class_field_info.insert(obj_id, ClassFieldInfo {
-                            super_class_id: super_id,
-                            own_fields,
-                        });
+                        class_field_info.insert(
+                            obj_id,
+                            ClassFieldInfo {
+                                class_name: class_name_map
+                                    .get(&obj_id)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                super_class_id: super_id,
+                                own_fields,
+                            },
+                        );
 
                         // Track classloader object IDs
                         if let Some(cl_id) = class.class_loader_obj_id() {
@@ -900,7 +909,14 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
 
     // Resolve inheritance chains with memoization: once a parent's layout is resolved,
     // child classes reuse it instead of re-walking. This avoids O(N²) in deep hierarchies.
-    let mut class_field_layouts: HashMap<u64, Vec<(Arc<str>, jvm_hprof::heap_dump::FieldType)>> = HashMap::with_capacity(class_field_info.len());
+    let mut class_field_layouts: HashMap<
+        u64,
+        Vec<(Arc<str>, jvm_hprof::heap_dump::FieldType)>,
+    > = HashMap::with_capacity(class_field_info.len());
+    let mut class_field_strengths: HashMap<
+        u64,
+        Vec<reference_strength::ReferenceStrength>,
+    > = HashMap::with_capacity(class_field_info.len());
     let class_ids: Vec<u64> = class_field_info.keys().copied().collect();
     for class_id in class_ids {
         if class_field_layouts.contains_key(&class_id) {
@@ -931,9 +947,29 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                 .and_then(|info| info.super_class_id)
                 .filter(|&id| id != 0)
                 .and_then(|pid| class_field_layouts.get(&pid));
-            let own_fields = class_field_info.get(&cid)
+            let parent_strengths = class_field_info
+                .get(&cid)
+                .and_then(|info| info.super_class_id)
+                .filter(|&id| id != 0)
+                .and_then(|pid| class_field_strengths.get(&pid));
+            let own_fields = class_field_info
+                .get(&cid)
                 .map(|info| &info.own_fields[..])
                 .unwrap_or(&[]);
+            let own_strengths: Vec<_> = class_field_info
+                .get(&cid)
+                .map(|info| {
+                    info.own_fields
+                        .iter()
+                        .map(|(name, _)| {
+                            reference_strength::classify_instance_field(
+                                &info.class_name,
+                                name,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             // Build full field layout: own fields first, then parent's resolved layout.
             // This matches the byte order produced by the HotSpot HPROF agent, which
             // writes instance field values starting from the most-derived class.
@@ -944,7 +980,15 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
             if let Some(parent) = parent_layout {
                 layout.extend_from_slice(parent);
             }
+            let mut strengths = Vec::with_capacity(
+                own_strengths.len() + parent_strengths.map_or(0, |p| p.len()),
+            );
+            strengths.extend(own_strengths);
+            if let Some(parent) = parent_strengths {
+                strengths.extend_from_slice(parent);
+            }
             class_field_layouts.insert(cid, layout);
+            class_field_strengths.insert(cid, strengths);
         }
     }
     log::info!("Resolved field layouts for {} classes", class_field_layouts.len());
@@ -1340,12 +1384,20 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
 
                                 if let Some(field_layout) = class_field_layouts.get(&class_obj_id) {
                                     typed_instance_count += 1;
-                                    extract_typed_references_named(fields, id_size, field_layout, |ref_id, fname| {
-                                        if let Some(&ref_node) = id_to_node.get(&ref_id) {
-                                            if added_edges.insert((instance_idx, ref_node)) {
-                                                let idx = intern_field_name(fname);
-                                                graph.add_edge(instance_idx, ref_node, EdgeLabel::InstanceField(idx));
-                                                edge_count += 1;
+                                    extract_typed_references_named(fields, id_size, field_layout, |ref_id, fname, field_index| {
+                                        let is_strong = class_field_strengths
+                                            .get(&class_obj_id)
+                                            .and_then(|strengths| strengths.get(field_index))
+                                            .copied()
+                                            .unwrap_or(reference_strength::ReferenceStrength::Strong)
+                                            .is_strong();
+                                        if is_strong {
+                                            if let Some(&ref_node) = id_to_node.get(&ref_id) {
+                                                if added_edges.insert((instance_idx, ref_node)) {
+                                                    let idx = intern_field_name(fname);
+                                                    graph.add_edge(instance_idx, ref_node, EdgeLabel::InstanceField(idx));
+                                                    edge_count += 1;
+                                                }
                                             }
                                         }
                                     });
