@@ -12,6 +12,9 @@ pub(crate) mod graph_builder;
 pub(crate) mod class_histogram;
 pub(crate) mod classloader_leaks;
 pub(crate) mod reference_strength;
+pub(crate) mod gc_roots;
+#[cfg(test)]
+mod gc_root_regression;
 pub mod dominator;
 pub mod indexed;
 
@@ -1009,137 +1012,17 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                     let sub_record = sub_record_result
                         .map_err(|e| anyhow::anyhow!("Failed to parse sub-record: {:?}", e))?;
 
+                    if let Some(root_id) = gc_roots::object_id(&sub_record) {
+                        gc_root_ids.push(root_id);
+                        gc_root_count += 1;
+                        if !id_to_node.contains_key(&root_id) {
+                            let node_idx = graph.add_node(NodeData::Root);
+                            id_to_node.insert(root_id, node_idx);
+                        }
+                        continue;
+                    }
+
                     match sub_record {
-                        // GC Roots
-                        jvm_hprof::heap_dump::SubRecord::GcRootUnknown(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootJniGlobal(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootJniLocalRef(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootJavaStackFrame(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootSystemClass(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootThreadObj(gc_root) => {
-                            if let Some(thread_obj_id) = gc_root.thread_obj_id() {
-                                let obj_id = thread_obj_id.id();
-                                gc_root_ids.push(obj_id);
-                                gc_root_count += 1;
-                                if !id_to_node.contains_key(&obj_id) {
-                                    let node_idx = graph.add_node(NodeData::Root);
-                                    id_to_node.insert(obj_id, node_idx);
-                                }
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootBusyMonitor(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        // Android-specific GC roots (HPROF 1.0.3)
-                        jvm_hprof::heap_dump::SubRecord::GcRootInternedString(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootFinalizing(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootDebugger(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootReferenceCleanup(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootVmInternal(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootJniMonitor(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
-                        jvm_hprof::heap_dump::SubRecord::GcRootUnreachable(gc_root) => {
-                            let obj_id = gc_root.obj_id().id();
-                            gc_root_ids.push(obj_id);
-                            gc_root_count += 1;
-                            if !id_to_node.contains_key(&obj_id) {
-                                let node_idx = graph.add_node(NodeData::Root);
-                                id_to_node.insert(obj_id, node_idx);
-                            }
-                        }
                         // Android heap region metadata
                         jvm_hprof::heap_dump::SubRecord::HeapDumpInfo(info) => {
                             let heap_name_id = info.heap_name_id().id();

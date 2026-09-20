@@ -240,6 +240,16 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                             anyhow::anyhow!("Failed to parse sub-record: {:?}", e)
                         })?;
 
+                        if let Some(root_id) = crate::gc_roots::object_id(&sub) {
+                            add_gc_root(
+                                root_id,
+                                &mut gc_root_ids,
+                                &mut gc_root_count,
+                                &mut node_store,
+                            );
+                            continue;
+                        }
+
                         match sub {
                             // ---- ClassDump: collect metadata ----
                             jvm_hprof::heap_dump::SubRecord::Class(class) => {
@@ -335,54 +345,6 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                         classloader_id,
                                         static_field_refs,
                                     });
-                                }
-                            }
-
-                            // ---- GC Roots ----
-                            // Each GC root variant is a different type, so we use
-                            // a macro to avoid repeating the body.
-                            jvm_hprof::heap_dump::SubRecord::GcRootUnknown(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootJniGlobal(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootJniLocalRef(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootJavaStackFrame(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootSystemClass(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootBusyMonitor(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootInternedString(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootFinalizing(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootDebugger(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootReferenceCleanup(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootVmInternal(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootJniMonitor(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootUnreachable(gc) => {
-                                add_gc_root(gc.obj_id().id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
-                            }
-                            jvm_hprof::heap_dump::SubRecord::GcRootThreadObj(gc) => {
-                                if let Some(thread_obj_id) = gc.thread_obj_id() {
-                                    add_gc_root(thread_obj_id.id(), &mut gc_root_ids, &mut gc_root_count, &mut node_store);
                                 }
                             }
 
