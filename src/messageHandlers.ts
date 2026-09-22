@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { RustClient } from './rustClient';
 import { AnalysisData } from './analysisContext';
 import { ChatMessage } from './llmClient';
+import type { LlmConfig } from './llmClient';
+import type { LlmConfigurationService } from './llmConfigurationService';
 import type { DependencyInfo } from './dependencyResolver';
 
 import { treeHandlers } from './handlers/treeHandlers';
@@ -26,12 +28,13 @@ export interface HandlerContext {
     webviewPanel: vscode.WebviewPanel;
     client: RustClient;
     outputChannel: vscode.OutputChannel;
+    llmConfiguration: LlmConfigurationService;
     provider: {
-        handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): void;
+        handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
         handleGoToSource(className: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
         handleCopyReport(hprofPath: string, webviewPanel: vscode.WebviewPanel): void;
         clearChatHistory(hprofPath: string): void;
-        handleFixWithAi(message: any, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
+        handleFixWithAi(message: any, hprofPath: string, webviewPanel: vscode.WebviewPanel, llmConfig: LlmConfig): Promise<void>;
         cancelAnalysis(hprofPath: string): Promise<void>;
         retryAnalysis(hprofPath: string): Promise<void>;
     };

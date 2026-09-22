@@ -179,8 +179,10 @@ adb pull /data/local/tmp/heap.hprof
 
 1. Go to **Settings** > search `heaplens.llm`
 2. Set `heaplens.llm.provider` to your preferred provider (Anthropic, OpenAI, Gemini, DeepSeek, Mistral, Groq, xAI, Together AI, OpenRouter, or Ollama)
-3. Set `heaplens.llm.apiKey` to your API key (not needed for Ollama)
+3. Run **HeapLens: Set or Replace LLM API Key** from the Command Palette (not needed for Ollama). The eye button can temporarily reveal what you are typing. HeapLens stores one encrypted key per provider using the editor's VS Code SecretStorage implementation.
 4. Open the **AI Chat** tab and start asking questions
+
+To verify a saved credential without exposing it, run **HeapLens: Show LLM API Key Status**. HeapLens shows only a fixed mask and, for keys longer than four characters, the final four characters. Saved keys cannot be revealed in full; replace the key if it is uncertain.
 
 ---
 
@@ -189,7 +191,6 @@ adb pull /data/local/tmp/heap.hprof
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `heaplens.llm.provider` | `anthropic` | LLM provider (anthropic, openai, gemini, deepseek, mistral, groq, xai, together, openrouter, ollama) |
-| `heaplens.llm.apiKey` | — | API key for the LLM provider |
 | `heaplens.llm.baseUrl` | — | Custom API base URL (for proxies or self-hosted) |
 | `heaplens.llm.model` | — | Model name override |
 | `heaplens.sourceResolution.enabled` | `true` | Enable dependency source JAR resolution |

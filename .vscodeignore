@@ -16,8 +16,10 @@ docs-site/
 scripts/
 
 # Project docs (not needed in extension)
+# CHANGELOG.md is deliberately NOT excluded: the VS Code Marketplace and
+# Open VSX both render a Changelog tab from it, and without the file that
+# tab is empty for every visitor.
 CLAUDE.md
-CHANGELOG.md
 CONTRIBUTING.md
 
 # Screenshots & media (served from GitHub, not needed in VSIX)

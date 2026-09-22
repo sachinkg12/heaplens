@@ -58,7 +58,10 @@
   "activationEvents": [
     "onCustomEditor:heaplens.hprofEditor",
     "onCommand:heaplens.analyzeFile",
-    "onCommand:heaplens.startMonitor"
+    "onCommand:heaplens.startMonitor",
+    "onCommand:heaplens.setLlmApiKey",
+    "onCommand:heaplens.clearLlmApiKey",
+    "onCommand:heaplens.showLlmApiKeyStatus"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -74,6 +77,18 @@
       {
         "command": "heaplens.startMonitor",
         "title": "HeapLens: Start JVM Monitor"
+      },
+      {
+        "command": "heaplens.setLlmApiKey",
+        "title": "HeapLens: Set or Replace LLM API Key"
+      },
+      {
+        "command": "heaplens.clearLlmApiKey",
+        "title": "HeapLens: Clear LLM API Key"
+      },
+      {
+        "command": "heaplens.showLlmApiKeyStatus",
+        "title": "HeapLens: Show LLM API Key Status"
       }
     ],
     "chatParticipants": [
@@ -142,11 +157,6 @@
           ],
           "default": "anthropic",
           "description": "LLM provider for the AI Chat tab"
-        },
-        "heaplens.llm.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for the LLM provider"
         },
         "heaplens.llm.baseUrl": {
           "type": "string",
@@ -220,7 +230,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisSession.test.js"
+    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

@@ -69,7 +69,7 @@ A typical AI explanation covers the following areas:
 
 ### Error Handling
 
-If no API key is configured in your VS Code settings, clicking the "Explain this object" button displays an error message prompting you to set up the required configuration. See the [Configuration](#configuration) section below.
+If no API key is stored, clicking the "Explain this object" button displays an error message prompting you to run the secure key command. See the [Configuration](#configuration) section below.
 
 ## Explain in Leak Suspects
 
@@ -79,11 +79,10 @@ This is particularly useful for triaging leak suspects quickly -- you can get an
 
 ## Configuration
 
-The AI Explain feature requires two VS Code settings to be configured:
+The AI Explain feature requires a provider setting and, except for Ollama, a securely stored provider key:
 
 | Setting | Description |
 |---------|-------------|
-| `heaplens.llm.apiKey` | Your API key for the configured LLM provider. This is stored in VS Code settings (consider using a secrets-capable settings scope). |
 | `heaplens.llm.provider` | The LLM provider to use for generating explanations (e.g., `anthropic`, `openai`). |
 
-To set these values, open VS Code Settings (`Cmd+,` on macOS or `Ctrl+,` on Windows/Linux), search for `heaplens.llm`, and enter your provider and API key. Without these settings, the Explain buttons will display an error message when clicked rather than producing an analysis.
+Select the provider under `heaplens.llm`, then run **HeapLens: Set LLM API Key** from the Command Palette. The key is encrypted with VS Code SecretStorage and is not placed in user or workspace settings. Without a stored key, the Explain buttons display an error rather than producing an analysis.

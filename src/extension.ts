@@ -6,6 +6,10 @@ import { registerChatParticipant } from './chatParticipant';
 import { DependencyResolver } from './dependencyResolver';
 import { setDependencyResolver } from './sourceResolver';
 import { initTelemetry, disposeTelemetry, trackEvent } from './telemetry';
+import {
+    createVscodeLlmConfiguration,
+    registerLlmCredentialCommands
+} from './vscodeLlmConfiguration';
 
 let outputChannel: vscode.OutputChannel | null = null;
 let editorProvider: HprofEditorProvider | null = null;
@@ -33,8 +37,24 @@ export function activate(context: vscode.ExtensionContext) {
 
     initTelemetry(context);
 
+    const llmConfiguration = createVscodeLlmConfiguration(context);
+    registerLlmCredentialCommands(context, llmConfiguration);
+    void llmConfiguration.migrateLegacyApiKey().catch(error => {
+        const message = error instanceof Error ? error.message : String(error);
+        outputChannel?.appendLine(`[HeapLens] LLM credential migration failed: ${message}`);
+        vscode.window.showWarningMessage(
+            'HeapLens could not migrate the existing API key to secure storage. ' +
+            'The plaintext setting was left unchanged.'
+        );
+    });
+
     // Register custom editor for .hprof files
-    editorProvider = new HprofEditorProvider(context, outputChannel, getHprofServerPath);
+    editorProvider = new HprofEditorProvider(
+        context,
+        outputChannel,
+        getHprofServerPath,
+        llmConfiguration
+    );
     context.subscriptions.push(
         vscode.window.registerCustomEditorProvider(
             HprofEditorProvider.viewType,

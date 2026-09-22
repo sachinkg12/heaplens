@@ -1,29 +1,44 @@
-import * as vscode from 'vscode';
 import { MessageHandler } from '../messageHandlers';
 import { formatAnalysisContext } from '../analysisContext';
 import { streamLlmResponse, LlmConfig, ChatMessage } from '../llmClient';
 import { HEAP_ANALYSIS_SYSTEM_PROMPT, buildObjectExplainPrompt, buildLeakSuspectExplainPrompt } from '../promptTemplates';
 import { trackEvent } from '../telemetry';
 
+const MISSING_API_KEY_MESSAGE =
+    'No API key configured. Run "HeapLens: Set LLM API Key" from the Command Palette.';
+
+async function loadLlmConfig(ctx: Parameters<MessageHandler['handle']>[1]): Promise<LlmConfig | null> {
+    try {
+        return await ctx.llmConfiguration.getConfig();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        ctx.outputChannel.appendLine(`[HeapLens] Secure credential access failed: ${message}`);
+        return null;
+    }
+}
+
 export const explainObjectHandler: MessageHandler = {
     command: 'explainObject',
     async handle(message, ctx) {
         trackEvent('feature/explainObject');
-        const config = vscode.workspace.getConfiguration('heaplens.llm');
-        const llmConfig: LlmConfig = {
-            provider: config.get<string>('provider', 'anthropic'),
-            apiKey: config.get<string>('apiKey', ''),
-            baseUrl: config.get<string>('baseUrl', '') || undefined,
-            model: config.get<string>('model', '') || undefined,
-        };
+        const llmConfig = await loadLlmConfig(ctx);
 
         const objectId = message.objectId;
 
-        if (!llmConfig.apiKey) {
+        if (!llmConfig) {
             ctx.webviewPanel.webview.postMessage({
                 command: 'explainError',
                 objectId,
-                message: 'No API key configured. Go to Settings and search for "heaplens.llm.apiKey" to set your API key.'
+                message: 'Secure credential storage is unavailable. See the HeapLens output for details.'
+            });
+            return;
+        }
+
+        if (!llmConfig.apiKey && llmConfig.provider !== 'ollama') {
+            ctx.webviewPanel.webview.postMessage({
+                command: 'explainError',
+                objectId,
+                message: MISSING_API_KEY_MESSAGE
             });
             return;
         }
@@ -81,23 +96,27 @@ export const explainLeakSuspectHandler: MessageHandler = {
     command: 'explainLeakSuspect',
     async handle(message, ctx) {
         trackEvent('feature/explainLeakSuspect');
-        const config = vscode.workspace.getConfiguration('heaplens.llm');
-        const llmConfig: LlmConfig = {
-            provider: config.get<string>('provider', 'anthropic'),
-            apiKey: config.get<string>('apiKey', ''),
-            baseUrl: config.get<string>('baseUrl', '') || undefined,
-            model: config.get<string>('model', '') || undefined,
-        };
+        const llmConfig = await loadLlmConfig(ctx);
 
         const className = message.className;
         const objectId = message.objectId || 0;
 
-        if (!llmConfig.apiKey) {
+        if (!llmConfig) {
             ctx.webviewPanel.webview.postMessage({
                 command: 'explainLeakError',
                 className,
                 objectId,
-                message: 'No API key configured. Go to Settings and search for "heaplens.llm.apiKey" to set your API key.'
+                message: 'Secure credential storage is unavailable. See the HeapLens output for details.'
+            });
+            return;
+        }
+
+        if (!llmConfig.apiKey && llmConfig.provider !== 'ollama') {
+            ctx.webviewPanel.webview.postMessage({
+                command: 'explainLeakError',
+                className,
+                objectId,
+                message: MISSING_API_KEY_MESSAGE
             });
             return;
         }
@@ -136,21 +155,29 @@ export const explainLeakSuspectHandler: MessageHandler = {
 export const chatMessageHandler: MessageHandler = {
     command: 'chatMessage',
     async handle(message, ctx) {
-        ctx.provider.handleChatMessage(message.text, ctx.hprofPath, ctx.webviewPanel);
+        await ctx.provider.handleChatMessage(message.text, ctx.hprofPath, ctx.webviewPanel);
     }
 };
 
 export const fixWithAiHandler: MessageHandler = {
     command: 'fixWithAi',
     async handle(message, ctx) {
-        const config = vscode.workspace.getConfiguration('heaplens.llm');
-        const apiKey = config.get<string>('apiKey', '');
+        const llmConfig = await loadLlmConfig(ctx);
 
-        if (!apiKey && config.get<string>('provider', 'anthropic') !== 'ollama') {
+        if (!llmConfig) {
             ctx.webviewPanel.webview.postMessage({
                 command: 'fixWithAiError',
                 className: message.className,
-                message: 'No API key configured. Go to Settings and search for "heaplens.llm.apiKey" to set your API key.'
+                message: 'Secure credential storage is unavailable. See the HeapLens output for details.'
+            });
+            return;
+        }
+
+        if (!llmConfig.apiKey && llmConfig.provider !== 'ollama') {
+            ctx.webviewPanel.webview.postMessage({
+                command: 'fixWithAiError',
+                className: message.className,
+                message: MISSING_API_KEY_MESSAGE
             });
             return;
         }
@@ -160,7 +187,7 @@ export const fixWithAiHandler: MessageHandler = {
             className: message.className
         });
 
-        await ctx.provider.handleFixWithAi(message, ctx.hprofPath, ctx.webviewPanel);
+        await ctx.provider.handleFixWithAi(message, ctx.hprofPath, ctx.webviewPanel, llmConfig);
     }
 };
 

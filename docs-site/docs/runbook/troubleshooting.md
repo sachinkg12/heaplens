@@ -56,10 +56,13 @@ The webview loaded but data was not received.
 ### AI Chat says "No API key configured"
 
 **Solution:**
-1. Open VS Code Settings (`Cmd+,`)
-2. Search for `heaplens.llm`
-3. Set `heaplens.llm.apiKey` to your Anthropic or OpenAI API key
-4. Set `heaplens.llm.provider` to `"anthropic"` or `"openai"`
+1. Open VS Code Settings (`Cmd+,` on macOS or `Ctrl+,` on Windows/Linux)
+2. Search for `heaplens.llm` and select your provider
+3. Run **HeapLens: Set or Replace LLM API Key** from the Command Palette
+4. Enter the provider key in the masked prompt; use the eye button only to inspect the value while typing
+5. Run **HeapLens: Show LLM API Key Status** to confirm the saved key by its masked suffix
+
+Saved keys cannot be revealed in full. VS Code, Cursor, and other compatible editors keep separate SecretStorage databases, so configure the key again in each editor and profile.
 
 ## Build Issues
 

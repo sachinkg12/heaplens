@@ -39,7 +39,7 @@ All three approaches share the same Rust analysis engine and the same prompt tem
 
 | | MCP Server | API Key (Direct) | Chat Participant (@heaplens) |
 |---|---|---|---|
-| **Setup** | Configure `claude_desktop_config.json` | Set API key in VS Code settings | Install Copilot/Cline/Claude Dev |
+| **Setup** | Configure `claude_desktop_config.json` | Store API key with the HeapLens Command Palette command | Install Copilot/Cline/Claude Dev |
 | **Requires API key** | No | Yes (Anthropic or OpenAI) | No (uses host extension's auth) |
 | **Works outside VS Code** | Yes | No | No |
 | **Streaming responses** | No (synchronous) | Yes | Yes |

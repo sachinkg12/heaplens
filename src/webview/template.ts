@@ -248,7 +248,7 @@ export function getHtmlTemplate(): string {
             <div class="chat-messages" id="chat-messages">
                 <div class="chat-placeholder" id="chat-placeholder">
                     Ask questions about your heap dump analysis.<br>
-                    Configure your API key in Settings > HeapLens to get started.
+                    Run "HeapLens: Set LLM API Key" from the Command Palette to get started.
                 </div>
             </div>
             <div class="chat-input-row">

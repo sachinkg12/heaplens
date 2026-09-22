@@ -146,7 +146,7 @@ export function streamLlmResponse(
     }
 
     if (!config.apiKey && providerKey !== 'ollama') {
-        onError('No API key configured. Set heaplens.llm.apiKey in VS Code settings.');
+        onError('No API key configured. Run "HeapLens: Set LLM API Key" from the Command Palette.');
         return;
     }
 
@@ -273,6 +273,32 @@ function buildAuthHeader(style: 'bearer' | 'x-api-key', apiKey: string): Record<
 }
 
 /**
+ * Returns actionable HTTP guidance without forwarding an untrusted provider
+ * response body. Providers may echo rejected credentials or other sensitive
+ * request data in that body, so it must never reach HeapLens UI or logs.
+ */
+export function formatProviderHttpError(providerLabel: string, statusCode: number): string {
+    const prefix = `${providerLabel} API error (${statusCode}):`;
+
+    if (statusCode === 401) {
+        return `${prefix} Authentication failed. Verify the configured API key.`;
+    }
+    if (statusCode === 403) {
+        return `${prefix} Access denied. Verify the API key permissions and account access.`;
+    }
+    if (statusCode === 404) {
+        return `${prefix} Endpoint or model not found. Check the provider, model, and base URL settings.`;
+    }
+    if (statusCode === 429) {
+        return `${prefix} Rate limit exceeded. Wait and retry, or check the provider quota.`;
+    }
+    if (statusCode >= 500) {
+        return `${prefix} The provider service failed. Retry later or check its status page.`;
+    }
+    return `${prefix} Request rejected. Check the provider, model, and base URL settings.`;
+}
+
+/**
  * Shared SSE streaming over HTTP(S). Both API formats use the same
  * transport — only the JSON parsing callback differs.
  */
@@ -296,10 +322,12 @@ function makeStreamingRequest(
     const transport = url.protocol === 'https:' ? https : http;
     const req = transport.request(options, (res) => {
         if (res.statusCode && res.statusCode >= 400) {
-            let errorBody = '';
-            res.on('data', (chunk) => { errorBody += chunk.toString(); });
+            const safeError = formatProviderHttpError(providerLabel, res.statusCode);
+            // Drain without retaining the body. It is provider-controlled and
+            // may contain an echoed API key or other sensitive request data.
+            res.resume();
             res.on('end', () => {
-                onError(`${providerLabel} API error (${res.statusCode}): ${errorBody}`);
+                onError(safeError);
             });
             return;
         }

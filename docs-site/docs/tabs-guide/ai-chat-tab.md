@@ -54,12 +54,11 @@ The chat maintains a per-editor conversation history (up to 20 exchanges). Follo
 
 ## Configuration
 
-The AI Chat requires an API key. Configure it in VS Code settings:
+The AI Chat requires an API key unless you use Ollama. Select the provider in VS Code settings, then run **HeapLens: Set LLM API Key** from the Command Palette. HeapLens stores the key in encrypted VS Code SecretStorage.
 
 | Setting | Description | Example |
 |---------|-------------|---------|
 | `heaplens.llm.provider` | LLM provider | `"anthropic"` or `"openai"` |
-| `heaplens.llm.apiKey` | API key | `"sk-ant-..."` |
 | `heaplens.llm.baseUrl` | Custom API endpoint (optional) | `"https://my-proxy.example.com"` |
 | `heaplens.llm.model` | Model override (optional) | `"claude-sonnet-4-20250514"` |
 

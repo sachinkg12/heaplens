@@ -15,6 +15,7 @@ import { executeAiFix } from './aiFixProvider';
 import { trackEvent, classifyError } from './telemetry';
 import { AnalysisSession } from './analysisSession';
 import { deliverOrBufferWebviewMessage } from './webviewMessageDelivery';
+import { LlmConfigurationService } from './llmConfigurationService';
 
 /**
  * Custom readonly editor provider for .hprof files.
@@ -48,7 +49,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     constructor(
         private readonly context: vscode.ExtensionContext,
         outputChannel: vscode.OutputChannel,
-        private readonly getServerPath: () => string
+        private readonly getServerPath: () => string,
+        private readonly llmConfiguration: LlmConfigurationService
     ) {
         this.outputChannel = outputChannel;
     }
@@ -149,6 +151,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     webviewPanel,
                     client,
                     outputChannel: this.outputChannel,
+                    llmConfiguration: this.llmConfiguration,
                     provider: this
                 });
             }
@@ -430,7 +433,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         await this.analyzeFile(hprofPath, state.webviewPanel, state.client);
     }
 
-    public handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): void {
+    public async handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void> {
         const state = this.editors.get(hprofPath);
         if (!state) { return; }
 
@@ -445,20 +448,25 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
         text = validation.text;
 
-        const config = vscode.workspace.getConfiguration('heaplens.llm');
-        const llmConfig: LlmConfig = {
-            provider: config.get<string>('provider', 'anthropic'),
-            apiKey: config.get<string>('apiKey', ''),
-            baseUrl: config.get<string>('baseUrl', '') || undefined,
-            model: config.get<string>('model', '') || undefined,
-        };
+        let llmConfig: LlmConfig;
+        try {
+            llmConfig = await this.llmConfiguration.getConfig();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.outputChannel.appendLine(`[HeapLens] Secure credential access failed: ${message}`);
+            webviewPanel.webview.postMessage({
+                command: 'chatError',
+                message: 'Secure credential storage is unavailable. See the HeapLens output for details.'
+            });
+            return;
+        }
 
         trackEvent('feature/chatMessage', { provider: llmConfig.provider });
 
-        if (!llmConfig.apiKey) {
+        if (!llmConfig.apiKey && llmConfig.provider !== 'ollama') {
             webviewPanel.webview.postMessage({
                 command: 'chatError',
-                message: 'No API key configured. Go to Settings and search for "heaplens.llm.apiKey" to set your API key.'
+                message: 'No API key configured. Run "HeapLens: Set LLM API Key" from the Command Palette.'
             });
             return;
         }
@@ -663,7 +671,12 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
     }
 
-    public async handleFixWithAi(message: any, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void> {
+    public async handleFixWithAi(
+        message: any,
+        hprofPath: string,
+        webviewPanel: vscode.WebviewPanel,
+        llmConfig: LlmConfig
+    ): Promise<void> {
         const state = this.editors.get(hprofPath);
         if (!state) { return; }
 
@@ -679,14 +692,6 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             vscode.window.showInformationMessage(`HeapLens: ${className} was already fixed this session.`);
             return;
         }
-
-        const config = vscode.workspace.getConfiguration('heaplens.llm');
-        const llmConfig: LlmConfig = {
-            provider: config.get<string>('provider', 'anthropic'),
-            apiKey: config.get<string>('apiKey', ''),
-            baseUrl: config.get<string>('baseUrl', '') || undefined,
-            model: config.get<string>('model', '') || undefined,
-        };
 
         try {
             const result = await executeAiFix(
@@ -823,6 +828,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     webviewPanel: panel,
                     client: state.client,
                     outputChannel: this.outputChannel,
+                    llmConfiguration: this.llmConfiguration,
                     provider: this
                 }
             );

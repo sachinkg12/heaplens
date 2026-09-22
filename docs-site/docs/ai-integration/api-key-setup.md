@@ -5,16 +5,17 @@ title: "API Key Setup"
 
 # API Key Setup (Direct LLM)
 
-This approach uses your own Anthropic or OpenAI API key to power the AI Chat tab, Explain Object, and Explain Leak Suspect features directly within the HeapLens editor.
+This approach uses your own provider API key to power the AI Chat tab, Explain Object, and Explain Leak Suspect features directly within the HeapLens editor.
 
 ## Configuration
 
-Open VS Code Settings (`Cmd+,` on macOS, `Ctrl+,` on Windows/Linux) and search for `heaplens.llm`:
+Open VS Code Settings (`Cmd+,` on macOS, `Ctrl+,` on Windows/Linux), search for `heaplens.llm`, and select a provider. Then run **HeapLens: Set or Replace LLM API Key** from the Command Palette. Use the eye button only while entering the key if you need to verify it. The key is stored in the editor's encrypted VS Code SecretStorage implementation, separately for each provider, and is not synchronized between machines or editor applications.
+
+Run **HeapLens: Show LLM API Key Status** to check whether the selected provider has a key. The status displays only a fixed mask plus the last four characters when the key is long enough. HeapLens never reveals a saved key in full. Use **Replace** or **Clear** from the status notification when needed.
 
 | Setting | Required | Description | Example |
 |---------|----------|-------------|---------|
 | `heaplens.llm.provider` | Yes | LLM provider | `"anthropic"` or `"openai"` |
-| `heaplens.llm.apiKey` | Yes | Your API key | `"sk-ant-api03-..."` |
 | `heaplens.llm.baseUrl` | No | Custom API endpoint for proxies or local models | `"https://my-proxy.example.com"` |
 | `heaplens.llm.model` | No | Override the default model | `"claude-sonnet-4-20250514"` |
 
@@ -34,11 +35,12 @@ Set `heaplens.llm.baseUrl` to route API calls through a corporate proxy or to a 
 ```json
 {
   "heaplens.llm.provider": "openai",
-  "heaplens.llm.apiKey": "not-needed",
   "heaplens.llm.baseUrl": "http://localhost:11434/v1",
   "heaplens.llm.model": "llama3.1"
 }
 ```
+
+If that endpoint requires a token, store it with **HeapLens: Set or Replace LLM API Key**. For Ollama without authentication, select the `ollama` provider and no key is required.
 
 ## Features Enabled
 
@@ -68,7 +70,8 @@ On the Leak Suspects tab, each suspect card has an **"Explain"** link. Click it 
 User clicks "Explain" or sends chat message
         │
         ▼
-Extension reads heaplens.llm.* settings
+Extension reads non-secret heaplens.llm.* settings
+and the provider key from VS Code SecretStorage
         │
         ▼
 Builds prompt (promptTemplates.ts)
@@ -91,7 +94,7 @@ The extension makes direct HTTPS calls using Node.js built-in `https` module —
 
 | Error | What You See | Fix |
 |-------|-------------|-----|
-| No API key configured | "No API key configured" error in explain area | Set `heaplens.llm.apiKey` in settings |
+| No API key configured | "No API key configured" error in explain area | Run **HeapLens: Set or Replace LLM API Key** |
 | Invalid API key | "401 Unauthorized" error | Verify key is correct and has not expired |
 | Rate limit exceeded | "429 Too Many Requests" error | Wait and retry, or switch to a different model |
 | Network error | Connection timeout message | Check internet connection and `baseUrl` setting |
