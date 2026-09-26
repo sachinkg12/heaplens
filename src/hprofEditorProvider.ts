@@ -552,6 +552,11 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             lines.push(`- **Classes:** ${s.total_classes.toLocaleString()}`);
             lines.push(`- **Arrays:** ${s.total_arrays.toLocaleString()}`);
             lines.push(`- **GC Roots:** ${s.total_gc_roots.toLocaleString()}`);
+            if (s.size_model?.estimated) {
+                lines.push(s.size_model.name === 'legacy-payload-v0'
+                    ? '- **Size model:** Legacy payload-only estimate. Object headers and alignment are excluded.'
+                    : '- **Size model:** JVM layout estimate, including object headers and alignment. Hidden VM fields and class metadata are excluded.');
+            }
             lines.push('');
         }
 

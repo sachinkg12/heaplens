@@ -13,6 +13,7 @@ export interface AnalysisData {
         total_classes: number;
         total_arrays: number;
         total_gc_roots: number;
+        size_model?: { name: string; estimated: boolean };
     } | null;
     topObjects: Array<{
         object_id: number;
@@ -78,6 +79,9 @@ export function formatAnalysisContext(data: AnalysisData): string {
         parts.push(
             '## Heap Summary\n',
             `- Total Heap Size: ${fmtBytes(s.total_heap_size)}`,
+            ...(s.size_model?.estimated ? [s.size_model.name === 'legacy-payload-v0'
+                ? '- Byte sizes are payload-only estimates excluding headers and alignment.'
+                : '- Byte sizes are JVM layout estimates; hidden VM fields and class metadata are excluded.'] : []),
             `- Objects: ${s.total_instances.toLocaleString()}`,
             `- Classes: ${s.total_classes.toLocaleString()}`,
             `- Arrays: ${s.total_arrays.toLocaleString()}`,

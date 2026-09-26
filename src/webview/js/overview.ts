@@ -15,6 +15,10 @@ export function getOverviewJs(): string {
                     { label: 'GC Roots', value: fmtNum(s.total_gc_roots) }
                 ].map(function(c) { return '<div class="stat-card"><div class="label">' + c.label + '</div><div class="value">' + c.value + '</div></div>'; }).join('');
 
+                if (s.size_model && s.size_model.estimated) {
+                    statsHtml += '<div class="stat-card" title="Byte sizes are estimates; see the shallow-size documentation for model assumptions."><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
+                }
+
                 // Platform badge
                 var isAndroid = s.hprof_version && s.hprof_version.indexOf('1.0.3') !== -1;
                 if (isAndroid) {
@@ -287,6 +291,9 @@ export function getOverviewJs(): string {
                 { label: 'GC Roots', value: fmtNum(s.total_gc_roots) }
             ].map(function(c) { return '<div class="stat-card"><div class="label">' + c.label + '</div><div class="value">' + c.value + '</div></div>'; }).join('');
 
+            if (s.size_model && s.size_model.estimated) {
+                progressHtml += '<div class="stat-card"><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
+            }
             var isAndroidP = s.hprof_version && s.hprof_version.indexOf('1.0.3') !== -1;
             if (isAndroidP) {
                 progressHtml += '<div class="stat-card"><div class="label">Platform</div><div class="value"><span class="android-badge">Android (ART)</span></div></div>';

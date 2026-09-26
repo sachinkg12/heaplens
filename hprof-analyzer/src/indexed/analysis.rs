@@ -1298,6 +1298,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: "JAVA PROFILE 1.0.2".to_string(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
         }
@@ -1331,6 +1332,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: "JAVA PROFILE 1.0.2".to_string(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
         }
@@ -1527,6 +1529,7 @@ mod tests {
                 total_gc_roots: 2,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
         };
@@ -1572,9 +1575,9 @@ mod tests {
     }
 
     fn build_classloader_phase_results(
-        loader_shallow: u32,
-        child_shallow: u32,
-        filler_shallow: u32,
+        loader_shallow: u64,
+        child_shallow: u64,
+        filler_shallow: u64,
     ) -> (Phase1Result, Phase2Result) {
         let mut node_store = NodeStore::new();
         node_store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
@@ -1630,6 +1633,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
             class_histogram: Vec::new(),
@@ -1672,6 +1676,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: "JAVA PROFILE 1.0.2".to_string(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
             class_histogram: vec![

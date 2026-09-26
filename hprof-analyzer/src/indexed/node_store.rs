@@ -29,7 +29,7 @@ pub struct NodeRecord {
     /// Index into `ClassIndex` for this node's class (0 if N/A).
     pub class_index: u32,
     /// Shallow size in bytes.
-    pub shallow_size: u32,
+    pub shallow_size: u64,
     /// The kind of node.
     pub node_type: NodeType,
     /// Human-readable class name (shared via `Arc`).
@@ -68,7 +68,7 @@ impl NodeStore {
         &mut self,
         id: u64,
         class_index: u32,
-        shallow_size: u32,
+        shallow_size: u64,
         node_type: NodeType,
         class_name: Arc<str>,
     ) -> u32 {

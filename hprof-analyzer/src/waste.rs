@@ -4,18 +4,36 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn excess_capacity_uses_modeled_reference_width() {
+        for reference_bytes in [4, 8] {
+            let mut raw = WasteRawData::new();
+            raw.reference_bytes = reference_bytes;
+            raw.over_allocated_collections.push(OverAllocatedCollectionInfo {
+                class_name: "java.util.ArrayList".into(), size: 2, capacity: 32,
+            });
+            let waste = compute_waste_analysis(&raw, 4096);
+            assert_eq!(waste.over_allocated_wasted_bytes, 30 * reference_bytes);
+        }
+    }
+}
+
 /// Info about a java.lang.String instance collected during Pass 2.
 #[derive(Clone)]
 pub(crate) struct StringInstanceInfo {
     pub value_array_id: u64,
-    pub shallow_size: u32,
+    pub shallow_size: u64,
 }
 
 /// Info about a backing array (byte[] or char[]) for string dedup.
 #[derive(Clone)]
 pub(crate) struct BackingArrayInfo {
     pub content_hash: u64,
-    pub size: u32,
+    pub size: u64,
     pub preview: String,
 }
 
@@ -23,7 +41,7 @@ pub(crate) struct BackingArrayInfo {
 #[derive(Clone)]
 pub(crate) struct EmptyCollectionInfo {
     pub class_name: String,
-    pub shallow_size: u32,
+    pub shallow_size: u64,
 }
 
 /// Info about an over-allocated collection instance.
@@ -38,12 +56,13 @@ pub(crate) struct OverAllocatedCollectionInfo {
 #[derive(Clone)]
 pub(crate) struct BoxedPrimitiveInfo {
     pub class_name: String,
-    pub shallow_size: u32,
+    pub shallow_size: u64,
 }
 
 /// Raw waste data collected during graph building.
 #[derive(Clone)]
 pub struct WasteRawData {
+    pub(crate) reference_bytes: u64,
     pub(crate) string_instances: Vec<StringInstanceInfo>,
     pub(crate) backing_arrays: HashMap<u64, BackingArrayInfo>,
     pub(crate) empty_collections: Vec<EmptyCollectionInfo>,
@@ -55,6 +74,7 @@ pub struct WasteRawData {
 impl WasteRawData {
     pub fn new() -> Self {
         WasteRawData {
+            reference_bytes: 8,
             string_instances: Vec::new(),
             backing_arrays: HashMap::new(),
             empty_collections: Vec::new(),
@@ -254,7 +274,7 @@ pub fn compute_waste_analysis(
     let empty_collection_wasted_bytes: u64 = empty_cols.iter().map(|g| g.wasted_bytes).sum();
 
     // --- Over-allocated collections ---
-    let ref_size = 8u64;
+    let ref_size = waste_data.reference_bytes;
     let mut overalloc_groups: HashMap<String, (u64, u64, f64)> = HashMap::new();
     for oa in &waste_data.over_allocated_collections {
         let wasted = (oa.capacity as u64 - oa.size as u64) * ref_size;

@@ -15,28 +15,41 @@ Every Java object has:
 - An **object header** (typically 12-16 bytes): stores the class pointer, hash code, and GC metadata
 - **Field data**: the primitive values and reference pointers declared by the class
 
+HeapLens estimates these sizes from the dump. Its shared model includes headers,
+reference slots and alignment, and infers reference width separately from class-pointer
+width. The Overview labels the model as an estimate. HPROF does not encode every
+field offset, hidden VM field or special padding rule; class metadata is excluded.
+Android dumps currently retain the earlier payload-only estimate.
+
+For example, with a 12-byte header, 4-byte references and 8-byte alignment:
+
 ```java
 class User {
-    String name;      // 8 bytes (reference pointer)
+    String name;      // 4 bytes under this layout
     int age;          // 4 bytes
-    boolean active;   // 1 byte (+3 padding for alignment)
+    boolean active;   // 1 byte
 }
-// Shallow size ≈ 16 (header) + 16 (fields) = 32 bytes
+// Shallow size ≈ 12 + 4 + 4 + 1, rounded to 8 bytes = 24 bytes
 ```
 
-The shallow size of a `User` is 32 bytes regardless of how long the `name` string is. The `String` object and its backing `char[]` are separate objects with their own shallow sizes.
+Under this layout, the shallow size of a `User` is approximately 24 bytes regardless of how long the `name` string is. The `String` object and its backing array are separate objects with their own shallow sizes. Other JVM layouts can produce different sizes.
 
 ### Array Shallow Sizes
 
-Arrays include the header plus the element data:
+Arrays include the header plus the element data. With a 16-byte array header,
+4-byte references and 8-byte object alignment:
 
 ```
 byte[1000]  → 16 (header) + 1000 (data) + padding = ~1016 bytes
 int[1000]   → 16 (header) + 4000 (data) = 4016 bytes
-Object[100] → 16 (header) + 800 (100 × 8-byte refs) = 816 bytes
+Object[100] → 16 (header) + 400 (100 × 4-byte refs) = 416 bytes
 ```
 
 ## Retained Size
+
+When comparing dumps, analyze both with the same HeapLens version and sizing model.
+Earlier releases counted serialized payload bytes; changes from those releases can
+reflect corrected accounting rather than application growth.
 
 **Retained size** is the total memory that would be freed if this object were garbage collected. It includes the object's shallow size plus the shallow sizes of all objects that are *only* reachable through this object.
 

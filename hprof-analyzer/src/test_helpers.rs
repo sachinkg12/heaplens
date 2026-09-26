@@ -81,6 +81,7 @@ pub fn build_test_state() -> AnalysisState {
         total_gc_roots: 1,
         hprof_version: String::new(),
         heap_types: Vec::new(),
+        size_model: None,
     };
 
     AnalysisState {
@@ -201,6 +202,7 @@ pub fn build_second_test_state() -> AnalysisState {
         total_gc_roots: 1,
         hprof_version: String::new(),
         heap_types: Vec::new(),
+        size_model: None,
     };
 
     AnalysisState {

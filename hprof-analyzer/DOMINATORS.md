@@ -91,7 +91,7 @@ The function returns a `Vec<ObjectReport>` containing the top 50 objects sorted 
 
 ## Limitations
 
-1. **Shallow Size Approximation**: Instance sizes are approximate (based on field data length). Actual sizes include object headers and alignment padding.
+1. **Shallow Size Approximation**: Instances and arrays use the shared estimated JVM layout, including headers, inferred reference widths and alignment. Hidden VM fields, class metadata and special padding are excluded. See [SHALLOW_SIZES.md](SHALLOW_SIZES.md) for assumptions and validation.
 
 2. **Field Parsing**: Instance field parsing is heuristic-based. Accurate parsing would require class definitions with field descriptors.
 

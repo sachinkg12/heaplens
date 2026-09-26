@@ -273,13 +273,13 @@ mod tests {
     ) -> DominatorResult {
         let mut ns = NodeStore::new();
         // Node 0 is super-root
-        ns.add_node(0, 0, shallow_sizes.first().copied().unwrap_or(0), NodeType::SuperRoot, Arc::from("SuperRoot"));
+        ns.add_node(0, 0, shallow_sizes.first().copied().unwrap_or(0) as u64, NodeType::SuperRoot, Arc::from("SuperRoot"));
         for i in 1..node_count {
             let size = shallow_sizes.get(i).copied().unwrap_or(0);
             ns.add_node(
                 i as u64,
                 0,
-                size,
+                size as u64,
                 NodeType::Instance,
                 Arc::from(format!("Node{}", i).as_str()),
             );

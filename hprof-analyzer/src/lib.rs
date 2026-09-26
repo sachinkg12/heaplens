@@ -13,6 +13,8 @@ pub(crate) mod class_histogram;
 pub(crate) mod classloader_leaks;
 pub(crate) mod reference_strength;
 pub(crate) mod gc_roots;
+pub mod object_layout;
+mod hprof_sizing;
 #[cfg(test)]
 mod gc_root_regression;
 pub mod dominator;
@@ -498,7 +500,7 @@ pub enum NodeData {
         /// The object ID from the HPROF file.
         id: u64,
         /// The size of the instance in bytes.
-        size: u32,
+        size: u64,
         /// The fully-qualified class name (e.g. "java.lang.String").
         class_name: Arc<str>,
     },
@@ -507,7 +509,7 @@ pub enum NodeData {
         /// The array object ID from the HPROF file.
         id: u64,
         /// The size of the array in bytes.
-        size: u32,
+        size: u64,
         /// The array class name (e.g. "byte[]", "java.lang.Object[]").
         class_name: Arc<str>,
     },
@@ -732,6 +734,12 @@ pub struct HeapGraphParts {
 /// # }
 /// ```
 pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
+    build_graph_with_layout(data, None)
+}
+
+/// As `build_graph`, with an optional known producer layout instead of inference.
+pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::ObjectLayout>) -> Result<(HeapGraph, WasteRawData)> {
+    let sizing = hprof_sizing::HprofSizing::read(data, layout)?;
     log::debug!("Starting graph construction ({} bytes)", data.len());
 
     let hprof = parse_hprof(data)
@@ -829,9 +837,6 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
     let mut total_shallow_size = 0u64;
     let mut heap_types: Vec<String> = Vec::new();
 
-    // Also build a map of class_obj_id -> instance_size from Class sub-records
-    let mut class_instance_sizes: HashMap<u64, u32> = HashMap::with_capacity(num_classes);
-
     // Collect field descriptors and superclass info for typed reference extraction
     struct ClassFieldInfo {
         class_name: Arc<str>,
@@ -859,8 +864,6 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                         .map_err(|e| anyhow::anyhow!("Failed to parse sub-record: {:?}", e))?;
                     if let jvm_hprof::heap_dump::SubRecord::Class(class) = sub_record {
                         let obj_id = class.obj_id().id();
-                        let instance_size = class.instance_size_bytes();
-                        class_instance_sizes.insert(obj_id, instance_size);
 
                         // Collect field types and names for typed reference extraction
                         let super_id = class.super_class_obj_id().map(|id| id.id());
@@ -1053,10 +1056,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                         jvm_hprof::heap_dump::SubRecord::Instance(instance) => {
                             let obj_id = instance.obj_id().id();
                             let class_obj_id = instance.class_obj_id().id();
-                            // Use instance_size from class definition if available, fall back to field data length
-                            let size = class_instance_sizes.get(&class_obj_id)
-                                .copied()
-                                .unwrap_or(instance.fields().len() as u32);
+                            let size = sizing.instance(class_obj_id, instance.fields().len())?;
                             let class_name = class_name_map.get(&class_obj_id)
                                 .cloned()
                                 .unwrap_or_else(|| Arc::from(format!("Unknown(0x{:x})", class_obj_id).as_str()));
@@ -1079,13 +1079,9 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                         jvm_hprof::heap_dump::SubRecord::ObjectArray(array) => {
                             let obj_id = array.obj_id().id();
                             let array_class_obj_id = array.array_class_obj_id().id();
-                            let id_size_bytes = match id_size {
-                                IdSize::U32 => 4,
-                                IdSize::U64 => 8,
-                            };
                             // Use num_elements() from the HPROF header (O(1))
                             let element_count = array.num_elements();
-                            let size = element_count * id_size_bytes as u32;
+                            let size = sizing.object_array(element_count)?;
                             let class_name = class_name_map.get(&array_class_obj_id)
                                 .cloned()
                                 .unwrap_or_else(|| Arc::from("Object[]"));
@@ -1121,7 +1117,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Long => (8, Arc::from("long[]")),
                                 jvm_hprof::heap_dump::PrimitiveArrayType::Double => (8, Arc::from("double[]")),
                             };
-                            let size = elem_count * elem_size;
+                            let size = sizing.primitive_array(elem_count, elem_size as u64)?;
                             array_element_counts.insert(obj_id, elem_count);
 
                             if let Some(&existing_idx) = id_to_node.get(&obj_id) {
@@ -1154,6 +1150,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
     }
 
     let summary = HeapSummary {
+        size_model: Some(sizing.metadata.clone()),
         total_heap_size: total_shallow_size,
         reachable_heap_size: total_shallow_size, // updated after dominator analysis
         total_instances: instance_count,
@@ -1214,6 +1211,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
         .map(|(id, name, ps)| (*id, (*name, *ps))).collect();
 
     let mut waste_data = WasteRawData {
+        reference_bytes: sizing.layout.reference_bytes(),
         string_instances: Vec::new(),
         backing_arrays: HashMap::new(),
         empty_collections: Vec::new(),
@@ -1293,8 +1291,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                             jvm_hprof::heap_dump::FieldType::ObjectId, 0,
                                         ) {
                                             if value_array_id != 0 {
-                                                let shallow = class_instance_sizes.get(&class_obj_id)
-                                                    .copied().unwrap_or(fields.len() as u32);
+                                                let shallow = sizing.instance(class_obj_id, fields.len())?;
                                                 waste_data.string_instances.push(StringInstanceInfo {
                                                     value_array_id,
                                                     shallow_size: shallow,
@@ -1314,8 +1311,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                         ) {
                                             let cname = class_name_map.get(&class_obj_id)
                                                 .map(|s| s.to_string()).unwrap_or_default();
-                                            let shallow = class_instance_sizes.get(&class_obj_id)
-                                                .copied().unwrap_or(fields.len() as u32);
+                                            let shallow = sizing.instance(class_obj_id, fields.len())?;
                                             if size_val == 0 {
                                                 waste_data.empty_collections.push(EmptyCollectionInfo {
                                                     class_name: cname,
@@ -1341,8 +1337,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
 
                                     // --- Waste: collect boxed primitives ---
                                     if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
-                                        let shallow = class_instance_sizes.get(&class_obj_id)
-                                            .copied().unwrap_or(fields.len() as u32);
+                                        let shallow = sizing.instance(class_obj_id, fields.len())?;
                                         waste_data.boxed_primitives.push(BoxedPrimitiveInfo {
                                             class_name: bp_name.to_string(),
                                             shallow_size: shallow,
@@ -1448,7 +1443,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                             .filter_map(|r| r.ok())
                                             .map(|b| b as u8)
                                             .collect();
-                                        let arr_size = bytes.len() as u32;
+                                        let arr_size = sizing.primitive_array(array.num_elements(), 1)?;
                                         let content_hash = hash_bytes(&bytes);
                                         let preview = if bytes.len() <= 10240 {
                                             let s = String::from_utf8_lossy(&bytes);
@@ -1471,7 +1466,7 @@ pub fn build_graph(data: &[u8]) -> Result<(HeapGraph, WasteRawData)> {
                                         let chars: Vec<u16> = iter
                                             .filter_map(|r| r.ok())
                                             .collect();
-                                        let arr_size = (chars.len() * 2) as u32;
+                                        let arr_size = sizing.primitive_array(array.num_elements(), 2)?;
                                         // Hash raw bytes for consistent dedup
                                         let raw_bytes: Vec<u8> = chars.iter()
                                             .flat_map(|c| c.to_be_bytes())
@@ -1701,6 +1696,9 @@ pub use dominator::{calculate_dominators, calculate_dominators_with_state};
 /// Summary statistics for the entire heap dump.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HeapSummary {
+    /// Provenance for byte estimates; absent for old/synthetic analysis states.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_model: Option<object_layout::SizeModel>,
     /// Total heap size in bytes (sum of all shallow sizes).
     pub total_heap_size: u64,
     /// Reachable heap size in bytes (excludes unreachable objects).
@@ -2593,6 +2591,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             forward_edges,
             reverse_refs: OnceLock::new(),
@@ -2722,6 +2721,7 @@ mod tests {
             total_gc_roots: 2,
             hprof_version: String::new(),
             heap_types: Vec::new(),
+            size_model: None,
         };
         baseline.class_histogram = vec![
             ClassHistogramEntry {
@@ -2776,6 +2776,7 @@ mod tests {
             total_gc_roots: 3,
             hprof_version: String::new(),
             heap_types: Vec::new(),
+            size_model: None,
         };
         current.class_histogram = vec![
             ClassHistogramEntry {

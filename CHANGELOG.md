@@ -6,9 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- Object and array shallow sizes now include estimated headers and alignment, with separate inference for reference and class-pointer widths. Indexed and legacy analysis use the same model. This corrects derived heap totals, retained bytes, histograms and size-based waste inputs. Sizes above 4 GiB use 64-bit storage rather than wrapping.
+- Empty arrays and objects now occupy modeled memory instead of appearing as zero-byte payloads. Android sizing retains its existing behavior pending separate work.
+
+### Analysis Compatibility
+
+- Overview, incident reports and summary metadata identify byte values as JVM layout estimates. Hidden VM fields and class metadata remain excluded. Reanalyze both snapshots with the same version when comparing growth; old payload-only values are not comparable to the new model. See `hprof-analyzer/SHALLOW_SIZES.md`.
+
+### Added
+
+- `hprof-analyzer/SHALLOW_SIZES.md`, documenting the `conventional-jvm-v1` model: what is estimated, what is deliberately not reconstructed, and how reference and class-pointer widths are inferred.
+- A shallow-size fixture whose expected values come from Java Instrumentation, so the model is checked against a JVM-reported oracle rather than against another analyzer. CI now runs this suite alongside the existing ones.
+- `size_oracle` and `audit_heap` examples for inspecting modeled sizes directly.
+
+### Changed
+
+- Rust library tests: 156 to 164, plus 7 new shallow-size integration tests.
+
+## [1.0.29]
+
 ### Changed
 
 - LLM API keys now use VS Code SecretStorage, which delegates to the platform keychain, instead of the `heaplens.llm.apiKey` setting. The setting has been removed. Existing keys migrate automatically on first activation: the previous value is copied into SecretStorage and cleared from every configuration scope. Non-secret provider options remain in ordinary settings and are combined with the credential only at the point of use.
+- The changelog now ships inside the extension package. The VS Code Marketplace and Open VSX both render a Changelog tab from it, and the file had been excluded from the VSIX, so that tab was empty for every visitor. Entries for 1.0.25 through 1.0.28 were backfilled from their GitHub release notes.
 
 ### Added
 

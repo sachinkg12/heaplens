@@ -1863,6 +1863,7 @@ mod tests {
             total_gc_roots: 1,
             hprof_version: String::new(),
             heap_types: Vec::new(),
+            size_model: None,
         };
 
         AnalysisState {

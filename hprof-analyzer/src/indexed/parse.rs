@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use jvm_hprof::{parse_hprof, IdSize, RecordTag};
+use jvm_hprof::{parse_hprof, RecordTag};
 use rayon::prelude::*;
 
 use crate::graph_builder::{
@@ -94,7 +94,7 @@ pub struct DeferredEdgeData {
     pub deferred_arrays: Vec<DeferredObjectArray>,
     pub deferred_class_edges: Vec<DeferredClassEdge>,
     pub class_name_map: HashMap<u64, Arc<str>>,
-    pub class_instance_sizes: HashMap<u64, u32>,
+    pub class_instance_sizes: HashMap<u64, u64>,
     pub id_size: jvm_hprof::IdSize,
     pub array_element_counts: HashMap<u64, u32>,
 }
@@ -129,7 +129,12 @@ fn add_gc_root(
 /// This is the backward-compatible entry point that calls Phase 1 + Phase 2
 /// internally and returns a complete `ParseResult`.
 pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
-    let (phase1, deferred) = parse_indexed_phase1(data)?;
+    parse_indexed_with_layout(data, None)
+}
+
+/// Parse using a known producer layout, or infer an estimated layout with None.
+pub fn parse_indexed_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<ParseResult> {
+    let (phase1, deferred) = parse_indexed_phase1_with_layout(data, layout)?;
     let phase2 = parse_indexed_phase2(&phase1, deferred)?;
 
     Ok(ParseResult {
@@ -150,6 +155,11 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
 /// and DeferredEdgeData needed for Phase 2 edge extraction.
 /// Takes ~1.4s on a 14 GB dump.
 pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_indexed_phase1_with_layout(data, None)
+}
+
+pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
+    let sizing = crate::hprof_sizing::HprofSizing::read(data, layout)?;
     let hprof = parse_hprof(data)
         .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
 
@@ -177,7 +187,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     // Class name map: class_obj_id -> human-readable name
     let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::with_capacity(estimated_nodes / 10);
     // Instance sizes from ClassDump records
-    let mut class_instance_sizes: HashMap<u64, u32> = HashMap::new();
+    let class_instance_sizes = sizing.class_sizes.clone();
     // Field name intern pool
     let mut field_name_intern: HashMap<u64, Arc<str>> = HashMap::new();
     // Classloader IDs
@@ -255,7 +265,6 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                             jvm_hprof::heap_dump::SubRecord::Class(class) => {
                                 let obj_id = class.obj_id().id();
                                 let instance_size = class.instance_size_bytes();
-                                class_instance_sizes.insert(obj_id, instance_size);
 
                                 let super_id = class.super_class_obj_id().map(|id| id.id());
                                 let mut own_fields = Vec::new();
@@ -352,10 +361,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                             jvm_hprof::heap_dump::SubRecord::Instance(instance) => {
                                 let obj_id = instance.obj_id().id();
                                 let class_obj_id = instance.class_obj_id().id();
-                                let size = class_instance_sizes
-                                    .get(&class_obj_id)
-                                    .copied()
-                                    .unwrap_or(instance.fields().len() as u32);
+                                let size = sizing.instance(class_obj_id, instance.fields().len())?;
                                 let class_name = class_name_map
                                     .get(&class_obj_id)
                                     .cloned()
@@ -402,10 +408,6 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                             jvm_hprof::heap_dump::SubRecord::ObjectArray(array) => {
                                 let obj_id = array.obj_id().id();
                                 let array_class_obj_id = array.array_class_obj_id().id();
-                                let id_size_bytes: u32 = match id_size {
-                                    IdSize::U32 => 4,
-                                    IdSize::U64 => 8,
-                                };
 
                                 // Use num_elements() from the HPROF header (O(1))
                                 // instead of iterating to count. Still iterate
@@ -421,7 +423,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                     }
                                 }
 
-                                let size = element_count * id_size_bytes;
+                                let size = sizing.object_array(element_count)?;
                                 // Use a placeholder; LoadClass may not be processed yet.
                                 // Will be fixed up after class_name_map is populated.
                                 let class_name = class_name_map
@@ -501,7 +503,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                                         }
                                     };
 
-                                let size = elem_count * elem_size;
+                                let size = sizing.primitive_array(elem_count, elem_size as u64)?;
                                 array_element_counts.insert(obj_id, elem_count);
 
                                 // Hash byte[] and char[] content for string dedup waste analysis
@@ -719,6 +721,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     // ========================================================================
 
     let mut waste_raw = WasteRawData::new();
+    waste_raw.reference_bytes = sizing.layout.reference_bytes();
     // Merge backing array content hashes collected during PrimitiveArray parsing
     waste_raw.backing_arrays = backing_arrays;
     // Collect waste data from deferred instances (in-memory, no file scan needed)
@@ -779,10 +782,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                         0,
                     ) {
                         if value_array_id != 0 {
-                            let shallow = class_instance_sizes
-                                .get(&class_obj_id)
-                                .copied()
-                                .unwrap_or(fields.len() as u32);
+                            let shallow = sizing.instance(class_obj_id, fields.len())?;
                             waste_raw.string_instances.push(StringInstanceInfo {
                                 value_array_id,
                                 shallow_size: shallow,
@@ -807,10 +807,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
                             .get(&class_obj_id)
                             .map(|s| s.to_string())
                             .unwrap_or_default();
-                        let shallow = class_instance_sizes
-                            .get(&class_obj_id)
-                            .copied()
-                            .unwrap_or(fields.len() as u32);
+                        let shallow = sizing.instance(class_obj_id, fields.len())?;
                         if size_val == 0 {
                             waste_raw.empty_collections.push(EmptyCollectionInfo {
                                 class_name: cname,
@@ -846,10 +843,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
             // Waste: boxed primitives (outside field_layout check —
             // boxed primitives may not have field layouts resolved)
             if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
-                let shallow = class_instance_sizes
-                    .get(&class_obj_id)
-                    .copied()
-                    .unwrap_or(fields.len() as u32);
+                let shallow = sizing.instance(class_obj_id, fields.len())?;
                 waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
                     class_name: bp_name.to_string(),
                     shallow_size: shallow,
@@ -859,6 +853,7 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     }
 
     let summary = HeapSummary {
+        size_model: Some(sizing.metadata.clone()),
         total_heap_size: total_shallow_size,
         reachable_heap_size: total_shallow_size,
         total_instances: instance_count,
@@ -1056,6 +1051,7 @@ mod tests {
                 total_gc_roots: 0,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
         };
@@ -1098,6 +1094,7 @@ mod tests {
                 total_gc_roots: 0,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
             class_histogram: Vec::new(),
@@ -1194,6 +1191,7 @@ mod tests {
                 total_gc_roots: 1,
                 hprof_version: String::new(),
                 heap_types: Vec::new(),
+                size_model: None,
             },
             waste_raw: WasteRawData::new(),
             class_histogram: Vec::new(),
@@ -1208,7 +1206,7 @@ mod tests {
             deferred_class_edges: Vec::new(),
             class_name_map: HashMap::new(),
             class_instance_sizes: HashMap::new(),
-            id_size: IdSize::U64,
+            id_size: jvm_hprof::IdSize::U64,
             array_element_counts: HashMap::new(),
         };
 
