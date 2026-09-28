@@ -56,7 +56,7 @@ See [AI Chat Tab](../tabs-guide/ai-chat-tab) for details.
 
 ### 2. Explain Object
 
-In the Dominator Tree, click the magnifying glass on any object to open the Object Inspector, then click **"Explain this object"**. HeapLens sends the object's class name, field values, sizes, and GC root path to the LLM and streams back a structured explanation with a severity rating and code fix example.
+In the Dominator Tree, click the magnifying glass on any object to open the Object Inspector, then click **"Explain this object"**. HeapLens sends the object's class name, field names/types, reference metadata, sizes, and GC root path to the LLM. Primitive field values and duplicate-string contents are omitted. The streamed explanation can include a severity rating and code fix example. See [AI Data Sharing & Privacy](./privacy) for source consent and remaining sensitive metadata.
 
 See [Object Inspector & Explain](../tabs-guide/object-inspector) for details.
 

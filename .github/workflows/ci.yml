@@ -34,7 +34,7 @@ jobs:
           git push origin main
           git push origin "${NEW_VERSION}"
 
-  # ── Fast checks (TypeScript lint + compile) ────────────────────────
+  # ── Extension checks (compile + lint + maintained test suite) ──────
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -44,8 +44,10 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm run compile
+      # npm test runs pretest (compile + lint) before the extension tests.
+      # build depends on this job, so a failure also blocks publication.
+      - name: Compile, lint and test extension
+        run: npm test
 
   # ── Rust unit tests ────────────────────────────────────────────────
   test-rust:

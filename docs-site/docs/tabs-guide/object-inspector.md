@@ -61,7 +61,7 @@ The AI Explain feature uses a configured LLM provider to generate a natural-lang
 
 A typical AI explanation covers the following areas:
 
-- **What the object is** -- a plain-language description of the object's purpose based on its class name, field structure, and values.
+- **What the object is** -- a plain-language description of the object's purpose based on its class name, field names/types, and reference metadata. Primitive values remain visible locally but are omitted from the AI prompt. See [AI Data Sharing & Privacy](../ai-integration/privacy).
 - **Why it is a concern** -- an assessment of whether the object's retained size is unusual or indicative of a problem, given its type and context.
 - **Retention chain analysis** -- an explanation of how the object is being kept alive and which reference paths prevent it from being garbage collected.
 - **Concrete fix** -- actionable advice with **before/after Java code examples** demonstrating how to resolve the issue (e.g., switching from a strong reference cache to a `WeakHashMap`, adding eviction policies, or breaking circular references).

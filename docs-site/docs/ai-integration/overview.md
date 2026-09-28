@@ -5,6 +5,8 @@ title: "Overview"
 
 # AI Integration
 
+Before using AI, read [AI Data Sharing & Privacy](./privacy). Editor prompts omit automatic string previews and primitive values; Fix with AI requires per-request consent for full source. Metadata and typed messages can still be sensitive. MCP has a separate sharing boundary.
+
 HeapLens provides three distinct ways to bring AI-powered analysis to your heap dumps. Each approach serves a different workflow — choose the one that fits how you work, or combine them.
 
 ## The Three Approaches

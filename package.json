@@ -230,7 +230,9 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js"
+    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js",
+    "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
+    "test:privacy:matrix": "npm run compile && node --test ./out/test/llmPrivacy.integration.test.js"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

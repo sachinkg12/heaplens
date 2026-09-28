@@ -256,6 +256,7 @@ export function getHtmlTemplate(): string {
                 <button class="chat-send" id="chat-send">Send</button>
                 <button class="chat-clear" id="chat-clear" title="Clear chat history">Clear</button>
             </div>
+            <p class="chat-privacy-note">AI sends heap metadata and your messages to the configured provider. Automatic string previews and primitive values are omitted. Names and anything you type may still be sensitive; do not paste secrets.</p>
         </div>
     </div>
 

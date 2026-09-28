@@ -50,6 +50,7 @@ const sidebars: SidebarsConfig = {
         'ai-integration/overview',
         'ai-integration/api-key-setup',
         'ai-integration/chat-participant',
+        'ai-integration/privacy',
       ],
     },
     {

@@ -377,6 +377,13 @@ export function getStyles(): string {
         .chat-bubble.rendered .md-li {
             margin: 2px 0 2px 12px;
         }
+        .chat-privacy-note {
+            margin: 0;
+            padding: 0 16px 12px;
+            font-size: 12px;
+            line-height: 1.4;
+            color: var(--vscode-descriptionForeground);
+        }
         .chat-input-row {
             display: flex;
             gap: 8px;

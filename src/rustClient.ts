@@ -60,6 +60,7 @@ export class RustClient {
     private isShutdown = false;
     public onStderr?: (message: string) => void;
     public onProcessExit?: (code: number | null, signal: string | null) => void;
+    public onProcessError?: (error: Error) => void;
 
     /**
      * Creates a new RustClient instance.
@@ -100,20 +101,21 @@ export class RustClient {
         // Handle process exit
         this.process.on('exit', (code: number | null, signal: string | null) => {
             console.log(`[RustClient] Process exited: code=${code}, signal=${signal}`);
-            if (this.onProcessExit) {
-                this.onProcessExit(code, signal);
-            }
+            if (this.isShutdown) { return; } // Intentional disposal is not a crash.
             this.shutdown(
                 code !== 0
                     ? new Error(`Rust process exited with code ${code}, signal ${signal}`)
                     : null
             );
+            this.onProcessExit?.(code, signal);
         });
 
         // Handle process errors
         this.process.on('error', (error: Error) => {
             console.error(`[RustClient] Process error: ${error.message}`);
+            if (this.isShutdown) { return; }
             this.shutdown(error);
+            this.onProcessError?.(error); // Spawn errors need not emit an exit event.
         });
     }
 
@@ -316,5 +318,10 @@ export class RustClient {
      */
     public get isDisposed(): boolean {
         return this.isShutdown;
+    }
+
+    /** PID for diagnostics; undefined when spawning failed. */
+    public get processId(): number | undefined {
+        return this.process.pid;
     }
 }

@@ -117,6 +117,16 @@ export function getProgressJs(): string {
             showProgressMessage('<span style="opacity:0.7;">Retrying analysis...</span>');
         });
 
+        onMessage('analysisFailed', function(msg) {
+            _progressActive = false;
+            showProgressMessage(
+                '<span style="color:var(--vscode-editorError-foreground);">' + escapeHtml(msg.message || 'Analysis failed.') + '</span> ' +
+                '<button class="btn" id="progress-retry-btn" style="font-size:11px;padding:4px 10px;">Retry</button>'
+            );
+            var retryBtn = document.getElementById('progress-retry-btn');
+            if (retryBtn) retryBtn.addEventListener('click', function() { vscode.postMessage({ command: 'retryAnalysis' }); });
+        });
+
         onMessage('analysisComplete', function() {
             _progressActive = false;
             var bar = document.getElementById('progress-bar');

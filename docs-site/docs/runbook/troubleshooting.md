@@ -53,6 +53,21 @@ The webview loaded but data was not received.
 2. If persistent, open Developer Tools (see [Debugging Webview](./debugging-webview)) and check the Console tab for errors
 3. Ensure `npm run compile` was run after any TypeScript changes
 
+### Analysis server crashed and Retry cannot recover
+
+In v1.0.30 and earlier, Retry cannot replace a terminated analysis process; close
+and reopen that dump as a workaround. The development fix for P1-01 changes Retry
+to start a fresh server and reanalyze in the same tab. It is not released yet.
+
+With the fix, click **Retry** once and wait for analysis to complete. HeapQL and
+object-inspection requests then use the replacement process. If restarting fails,
+the error keeps a Retry button; check **Output → HeapLens** for details first.
+
+Recovery does not identify or prevent the original crash. Preserve the exit code,
+signal and preceding logs if it recurs. `SIGKILL` alone does not prove an
+out-of-memory condition. A long-running but live analysis is not automatically
+killed or restarted, and closing a dump intentionally should not show a crash.
+
 ### AI Chat says "No API key configured"
 
 **Solution:**

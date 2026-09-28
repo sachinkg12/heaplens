@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- CI now runs the maintained extension test suite through `npm test`, including compilation and linting. Platform packaging and tag publication depend on this check; failing extension tests block them. The existing automatic version/tag creation is unchanged.
+
+### Security
+
+- AI Chat, Copilot context, and Explain no longer automatically include duplicate-string contents or primitive field values. Counts, sizes, class/field names, and local inspection/report data are preserved. This minimizes data, but does not anonymize names or redact user-entered text.
+- Fix with AI now asks before every source submission and displays the configured endpoint's origin. Cancel, dismissal, or Review Source sends nothing. The prompt no longer adds the absolute source-file path. Approved source is sent in full, not automatically redacted; Ollama and proxies require the same confirmation. MCP tool output is a separate boundary and is unchanged.
+
+### Fixed
+
+- Retry now starts a fresh per-editor analysis server after a process exit or spawn error, reconnects HeapQL and object actions, and reanalyzes without closing the dump. Repeated Retry clicks do not start duplicate jobs, and late messages from a retired server cannot overwrite the replacement's UI.
+- Crashes before the webview is ready are buffered. Failed restarts and failed analyses keep a visible Retry action. Intentional editor disposal is not reported as a crash; a live but slow server is not killed by heartbeat failures.
+
+## [1.0.30] - 2026-09-26
+
 ### Fixed
 
 - Object and array shallow sizes now include estimated headers and alignment, with separate inference for reference and class-pointer widths. Indexed and legacy analysis use the same model. This corrects derived heap totals, retained bytes, histograms and size-based waste inputs. Sizes above 4 GiB use 64-bit storage rather than wrapping.

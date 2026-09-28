@@ -111,6 +111,8 @@ Configure any of the 10 supported LLM providers and ask questions in the **AI Ch
 
 The LLM responds with explanations **and** runnable HeapQL queries. Click **Run Query** to execute them inline.
 
+**Privacy:** AI Chat, Explain and Copilot context send heap metadata, not the dump file. Automatic duplicate-string contents and primitive field values are omitted; class/field names and messages you type are not anonymized. **Fix with AI** asks before each full-source submission and shows the destination. Cancel or Review Source sends nothing; the prompt does not add the local file path. Approved source can still contain secrets or paths. Ollama is local only when the configured endpoint and its model processing are local. MCP tools have a separate data-sharing boundary; see the [privacy details](docs-site/docs/ai-integration/privacy.md).
+
 ![AI Chat](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/ai_chat.png)
 ![Fix Recommendation](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/fix_recommendation.png)
 

@@ -201,7 +201,6 @@ export const retryAnalysisHandler: MessageHandler = {
     command: 'retryAnalysis',
     async handle(_message, ctx) {
         ctx.outputChannel.appendLine('[HeapLens] Retry analysis requested from webview');
-        ctx.webviewPanel.webview.postMessage({ command: 'analysisRetrying' });
         await ctx.provider.retryAnalysis(ctx.hprofPath);
     }
 };

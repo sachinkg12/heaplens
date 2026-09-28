@@ -130,7 +130,8 @@ export function formatAnalysisContext(data: AnalysisData): string {
         parts.push('');
     }
 
-    // Waste analysis (summary + top 5 dup strings for LLM)
+    // Outbound context contains counts/sizes, never raw string contents.
+    // Leave the original analysis data intact for local inspection and reports.
     if (data.wasteAnalysis) {
         const w = data.wasteAnalysis;
         parts.push('## Waste Analysis\n');
@@ -139,11 +140,10 @@ export function formatAnalysisContext(data: AnalysisData): string {
         parts.push(`- Empty Collections: ${fmtBytes(w.empty_collection_wasted_bytes)}`);
         if (w.duplicate_strings.length > 0) {
             parts.push('');
-            parts.push('Top duplicate strings:');
-            for (const ds of w.duplicate_strings.slice(0, 5)) {
-                const preview = ds.preview.length > 60 ? ds.preview.substring(0, 60) + '...' : ds.preview;
-                parts.push(`- "${preview}" x${ds.count} (wastes ${fmtBytes(ds.wasted_bytes)})`);
-            }
+            parts.push('Top duplicate string groups (contents omitted for privacy):');
+            w.duplicate_strings.slice(0, 5).forEach((ds, i) => {
+                parts.push(`- Group ${i + 1}: ${ds.count} copies (wastes ${fmtBytes(ds.wasted_bytes)})`);
+            });
         }
         parts.push('');
     }

@@ -123,12 +123,11 @@ export function buildObjectExplainPrompt(heapContext: string, info: ObjectExplai
     let fieldSummary = '';
     if (info.fields && info.fields.length > 0) {
         fieldSummary = '\n\nFields:\n' + info.fields.map(f => {
-            if (f.primitive_value !== undefined && f.primitive_value !== null) {
-                return `- ${f.name} (${f.field_type}): ${f.primitive_value}`;
-            } else if (f.ref_summary) {
+            // Do not read or stringify primitive values: even numbers/chars may be sensitive.
+            if (f.ref_summary) {
                 return `- ${f.name} (${f.field_type}): -> ${f.ref_summary.class_name} (retained: ${f.ref_summary.retained_size} bytes)`;
             }
-            return `- ${f.name} (${f.field_type}): null`;
+            return `- ${f.name} (${f.field_type}): [value omitted for privacy]`;
         }).join('\n');
     }
 
@@ -186,7 +185,6 @@ export interface AiFixInfo {
     retainedPercentage: number;
     description: string;
     sourceCode: string;
-    filePath: string;
 }
 
 export function buildAiFixPrompt(heapContext: string, info: AiFixInfo): string {
@@ -194,7 +192,6 @@ export function buildAiFixPrompt(heapContext: string, info: AiFixInfo): string {
         `Leak suspect: ${info.className}\n` +
         `Retained size: ${info.retainedSize} bytes (${info.retainedPercentage.toFixed(1)}% of heap)\n` +
         `Description: ${info.description}\n` +
-        `File: ${info.filePath}\n\n` +
         `Source code:\n\`\`\`java\n${info.sourceCode}\n\`\`\`\n\n` +
         `Fix the memory leak in this file. Return ONLY the complete fixed Java source file, or <<<ALREADY_FIXED>>> if no fix is needed.`;
 }

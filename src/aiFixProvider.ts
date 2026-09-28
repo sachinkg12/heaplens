@@ -6,9 +6,10 @@ import { AI_FIX_SYSTEM_PROMPT, buildAiFixPrompt, AiFixInfo } from './promptTempl
 import { resolveSource } from './sourceResolver';
 import { formatAnalysisContext } from './analysisContext';
 import type { EditorState } from './messageHandlers';
+import { confirmAiSourceSharing } from './aiSourceConsent';
 
 export interface AiFixResult {
-    status: 'diff-opened' | 'already-fixed' | 'source-not-found' | 'error';
+    status: 'diff-opened' | 'already-fixed' | 'source-not-found' | 'cancelled' | 'error';
     message?: string;
 }
 
@@ -35,6 +36,8 @@ export async function executeAiFix(
     outputChannel: vscode.OutputChannel,
     webviewPanel: vscode.WebviewPanel
 ): Promise<AiFixResult> {
+    // Bind consent to the same configuration used for the request, even across awaits.
+    const requestConfig = { ...llmConfig };
     const { className, retainedSize, retainedPercentage, description } = fixContext;
 
     // 1. Resolve source file
@@ -43,8 +46,11 @@ export async function executeAiFix(
         return { status: 'source-not-found', message: `No source file found for ${className}` };
     }
 
-    // 2. Read source file content
+    // 2. Ask before reading/sending source. Dismissal/review grants no permission.
     const originalUri = sourceResult.uri;
+    if (!await confirmAiSourceSharing(requestConfig, originalUri)) {
+        return { status: 'cancelled' };
+    }
     const fileBytes = await vscode.workspace.fs.readFile(originalUri);
     const sourceCode = Buffer.from(fileBytes).toString('utf-8');
 
@@ -55,8 +61,7 @@ export async function executeAiFix(
         retainedSize,
         retainedPercentage,
         description,
-        sourceCode,
-        filePath: originalUri.fsPath
+        sourceCode
     };
 
     const userPrompt = buildAiFixPrompt(heapContext, fixInfo);
@@ -68,7 +73,7 @@ export async function executeAiFix(
     outputChannel.appendLine(`[HeapLens] AI Fix: calling LLM for ${className}`);
     let response: string;
     try {
-        response = await callLlmFull(llmConfig, messages);
+        response = await callLlmFull(requestConfig, messages);
     } catch (err: any) {
         return { status: 'error', message: err.message || String(err) };
     }

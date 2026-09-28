@@ -14,7 +14,8 @@ import { friendlyError } from './errorMessages';
 import { executeAiFix } from './aiFixProvider';
 import { trackEvent, classifyError } from './telemetry';
 import { AnalysisSession } from './analysisSession';
-import { deliverOrBufferWebviewMessage } from './webviewMessageDelivery';
+import { deliverOrBufferWebviewMessage, guardWebviewMessages } from './webviewMessageDelivery';
+import { EditorServerConnection } from './editorServerConnection';
 import { LlmConfigurationService } from './llmConfigurationService';
 
 /**
@@ -37,10 +38,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     private editors = new Map<string, EditorState>();
     /** Tracks the most recently focused editor's hprof path. */
     private activeHprofPath: string | null = null;
-    /** Per-editor heartbeat intervals. */
-    private heartbeatIntervals = new Map<string, ReturnType<typeof setInterval>>();
-    /** Per-editor heartbeat failure counts. */
-    private heartbeatFailures = new Map<string, number>();
+    /** Each connection owns only its server generation and heartbeat. */
+    private serverConnections = new Map<string, EditorServerConnection<RustClient>>();
     /** Per-editor analysis lifecycle, kept separate from editor rendering state. */
     private analysisSessions = new Map<string, AnalysisSession>();
     /** Active monitor service (one per extension, not per-editor). */
@@ -122,17 +121,13 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
 
         // Clean up when the editor tab is closed
         webviewPanel.onDidDispose(() => {
+            if (this.editors.get(hprofPath) !== editorState) { return; }
             this.outputChannel.appendLine(`[HeapLens] Editor disposed for: ${hprofPath}`);
             this.analysisSessions.get(hprofPath)?.dispose();
             this.analysisSessions.delete(hprofPath);
-            // Dispose the per-editor client (kills the subprocess)
-            const state = this.editors.get(hprofPath);
-            if (state?.client && !state.client.isDisposed) {
-                state.client.dispose();
-                this.outputChannel.appendLine(`[HeapLens] Per-editor client disposed for: ${hprofPath}`);
-            }
-            this.stopHeartbeat(hprofPath);
             this.editors.delete(hprofPath);
+            this.serverConnections.get(hprofPath)?.dispose();
+            this.serverConnections.delete(hprofPath);
             if (this.activeHprofPath === hprofPath) {
                 this.activeHprofPath = null;
             }
@@ -142,14 +137,18 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         webviewPanel.webview.onDidReceiveMessage(async (message) => {
             this.outputChannel.appendLine(`[HeapLens] Webview message: ${message.command}`);
             const state = this.editors.get(hprofPath);
-            if (!state) { return; } // editor was disposed
+            if (state !== editorState) { return; } // editor was disposed/replaced
+            const requestClient = state.client;
+            const currentPanel = guardWebviewMessages(webviewPanel, () =>
+                this.editors.get(hprofPath) === state && state.client === requestClient
+            );
             const handler = HprofEditorProvider.handlerMap.get(message.command);
             if (handler) {
                 await handler.handle(message, {
                     hprofPath,
                     state,
-                    webviewPanel,
-                    client,
+                    webviewPanel: currentPanel,
+                    client: requestClient,
                     outputChannel: this.outputChannel,
                     llmConfiguration: this.llmConfiguration,
                     provider: this
@@ -162,40 +161,41 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     }
 
     private createClient(hprofPath: string): RustClient | null {
-        const serverPath = this.getServerPath();
-        this.outputChannel.appendLine(`[HeapLens] Server binary path: ${serverPath}`);
-        this.outputChannel.appendLine(`[HeapLens] Server binary exists: ${fs.existsSync(serverPath)}`);
-
-        if (!fs.existsSync(serverPath)) {
-            vscode.window.showErrorMessage(`HeapLens server not found at ${serverPath}. Build with: cd hprof-analyzer && cargo build --release`);
-            return null;
-        }
-
         try {
-            const client = new RustClient(serverPath);
-            client.onStderr = (msg: string) => {
-                this.outputChannel.appendLine(`[server:${hprofPath}] ${msg.trim()}`);
-            };
-            client.onProcessExit = (code: number | null, signal: string | null) => {
-                this.outputChannel.appendLine(`[HeapLens] Server process exited for ${hprofPath}: code=${code}, signal=${signal}`);
-                this.analysisSessions.get(hprofPath)?.serverExited(
-                    new Error(`Analysis server exited with code ${code}, signal ${signal}`)
-                );
-                // Notify only this editor's webview about the crash
-                if ((code !== 0 && code !== null) || signal !== null) {
-                    trackEvent('error/serverCrashed', {
-                        exitCode: String(code),
-                        signal: signal || 'none'
-                    });
-                    const state = this.editors.get(hprofPath);
-                    if (state?.webviewReady) {
-                        state.webviewPanel.webview.postMessage({ command: 'serverCrashed' });
+            let connection = this.serverConnections.get(hprofPath);
+            if (!connection) {
+                connection = new EditorServerConnection(() => {
+                    const serverPath = this.getServerPath();
+                    this.outputChannel.appendLine(`[HeapLens] Server binary path: ${serverPath}`);
+                    if (!fs.existsSync(serverPath)) { throw new Error(`HeapLens server not found at ${serverPath}`); }
+                    const client = new RustClient(serverPath);
+                    this.outputChannel.appendLine(`[HeapLens] Rust server process spawned for: ${hprofPath} (pid: ${client.processId ?? 'unavailable'})`);
+                    return client;
+                }, {
+                    onStderr: msg => this.outputChannel.appendLine(`[server:${hprofPath}] ${msg.trim()}`),
+                    onUnavailable: (client, error, code, signal) => {
+                        const state = this.editors.get(hprofPath);
+                        if (state?.client !== client) { return; }
+                        this.outputChannel.appendLine(`[HeapLens] Server unavailable for ${hprofPath}: ${error.message}`);
+                        this.analysisSessions.get(hprofPath)?.serverExited(error);
+                        trackEvent('error/serverCrashed', {
+                            exitCode: String(code),
+                            signal: signal || 'none'
+                        });
+                        deliverOrBufferWebviewMessage(state, { command: 'serverCrashed' },
+                            message => state.webviewPanel.webview.postMessage(message));
+                    },
+                    onHeartbeatFailure: failures => {
+                        this.outputChannel.appendLine(`[HeapLens] Heartbeat failure #${failures} for ${hprofPath}`);
+                        if (failures === 3) {
+                            trackEvent('error/heartbeatFailed', {}, { consecutiveFailures: failures });
+                            this.outputChannel.appendLine(`[HeapLens] Server temporarily unresponsive for ${hprofPath}; keeping the live analysis attached`);
+                        }
                     }
-                }
-            };
-            this.outputChannel.appendLine(`[HeapLens] Rust server process spawned for: ${hprofPath}`);
-            this.startHeartbeat(hprofPath, client);
-            return client;
+                });
+                this.serverConnections.set(hprofPath, connection);
+            }
+            return connection.connect();
         } catch (error: any) {
             this.outputChannel.appendLine(`[HeapLens] ERROR spawning server: ${error.message}`);
             vscode.window.showErrorMessage(`Failed to start HeapLens server: ${error.message}`);
@@ -208,6 +208,9 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         webviewPanel: vscode.WebviewPanel,
         client: RustClient
     ): Promise<void> {
+        const owner = this.editors.get(hprofPath);
+        const isCurrent = () => this.editors.get(hprofPath) === owner
+            && owner?.client === client && this.serverConnections.get(hprofPath)?.isCurrent(client);
         const phaseMessages: Record<string, string> = {
             loading: 'Loading file...',
             graph_building: 'Building heap graph...',
@@ -239,6 +242,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             { longRunningWarningMs: warningMinutes * 60_000 },
             {
                 onProgress: (params: any) => {
+                    if (!isCurrent()) { return; }
                     const state = this.editors.get(hprofPath);
                     this.outputChannel.appendLine(`[HeapLens] Progress: stage=${params.stage}, phase=${params.phase}/${params.total_phases}`);
 
@@ -261,6 +265,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     progressRef?.report({ increment, message: msg });
                 },
                 onLongRunning: async elapsedMs => {
+                    if (!isCurrent()) { return 'continue'; }
                     const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60_000));
                     trackEvent('analysis/longRunning', {}, { elapsedMinutes });
                     this.outputChannel.appendLine(`[HeapLens] Analysis is still running after ${elapsedMinutes} minutes`);
@@ -277,6 +282,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     );
                 },
                 onCancellationError: error => {
+                    if (!isCurrent()) { return; }
                     this.outputChannel.appendLine(`[HeapLens] Cancellation request failed: ${error.message}`);
                     void vscode.window.showWarningMessage(
                         'HeapLens could not cancel the analysis. It will continue running.'
@@ -297,7 +303,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                 progress.report({ message: 'Starting analysis...' });
 
                 // Handle VS Code cancellation
-                cancellationToken.onCancellationRequested(() => {
+                const cancellationSubscription = cancellationToken.onCancellationRequested(() => {
                     trackEvent('analysis/cancelled');
                     this.outputChannel.appendLine('[HeapLens] User requested analysis cancellation');
                     void session.cancel();
@@ -306,6 +312,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                 try {
                     this.outputChannel.appendLine('[HeapLens] Awaiting analyze_heap response...');
                     const outcome = await session.run();
+                    if (!isCurrent()) { return; }
 
                     if (outcome.status === 'completed') {
                         this.handleCompletedAnalysis(
@@ -334,6 +341,11 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                         progress.report({ message: 'Cancelled' });
                     }
                 } catch (error: any) {
+                    if (!isCurrent()) { return; }
+                    if (owner) {
+                        deliverOrBufferWebviewMessage(owner, { command: 'analysisFailed', message: friendlyError(error.message) },
+                            message => webviewPanel.webview.postMessage(message));
+                    }
                     const errMsg = error.message || 'unknown';
                     trackEvent('analysis/failed', {
                         errorType: classifyError(errMsg),
@@ -342,6 +354,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     this.outputChannel.appendLine(`[HeapLens] ERROR: ${error.message}`);
                     vscode.window.showErrorMessage(`HeapLens: ${friendlyError(error.message)}`);
                 } finally {
+                    cancellationSubscription.dispose();
                     if (this.analysisSessions.get(hprofPath) === session) {
                         this.analysisSessions.delete(hprofPath);
                     }
@@ -422,15 +435,21 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
 
         const state = this.editors.get(hprofPath);
-        if (!state || state.client.isDisposed) {
-            state?.webviewPanel.webview.postMessage({
-                command: 'error',
-                message: 'The analysis server is not available. Close and reopen the heap dump to restart it.'
-            });
+        if (!state) { return; }
+        // No await before ownership/session installation: repeated clicks cannot spawn twice.
+        state.analysisData = null;
+        state.pendingWebviewMessage = null;
+        deliverOrBufferWebviewMessage(state, { command: 'analysisRetrying' },
+            message => state.webviewPanel.webview.postMessage(message));
+        const client = this.createClient(hprofPath);
+        if (!client) {
+            deliverOrBufferWebviewMessage(state, {
+                command: 'analysisFailed', message: 'Could not restart the analysis server. See HeapLens Output, then Retry.'
+            }, message => state.webviewPanel.webview.postMessage(message));
             return;
         }
-
-        await this.analyzeFile(hprofPath, state.webviewPanel, state.client);
+        state.client = client;
+        await this.analyzeFile(hprofPath, state.webviewPanel, client);
     }
 
     public async handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void> {
@@ -714,11 +733,12 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
 
             trackEvent('feature/fixWithAi', { status: result.status });
             switch (result.status) {
+                case 'cancelled':
                 case 'diff-opened':
                     webviewPanel.webview.postMessage({
                         command: 'fixWithAiDone',
                         className,
-                        status: 'diff-opened'
+                        status: result.status
                     });
                     break;
                 case 'already-fixed':
@@ -848,42 +868,6 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         this.monitorService = service;
     }
 
-    private startHeartbeat(hprofPath: string, client: RustClient): void {
-        this.stopHeartbeat(hprofPath);
-        this.heartbeatFailures.set(hprofPath, 0);
-        const interval = setInterval(async () => {
-            if (!client || client.isDisposed) {
-                this.stopHeartbeat(hprofPath);
-                return;
-            }
-            const ok = await client.ping(5000);
-            if (ok) {
-                this.heartbeatFailures.set(hprofPath, 0);
-            } else {
-                const failures = (this.heartbeatFailures.get(hprofPath) || 0) + 1;
-                this.heartbeatFailures.set(hprofPath, failures);
-                this.outputChannel.appendLine(`[HeapLens] Heartbeat failure #${failures} for ${hprofPath}`);
-                if (failures === 3) {
-                    trackEvent('error/heartbeatFailed', {}, { consecutiveFailures: failures });
-                    this.outputChannel.appendLine(
-                        `[HeapLens] Server is temporarily unresponsive for ${hprofPath}; ` +
-                        'keeping the live analysis attached'
-                    );
-                }
-            }
-        }, 15000);
-        this.heartbeatIntervals.set(hprofPath, interval);
-    }
-
-    private stopHeartbeat(hprofPath: string): void {
-        const interval = this.heartbeatIntervals.get(hprofPath);
-        if (interval) {
-            clearInterval(interval);
-            this.heartbeatIntervals.delete(hprofPath);
-        }
-        this.heartbeatFailures.delete(hprofPath);
-    }
-
     public dispose(): void {
         // Dispose monitor service
         if (this.monitorService) {
@@ -895,12 +879,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
         this.analysisSessions.clear();
         // Dispose all per-editor clients and heartbeats
-        for (const [hprofPath, state] of this.editors) {
-            this.stopHeartbeat(hprofPath);
-            if (state.client && !state.client.isDisposed) {
-                state.client.dispose();
-            }
-        }
         this.editors.clear();
+        for (const connection of this.serverConnections.values()) { connection.dispose(); }
+        this.serverConnections.clear();
     }
 }
