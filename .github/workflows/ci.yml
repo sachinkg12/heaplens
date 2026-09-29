@@ -3,21 +3,62 @@ name: CI/CD
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*', 'intellij-v*']
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  # ── Auto-bump patch version and tag on push to main ───────────────
-  auto-version:
-    if: github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'chore(release)')
+  changes:
     runs-on: ubuntu-latest
+    outputs:
+      vscode: ${{ steps.route.outputs.vscode }}
+      intellij: ${{ steps.route.outputs.intellij }}
+      rust: ${{ steps.route.outputs.rust }}
+      auto_release: ${{ steps.route.outputs.auto_release }}
+      publish_vscode: ${{ steps.route.outputs.publish_vscode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - id: route
+        run: node scripts/ci/detect-changes.cjs
+
+  boundary-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:boundaries
+
+  # Version only VS Code-relevant changes, after the selected checks pass.
+  auto-version:
+    needs: [changes, checks]
+    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.changes.outputs.auto_release == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: vscode-auto-version
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.PAT_TOKEN }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -25,14 +66,19 @@ jobs:
 
       - name: Bump patch version, commit & tag
         run: |
+          # Never tag an untested newer main or force-push over concurrent work.
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "::error::main moved after this run. Release stopped; validate the current main before releasing."
+            exit 1
+          fi
           git config user.name "sachinkg12"
           git config user.email "61034758+sachinkg12@users.noreply.github.com"
-          NEW_VERSION=$(npm version patch --no-git-tag-version)
+          NEW_VERSION=$(npm version patch --no-git-tag-version --ignore-scripts)
           git add package.json package-lock.json
           git commit -m "chore(release): ${NEW_VERSION}"
           git tag "${NEW_VERSION}"
-          git push origin main
-          git push origin "${NEW_VERSION}"
+          git push --atomic origin HEAD:refs/heads/main "refs/tags/${NEW_VERSION}"
 
   # ── Extension checks (compile + lint + maintained test suite) ──────
   lint:
@@ -51,6 +97,8 @@ jobs:
 
   # ── Rust unit tests ────────────────────────────────────────────────
   test-rust:
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,12 +113,80 @@ jobs:
           restore-keys: rust-test-
       - name: Run Rust tests
         working-directory: hprof-analyzer
-        run: cargo test --release --lib --test integration --test shallow_size
+        run: cargo test --release --lib --bins --test integration --test shallow_size
+
+  # IntelliJ-only changes cannot publish VS Code. Shared changes test both hosts.
+  test-intellij:
+    needs: changes
+    if: ${{ needs.changes.outputs.intellij == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            hprof-analyzer/target
+          key: intellij-engine-${{ runner.os }}-${{ hashFiles('hprof-analyzer/Cargo.toml', 'hprof-analyzer/crates/**/Cargo.toml') }}
+      - name: Build the shared analysis server
+        working-directory: hprof-analyzer
+        run: cargo build --release --bin hprof-server
+      - name: Generate a small public-source fixture and test the adapter
+        shell: bash
+        run: |
+          FIXTURE_DIR=$(mktemp -d "$RUNNER_TEMP/heaplens-ci.XXXXXX")
+          javac -d "$FIXTURE_DIR" hprof-analyzer/tests/fixtures/ClassRetainedCounterexample.java
+          java -Xmx128m -cp "$FIXTURE_DIR" ClassRetainedCounterexample "$FIXTURE_DIR/ci-smoke.hprof"
+          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon test verifyPluginProjectConfiguration \
+            -Dheaplens.test.ci=true \
+            -Dheaplens.test.server="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server" \
+            -Dheaplens.test.dump="$FIXTURE_DIR/ci-smoke.hprof"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: intellij-test-reports
+          path: |
+            intellij-plugin/build/reports/tests/
+            intellij-plugin/build/test-results/
+          retention-days: 7
+
+  # Stable check name for branch protection; selected-but-skipped is a failure.
+  checks:
+    needs: [changes, boundary-tests, lint, test-rust, test-intellij]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Verify all selected checks passed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/check-results.cjs
 
   # ── Build platform-specific VSIX packages ──────────────────────────
   # OCP: To add a new platform, add one row to matrix.include — nothing else changes.
   build:
-    needs: [lint, test-rust]
+    needs: [changes, checks]
+    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.changes.outputs.vscode == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -138,8 +254,8 @@ jobs:
 
   # ── Publish to Marketplace + GitHub Release (tags only) ────────────
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.build.result == 'success' && needs.changes.outputs.publish_vscode == 'true' }}
+    needs: [changes, checks, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

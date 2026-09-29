@@ -228,6 +228,7 @@
     "vscode:prepublish": "bash scripts/package-binary.sh && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js",
@@ -240,6 +241,7 @@
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
     "eslint": "^8.28.0",
+    "js-yaml": "4.1.1",
     "typescript": "^4.9.4"
   },
   "dependencies": {
