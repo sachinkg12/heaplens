@@ -20,6 +20,7 @@ const parts = [
 const styles = exported('styles', 'getStyles');
 const template = exported('template', 'getHtmlTemplate');
 const queryLifecycle = fs.readFileSync(path.join(__dirname, '../src/main/webview/query-lifecycle.js'), 'utf8');
+const layout = fs.readFileSync(path.join(__dirname, '../src/main/webview/layout.css'), 'utf8');
 const d3 = fs.readFileSync(path.join(root, 'media/d3.v7.min.js'), 'utf8');
 // Preserve DOM dependencies, but expose only implemented capabilities.
 const setup = `
@@ -32,6 +33,9 @@ const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <title>HeapLens IntelliJ prototype</title><style>
 :root {
  --vscode-editor-background:#202124; --vscode-foreground:#ededed;
+ /* JCEF must supply the opaque surfaces normally injected by VS Code. */
+ --vscode-editorGroupHeader-tabsBackground:#202124;
+ --vscode-editorWidget-background:#28292c; --vscode-list-hoverBackground:#343539;
  --vscode-editor-foreground:#ededed; --vscode-panel-border:#505050;
  --vscode-input-background:#303134; --vscode-input-foreground:#ededed;
  --vscode-input-border:#707070; --vscode-button-background:#176ac5;
@@ -40,6 +44,7 @@ const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
  --vscode-editor-font-family:monospace; --vscode-font-size:13px;
 }
 ${styles}
+${layout}
 #report-actions, .why-alive-btn { display:none!important; }
 </style></head><body>${template}
 <script nonce="__NONCE__">${d3.replace(/<\/script/gi, '<\\/script')}</script>

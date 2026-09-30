@@ -1,0 +1,28 @@
+/* IntelliJ viewport contract: navigation stays outside the scrolling pane.
+   Do not guess its height; host fonts and scale can change it. */
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    min-width: 0;
+    overflow: hidden;
+}
+.tab-bar {
+    position: relative;
+}
+.tab-content.active {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
+    padding-top: 0;
+}
+/* In-flow spacing scrolls away. Top padding would inset the sticky edge. */
+.tab-content.active::before {
+    content: '';
+    display: block;
+    height: var(--hl-space-lg);
+}
+#tab-overview th {
+    top: 0;
+}

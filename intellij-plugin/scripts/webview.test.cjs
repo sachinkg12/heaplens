@@ -4,6 +4,48 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync('build/generated/webview/webview/index.html', 'utf8');
 
+// JCEF does not inject VS Code's theme variables. A missing surface color makes
+// sticky headers transparent even when their stacking order is correct.
+const css = html.match(/<style>([\s\S]*?)<\/style>/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+const themeTokens = new Map([...css.matchAll(/(--vscode-[\w-]+)\s*:\s*([^;]+);/g)]
+  .map(([, name, value]) => [name, value.trim()]));
+for (const [surface, selector, token] of [
+  ['tab strip', '.tab-bar', '--vscode-editorGroupHeader-tabsBackground'],
+  ['table header', 'th', '--vscode-editorWidget-background'],
+  ['hovered table header', 'th:hover', '--vscode-list-hoverBackground']
+]) {
+  test('IntelliJ supplies an opaque background for the shared ' + surface, () => {
+    const rule = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .find(([, selectors]) => selectors.trim() === selector);
+    assert.ok(rule, 'Missing shared rule: ' + selector);
+    assert.ok(rule[2].includes('background: var(' + token + ')'),
+      'Recheck the host theme contract when the shared surface changes');
+    // The prototype deliberately uses six-digit opaque colors, not alpha colors.
+    assert.match(themeTokens.get(token) || '', /^#[0-9a-f]{6}$/i,
+      'Missing opaque host color: ' + token);
+  });
+}
+
+function lastRule(selector) {
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, selectors]) => selectors.trim() === selector).at(-1)?.[2] || '';
+}
+test('IntelliJ keeps navigation outside the active scrolling pane', () => {
+  assert.match(lastRule('body'), /display:\s*flex\s*;/);
+  assert.match(lastRule('body'), /flex-direction:\s*column\s*;/);
+  assert.match(lastRule('body'), /height:\s*100vh\s*;/);
+  assert.match(lastRule('body'), /overflow:\s*hidden\s*;/);
+  assert.match(lastRule('.tab-bar'), /position:\s*relative\s*;/);
+  assert.match(lastRule('.tab-content.active'), /flex:\s*1\s*;/);
+  assert.match(lastRule('.tab-content.active'), /min-height:\s*0\s*;/);
+  assert.match(lastRule('.tab-content.active'), /overflow:\s*auto\s*;/);
+  assert.match(lastRule('.tab-content.active'), /padding-top:\s*0\s*;/);
+  assert.match(lastRule('.tab-content.active::before'), /height:\s*var\(--hl-space-lg\)\s*;/);
+});
+test('IntelliJ Overview headers stick to the pane edge without a guessed tab height', () => {
+  assert.match(lastRule('#tab-overview th'), /top:\s*0\s*;/);
+});
+
 // DOM contract harness, not a claim of native JCEF layout/accessibility coverage.
 function harness() {
   class Element {
