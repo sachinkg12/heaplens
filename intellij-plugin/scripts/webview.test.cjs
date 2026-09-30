@@ -48,31 +48,63 @@ test('IntelliJ Overview headers stick to the pane edge without a guessed tab hei
 
 // DOM contract harness, not a claim of native JCEF layout/accessibility coverage.
 function harness() {
+  function decode(value) {
+    return value.replaceAll('&quot;', '"').replaceAll('&#39;', "'")
+      .replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+  }
   class Element {
     constructor() {
       this.listeners = {}; this.dataset = {}; this.style = {}; this.value = '';
+      this.attributes = {}; this.tagName = '';
       this.innerHTML = ''; this.disabled = false; this.classList = {add(){},remove(){}};
     }
-    set innerHTML(v) { this._html = String(v); this.children = []; }
+    set innerHTML(v) {
+      this._html = String(v); this.children = [];
+      // Flatten only the generated controls used by these contract tests.
+      // This deliberately does not simulate browser layout or full DOM parsing.
+      for (const [, tag, attrs] of this._html.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)) {
+        const child = new Element(); child.tagName = tag.toLowerCase();
+        for (const [, name, value] of attrs.matchAll(/([\w-]+)="([^"]*)"/g)) child.setAttribute(name, decode(value));
+        this.children.push(child);
+      }
+    }
     get innerHTML() { return this._html; }
     set textContent(v) { this.innerHTML = String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
     get textContent() { return this.innerHTML; }
     addEventListener(name, fn) { this.listeners[name] = fn; }
-    querySelectorAll() { return []; }
+    querySelectorAll(selector) {
+      const tag = selector.match(/^[a-z][\w-]*/i)?.[0];
+      const classes = [...selector.matchAll(/\.([\w-]+)/g)].map(m => m[1]);
+      const attr = selector.match(/\[([\w-]+)\]/)?.[1];
+      return this.children.filter(el => (!tag || el.tagName === tag)
+        && classes.every(c => (el.className || '').split(' ').includes(c))
+        && (!attr || attr in el.attributes));
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     appendChild(child) { this.children.push(child); return child; }
-    setAttribute() {}
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+      if (name.startsWith('data-')) this.dataset[name.slice(5)] = value;
+      if (name === 'class') this.className = value;
+    }
+    getAttribute(name) { return this.attributes[name]; }
     focus() {}
     remove() { this.removed = true; }
     click() { this.listeners.click?.({}); }
   }
-  const elements = new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(m => [m[1], new Element()]));
+  // Do not treat IDs in renderer JavaScript strings as existing DOM elements.
+  // Dynamic controls must be discovered from the generated panel contents.
+  const markup = html.slice(0, html.indexOf('<script'));
+  const elements = new Map([...markup.matchAll(/\bid="([^"]+)"/g)].map(m => [m[1], new Element()]));
   for (const id of ['progress-cancel-btn','progress-retry-btn']) elements.set(id,new Element());
   const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(m => {
     const el = new Element(); el.dataset.tab = m[1]; return el;
   });
   const window = new Element(), messages = [];
   const document = {
-    getElementById(id) { assert.ok(elements.has(id), 'Missing template element: '+id); return elements.get(id); },
+    getElementById(id) {
+      return elements.get(id) || [...elements.values()].flatMap(el => el.children).find(el => el.attributes.id === id) || null;
+    },
     querySelectorAll(selector) { return selector === '.tab-btn' ? tabs.filter(t=>!t.removed) : []; },
     querySelector() { return new Element(); }, createElement() { return new Element(); },
     addEventListener() {}
@@ -83,10 +115,10 @@ function harness() {
   });
   return {elements,tabs,messages, send: data=>window.listeners.message({data})};
 }
-test('generated UI boots, posts ready and exposes only the two implemented tabs',()=>{
+test('generated UI boots, posts ready and exposes only the three implemented tabs',()=>{
   const h=harness();
   assert.equal(h.messages[0].command,'ready');
-  assert.deepEqual(h.tabs.filter(t=>!t.removed).map(t=>t.dataset.tab),['overview','query']);
+  assert.deepEqual(h.tabs.filter(t=>!t.removed).map(t=>t.dataset.tab),['overview','histogram','query']);
 });
 test('same Overview and query renderers consume translated engine DTOs safely',()=>{
   const h=harness();
@@ -189,4 +221,120 @@ test('prototype CSP denies network calls and unavailable actions remain hidden',
   assert.match(html,/connect-src 'none'/);
   assert.match(html,/#report-actions, .why-alive-btn \{ display:none!important/);
   assert.doesNotMatch(html,/<script[^>]+src="https?:/);
+});
+
+const sampleClasses = [
+  {class_name:'example.A',instance_count:2,shallow_size:32,retained_size:80},
+  {class_name:'example.B',instance_count:1,shallow_size:24,retained_size:120}
+];
+function histogram(h, classes = sampleClasses) {
+  h.send({command:'analysisComplete',summary:{total_heap_size:1024,reachable_heap_size:512,
+    total_instances:3,total_classes:2,total_arrays:1,total_gc_roots:1},
+    topObjects:[],classHistogram:classes});
+  h.tabs.find(t=>t.dataset.tab==='histogram').click();
+}
+function selectClass(h, name) {
+  const link = h.elements.get('histogram-table').querySelectorAll('.hist-class-link').find(el=>el.dataset.class===name);
+  assert.ok(link, 'Class link missing: '+name);
+  link.click();
+  return h.messages.at(-1);
+}
+function instances(h, request, rows = [[7,'example.A',16,80]]) {
+  h.send({...request,
+    command:'histogramInstancesResult',
+    result:{columns:['object_id','class_name','shallow_size','retained_size'],rows,total_count:rows.length}});
+}
+test('Histogram lazily reuses sorting, filtering and bounded class rendering',()=>{
+  const h=harness(), table=h.elements.get('histogram-table');
+  complete(h); assert.equal(table.innerHTML,'');
+  const classes=Array.from({length:205},(_,i)=>({class_name:'example.Class'+i,instance_count:i+1,shallow_size:16,retained_size:i}));
+  // A new analysis invalidates the shared lazy-render cache.
+  loading(h); histogram(h,classes);
+  assert.equal(table.querySelectorAll('.hist-class-link').length,200);
+  table.children.find(el=>el.attributes.id==='show-all-histogram').click();
+  assert.equal(table.querySelectorAll('.hist-class-link').length,205);
+  table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='instance_count').click();
+  assert.equal(table.querySelectorAll('.hist-class-link')[0].dataset.class,'example.Class204');
+  table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='instance_count').click();
+  assert.equal(table.querySelectorAll('.hist-class-link')[0].dataset.class,'example.Class0');
+  const input=h.elements.get('histogram-search'); input.value='CLASS204';
+  input.listeners.input({target:input});
+  assert.equal(table.querySelectorAll('.hist-class-link').length,1);
+  input.value='no match'; input.listeners.input({target:input});
+  assert.equal(table.querySelectorAll('.hist-class-link').length,0);
+});
+test('Histogram drill-down is correlated and cannot overwrite Query state',()=>{
+  const h=harness(); histogram(h);
+  h.elements.get('query-input').value='my query';
+  const request=selectClass(h,'example.A');
+  assert.equal(request.command,'histogramInstances'); assert.equal(request.className,'example.A');
+  assert.equal(request.query,undefined);
+  const panel=h.elements.get('histogram-instances-panel');
+  h.send({command:'queryResult',query:'SELECT 1',result:{columns:['n'],rows:[[1]]}});
+  assert.match(panel.innerHTML,/Loading instances/);
+  instances(h,{...request,requestId:'wrong'});
+  assert.match(panel.innerHTML,/Loading instances/);
+  instances(h,request);
+  assert.doesNotMatch(panel.innerHTML,/Loading instances/);
+  assert.match(panel.innerHTML,/Instances of example.A/);
+  assert.equal(h.elements.get('query-input').value,'SELECT 1');
+  assert.match(h.elements.get('query-results').innerHTML,/>1</);
+  assert.ok(panel.children.some(el=>el.textContent.includes('up to 200')));
+});
+test('rapid class changes ignore older replies and targeted errors do not affect Query',()=>{
+  const h=harness(); histogram(h);
+  const a=selectClass(h,'example.A'), b=selectClass(h,'example.B');
+  instances(h,a); assert.match(h.elements.get('histogram-instances-panel').innerHTML,/Loading instances of example.B/);
+  h.send({command:'histogramInstancesError',requestId:b.requestId,className:b.className,error:'Wait for previous query'});
+  assert.match(h.elements.get('histogram-instances-panel').textContent,/Wait for previous query/);
+  assert.equal(h.elements.get('query-status').textContent,'');
+  instances(h,a);
+  assert.match(h.elements.get('histogram-instances-panel').textContent,/Wait for previous query/);
+  const retry=selectClass(h,'example.B'); instances(h,retry,[]);
+  assert.match(h.elements.get('histogram-instances-panel').innerHTML,/No instances found/);
+});
+test('Histogram invalidates previews across crash, cancellation and reanalysis',()=>{
+  const h=harness(); histogram(h);
+  const old=selectClass(h,'example.A');
+  h.send({command:'serverCrashed'});
+  assert.equal(h.elements.get('histogram-search').disabled,true);
+  assert.match(h.elements.get('histogram-table').textContent,/unavailable/);
+  instances(h,old); assert.equal(h.elements.get('histogram-instances-panel').textContent,'');
+  loading(h); h.send({command:'analysisCancelled'});
+  assert.match(h.elements.get('histogram-table').textContent,/cancelled/);
+  loading(h); histogram(h);
+  assert.equal(h.elements.get('histogram-search').disabled,false);
+  const current=selectClass(h,'example.A'); assert.notEqual(current.requestId,old.requestId);
+  instances(h,old); assert.match(h.elements.get('histogram-instances-panel').textContent,/Loading/);
+  instances(h,current);
+  assert.match(h.elements.get('histogram-instances-panel').textContent,/Instances of/);
+});
+test('malformed instance results recover and class names and errors remain text',()=>{
+  const h=harness(), name='<img src=x onerror=alert(1)>';
+  histogram(h,[{class_name:name,instance_count:1,shallow_size:16,retained_size:16}]);
+  assert.doesNotMatch(h.elements.get('histogram-table').innerHTML,/<img/);
+  const request=selectClass(h,name);
+  h.send({...request,command:'histogramInstancesResult',result:{rows:null,columns:[]}});
+  assert.match(h.elements.get('histogram-instances-panel').textContent,/Invalid instance response/);
+  const retry=selectClass(h,name);
+  h.send({...retry,command:'histogramInstancesError',error:name});
+  assert.doesNotMatch(h.elements.get('histogram-instances-panel').innerHTML,/<img/);
+});
+test('closing an instance panel does not let a duplicate reply reopen it',()=>{
+  const h=harness(); histogram(h);
+  const request=selectClass(h,'example.A'); instances(h,request);
+  const panel=h.elements.get('histogram-instances-panel');
+  panel.querySelector('.instance-panel-close').click();
+  instances(h,request);
+  assert.equal(panel.innerHTML,'');
+});
+test('Histogram hides unsupported actions and cannot send CSV to the host',()=>{
+  const h=harness(); histogram(h);
+  const table=h.elements.get('histogram-table'), count=h.messages.length;
+  table.children.find(el=>el.attributes.id==='export-csv-btn').click();
+  assert.equal(h.messages.length,count);
+  for (const selector of ['#export-csv-btn','#histogram-table th:nth-child(5)',
+    '#histogram-table td:nth-child(5)','#histogram-instances-panel th:last-child',
+    '#histogram-instances-panel .instance-actions']) assert.ok(css.includes(selector));
+  assert.match(lastRule('#tab-histogram th'), /top:\s*0\s*;/);
 });

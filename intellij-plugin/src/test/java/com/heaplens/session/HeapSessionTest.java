@@ -18,10 +18,12 @@ class HeapSessionTest {
         volatile boolean closed;
         volatile long analysisId;
         CompletableFuture<JsonObject> ack = new CompletableFuture<>();
+        CompletableFuture<JsonObject> queryReply;
         @Override public void start(Listener value) { listener = value; }
         @Override public CompletableFuture<JsonObject> request(long id, String method, JsonObject p, Duration timeout) {
             params.put(method, p); methods.add(method);
             if (method.equals("analyze_heap")) { analysisId = id; return ack; }
+            if (method.equals("execute_query") && queryReply != null) return queryReply;
             return CompletableFuture.completedFuture(new JsonObject());
         }
         void notify(String method, String status, long id) {
@@ -127,5 +129,38 @@ class HeapSessionTest {
         for (String value : List.of("[]", "null", "{", "{}", "{\"command\":\"aiChat\"}", "{\"command\":\"executeQuery\"}", "x".repeat(128 * 1024 + 1)))
             assertFalse(router.dispatch(value));
         assertTrue(router.dispatch("{\"command\":\"ready\"}")); assertTrue(clients.isEmpty());
+    }
+    @Test void scopedQueriesDoNotBroadcastIntoTheQueryTabAndBusyErrorsReachTheirCaller() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("SELECT object_id FROM instances LIMIT 1", 1, scoped::add);
+        await(() -> f.methods.contains("execute_query"));
+        session.query("ordinary query", 1); await(() -> hasEvent("queryError"));
+        assertTrue(scoped.isEmpty());
+        f.queryReply.complete(new JsonObject());
+        await(() -> !scoped.isEmpty());
+        assertEquals("queryResult", scoped.getFirst().get("command").getAsString());
+        assertFalse(hasEvent("queryResult"));
+    }
+    @Test void scopedQueryFailureDoesNotKillServerOrAffectGlobalQueryStatus() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("bad SQL", 1, scoped::add); await(() -> f.methods.contains("execute_query"));
+        f.queryReply.completeExceptionally(new TimeoutException());
+        await(() -> !scoped.isEmpty());
+        assertEquals("queryError", scoped.getFirst().get("command").getAsString());
+        assertFalse(hasEvent("queryError")); assertEquals(HeapSession.State.READY, session.state());
+    }
+    @Test void retiredServersCannotReplyToScopedQueries() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("SELECT 1", 1, scoped::add); await(() -> f.methods.contains("execute_query"));
+        f.listener.failed("crashed"); await(() -> session.state() == HeapSession.State.FAILED);
+        f.queryReply.complete(new JsonObject());
+        session.query("barrier", 1); await(() -> hasEvent("queryError"));
+        assertTrue(scoped.isEmpty());
     }
 }

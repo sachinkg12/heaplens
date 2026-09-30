@@ -89,20 +89,21 @@ public final class HeapSession implements AutoCloseable {
                 fail("Cancellation could not be confirmed. Retry will start a fresh server.");
         }));
     }); }
-    public void query(String query, int page) { dispatch(() -> {
-        if (state != State.READY || queryPending) { queryError("Wait for analysis and the previous query to finish.", query); return; }
+    public void query(String query, int page) { query(query, page, output); }
+    public void query(String query, int page, Consumer<JsonObject> reply) { dispatch(() -> {
+        if (state != State.READY || queryPending) { queryError("Wait for analysis and the previous query to finish.", query, reply); return; }
         queryPending = true;
         JsonObject p = params(); p.addProperty("query", query); p.addProperty("page", Math.max(1, page)); p.addProperty("page_size", 500);
         long current = generation;
         client.request(++nextId, "execute_query", p, Duration.ofSeconds(30)).whenComplete((result, error) -> dispatch(() -> {
             if (current != generation || state != State.READY) return;
             queryPending = false;
-            if (error != null) queryError("Query failed or timed out. Check its syntax or retry the query.", query);
-            else { JsonObject message = WebviewEvents.event("queryResult"); message.add("result", result); message.addProperty("query", query); output.accept(message); }
+            if (error != null) queryError("Query failed or timed out. Check its syntax or retry the query.", query, reply);
+            else { JsonObject message = WebviewEvents.event("queryResult"); message.add("result", result); message.addProperty("query", query); reply.accept(message); }
         }));
     }); }
-    private void queryError(String reason, String query) {
-        JsonObject error = WebviewEvents.event("queryError"); error.addProperty("error", reason); error.addProperty("query", query); output.accept(error);
+    private void queryError(String reason, String query, Consumer<JsonObject> reply) {
+        JsonObject error = WebviewEvents.event("queryError"); error.addProperty("error", reason); error.addProperty("query", query); reply.accept(error);
     }
     private void fail(String reason) {
         if (state == State.FAILED || state == State.CLOSED) return;

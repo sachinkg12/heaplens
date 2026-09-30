@@ -21,11 +21,23 @@ const styles = exported('styles', 'getStyles');
 const template = exported('template', 'getHtmlTemplate');
 const queryLifecycle = fs.readFileSync(path.join(__dirname, '../src/main/webview/query-lifecycle.js'), 'utf8');
 const layout = fs.readFileSync(path.join(__dirname, '../src/main/webview/layout.css'), 'utf8');
+const histogramStyles = fs.readFileSync(path.join(__dirname, '../src/main/webview/histogram.css'), 'utf8');
+const histogramAdapter = fs.readFileSync(path.join(__dirname, '../src/main/webview/histogram-adapter.js'), 'utf8');
+// Scope its transport and reply subscription, not its shared rendering logic.
+const histogram = '(function(send, listen) {\n' +
+  'const vscode = {postMessage: message => requestHistogramInstances(message)};\n' +
+  'const onMessage = (command, handler) => {\n' +
+  '  if (command === "queryResult") listen("histogramInstancesResult", message => {\n' +
+  '    if (acceptHistogramResult(message)) handler(message);\n' +
+  '  }); else listen(command, handler);\n' +
+  '};\n' +
+  exported('js/histogram', 'getHistogramJs') + '\n' + histogramAdapter +
+  '\n})(vscode.postMessage, onMessage);\n';
 const d3 = fs.readFileSync(path.join(root, 'media/d3.v7.min.js'), 'utf8');
 // Preserve DOM dependencies, but expose only implemented capabilities.
 const setup = `
 document.querySelectorAll('.tab-btn').forEach(b => {
-  if (!['overview', 'query'].includes(b.dataset.tab)) b.remove();
+  if (!['overview', 'histogram', 'query'].includes(b.dataset.tab)) b.remove();
 });
 `;
 const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
@@ -45,6 +57,7 @@ const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
 }
 ${styles}
 ${layout}
+${histogramStyles}
 #report-actions, .why-alive-btn { display:none!important; }
 </style></head><body>${template}
 <script nonce="__NONCE__">${d3.replace(/<\/script/gi, '<\\/script')}</script>
@@ -54,6 +67,7 @@ const vscode = {postMessage: function(message) { __BRIDGE__; }};
 var analysisData = null;
 ${setup}
 ${parts}
+${histogram}
 ${queryLifecycle}
 onMessage('analysisProgress', function(msg) {
   if (msg.stage !== 'loading') return;
@@ -70,6 +84,7 @@ vscode.postMessage({command:'ready'});
 // Syntax-check the generated application script before it reaches either IDE.
 new vm.Script(`(function(){const vscode={postMessage(){}};var analysisData=null;${setup}${parts}${queryLifecycle}})()`);
 const output = path.resolve(__dirname, '../build/generated/webview/webview');
+new vm.Script(histogram);
 fs.mkdirSync(output, { recursive: true });
 fs.writeFileSync(path.join(output, 'index.html'), html);
-console.log('Generated shared Overview/HeapQL UI. No VS Code source modified.');
+console.log('Generated shared Overview/Histogram/HeapQL UI. No VS Code source modified.');

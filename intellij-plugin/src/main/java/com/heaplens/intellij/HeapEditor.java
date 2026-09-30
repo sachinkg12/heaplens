@@ -20,7 +20,7 @@ import org.jetbrains.annotations.*;
 public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private final VirtualFile file;
     private final JPanel panel = new JPanel(new BorderLayout());
-    private final JLabel status = new JLabel("Prototype: Overview and HeapQL only. Select the trusted hprof-server executable.");
+    private final JLabel status = new JLabel("Prototype: Overview, Histogram and HeapQL. Select the trusted hprof-server executable.");
     private final JButton choose = new JButton("Select analysis server");
     private final JButton retry = new JButton("Retry");
     private final HeapSession session;
@@ -60,7 +60,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
             CommandRouter router = CommandRouter.forSession(session, () -> {
                 ready = true;
                 if (binary != null) session.start();
-            });
+            }).with("histogramInstances", new HistogramQueries(session::query, this::event)::instances);
             browser = new HeapBrowser(raw -> router.dispatch(raw));
             Disposer.register(this, browser);
             panel.add(browser.component(), BorderLayout.CENTER);

@@ -2,12 +2,19 @@ package com.heaplens.session;
 
 import com.google.gson.*;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.function.Consumer;
 
 /** Allowlisted registry: new capabilities register handlers, not orchestration branches. */
 public final class CommandRouter {
     private final Map<String, Consumer<JsonObject>> handlers;
     public CommandRouter(Map<String, Consumer<JsonObject>> handlers) { this.handlers = Map.copyOf(handlers); }
+    public CommandRouter with(String command, Consumer<JsonObject> handler) {
+        Map<String, Consumer<JsonObject>> extended = new HashMap<>(handlers);
+        if (extended.putIfAbsent(command, handler) != null)
+            throw new IllegalArgumentException("Capability already registered: " + command);
+        return new CommandRouter(extended);
+    }
     public boolean dispatch(String raw) {
         if (raw == null || raw.length() > 128 * 1024) return false;
         try {

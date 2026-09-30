@@ -55,6 +55,18 @@ class RealEngineTest {
             assertEquals("queryResult", result.get("command").getAsString(), result.toString());
             return result.getAsJsonObject("result");
         }
+        JsonObject instances(String className) {
+            List<JsonObject> replies = new CopyOnWriteArrayList<>();
+            JsonObject request = new JsonObject();
+            request.addProperty("className", className); request.addProperty("requestId", "real-histogram");
+            new HistogramQueries(session::query, replies::add).instances(request);
+            until(() -> !replies.isEmpty());
+            JsonObject reply = replies.getFirst();
+            assertEquals("histogramInstancesResult", reply.get("command").getAsString(), reply.toString());
+            assertEquals(className, reply.get("className").getAsString());
+            assertEquals("real-histogram", reply.get("requestId").getAsString());
+            return reply.getAsJsonObject("result");
+        }
         @Override public void close() { session.close(); until(() -> session.state() == HeapSession.State.CLOSED); }
     }
     @Test @Tag("local-fixture") void layoutDefaultMatchesFivePreviouslyMatVerifiedObjects() {
@@ -81,6 +93,47 @@ class RealEngineTest {
             run.ready(); assertNotEquals(original, run.session.pid());
             assertEquals(before, run.analysis().getAsJsonObject("summary"));
             assertFalse(run.query("SELECT class_name, retained_size FROM class_histogram ORDER BY retained_size DESC LIMIT 3").getAsJsonArray("rows").isEmpty());
+            assertFalse(run.instances("java.lang.String").getAsJsonArray("rows").isEmpty());
+        }
+    }
+    @Test void histogramDtoMatchesHeapqlForTopClasses() {
+        for (boolean legacy : List.of(false, true)) try (Run run = new Run(dump, legacy)) {
+            Map<String, JsonObject> histogram = new HashMap<>();
+            for (JsonElement value : run.analysis().getAsJsonArray("classHistogram")) {
+                JsonObject entry = value.getAsJsonObject();
+                histogram.put(entry.get("class_name").getAsString(), entry);
+            }
+            JsonArray rows = run.query("SELECT class_name, instance_count, shallow_size, retained_size"
+                + " FROM class_histogram ORDER BY retained_size DESC LIMIT 20").getAsJsonArray("rows");
+            assertFalse(rows.isEmpty());
+            for (JsonElement value : rows) {
+                JsonArray row = value.getAsJsonArray();
+                JsonObject entry = histogram.get(row.get(0).getAsString());
+                assertNotNull(entry);
+                assertEquals(entry.get("instance_count"), row.get(1));
+                assertEquals(entry.get("shallow_size"), row.get(2));
+                assertEquals(entry.get("retained_size"), row.get(3));
+            }
+        }
+    }
+    @Test void histogramPreviewIsBoundedAndDoesNotBroadcastQueryEvents() {
+        for (boolean legacy : List.of(false, true)) try (Run run = new Run(dump, legacy)) {
+            JsonArray rows = run.instances("java.lang.String").getAsJsonArray("rows");
+            assertEquals(200, rows.size(), "This fixture must exercise the preview cap");
+            long previous = Long.MAX_VALUE;
+            for (JsonElement value : rows) {
+                JsonArray row = value.getAsJsonArray();
+                assertEquals("java.lang.String", row.get(2).getAsString());
+                long retained = row.get(4).getAsLong();
+                assertTrue(retained <= previous); previous = retained;
+            }
+            assertTrue(run.events.stream().noneMatch(e -> Set.of("queryResult", "queryError")
+                .contains(e.get("command").getAsString())), "Histogram must not update Query results/history");
+            JsonArray expected = run.query("SELECT object_id, node_type, class_name, shallow_size, retained_size"
+                + " FROM instances WHERE class_name = 'java.lang.String' ORDER BY retained_size DESC LIMIT 200")
+                .getAsJsonArray("rows");
+            assertEquals(expected, rows);
+            assertTrue(run.instances("NoSuchHistogramClass").getAsJsonArray("rows").isEmpty());
         }
     }
     @Test void closingOneEditorDoesNotBreakSecondEditor() {
