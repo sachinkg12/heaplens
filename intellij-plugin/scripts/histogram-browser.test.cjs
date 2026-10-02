@@ -45,7 +45,9 @@ for (const width of [1280, 600]) {
       const history = await page.locator('#query-history').innerHTML();
       await page.locator('#tabBtn-histogram').click();
       assert.equal(await page.locator('#histogram-table tbody tr').count(), 200);
-      assert.equal(await page.locator('#histogram-table th:visible').count(), 4);
+      assert.equal(await page.locator('#histogram-table th:visible').count(), 5);
+      assert.equal(await page.locator('#histogram-table tbody tr').first().locator('td').last().textContent(), '4.6%');
+      assert.match(await page.locator('th[data-sort="heap_pct"]').getAttribute('title'), /reachable heap/);
       assert.equal(await page.locator('#export-csv-btn').isVisible(), false);
       await page.locator('#show-all-histogram').click();
       assert.equal(await page.locator('#histogram-table tbody tr').count(), 205);
@@ -61,6 +63,9 @@ for (const width of [1280, 600]) {
       assert.equal(await page.locator('.hist-class-link').first().textContent(), 'example.Class0');
       await page.locator('#histogram-search').fill('CLASS204');
       assert.equal(await page.locator('.hist-class-link').count(), 1);
+      assert.equal(await page.locator('#histogram-table tbody td:last-child').textContent(), '4.6%');
+      await page.locator('th[data-sort="heap_pct"]').click();
+      assert.equal(await page.locator('#histogram-table tbody td:last-child').textContent(), '4.6%');
       await page.locator('.hist-class-link').click();
       const request = await latest(page);
       assert.equal(request.command, 'histogramInstances');
@@ -87,6 +92,7 @@ for (const width of [1280, 600]) {
       assert.equal(await page.locator('#histogram-instances-panel').textContent(), '');
       await send(page, { command: 'analysisProgress', stage: 'loading', phase: 1, totalPhases: 4 });
       await send(page, data);
+      assert.equal(await page.locator('#histogram-table tbody td:last-child').textContent(), '4.6%');
       await page.locator('.hist-class-link').click();
       const fresh = await latest(page);
       assert.notEqual(fresh.requestId, old.requestId);

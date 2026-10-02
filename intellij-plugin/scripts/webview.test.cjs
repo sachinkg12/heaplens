@@ -244,6 +244,46 @@ function instances(h, request, rows = [[7,'example.A',16,80]]) {
     command:'histogramInstancesResult',
     result:{columns:['object_id','class_name','shallow_size','retained_size'],rows,total_count:rows.length}});
 }
+function percentages(h) {
+  return [...h.elements.get('histogram-table').innerHTML.matchAll(/<tr><td>(.*?)<\/tr>/g)]
+    .map(row => [...row[0].matchAll(/<td[^>]*>(.*?)<\/td>/g)].at(-1)[1]);
+}
+test('Histogram uses the shared reachable-heap percentage with the tab already active',()=>{
+  const h=harness();
+  h.tabs.find(t=>t.dataset.tab==='histogram').click();
+  histogram(h);
+  assert.deepEqual(percentages(h),['23.4%','15.6%']);
+  const table=h.elements.get('histogram-table'), input=h.elements.get('histogram-search');
+  table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='heap_pct').click();
+  table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='heap_pct').click();
+  assert.deepEqual(percentages(h),['15.6%','23.4%']);
+  input.value='example.A'; input.listeners.input({target:input});
+  assert.deepEqual(percentages(h),['15.6%']);
+  assert.match(table.innerHTML,/Percentages use reachable heap/);
+});
+test('Histogram has no total-heap fallback for missing or invalid reachable heap',()=>{
+  for (const reachable of [undefined,0,-1,NaN,Infinity,'512']) {
+    const h=harness();
+    h.tabs.find(t=>t.dataset.tab==='histogram').click();
+    h.send({command:'analysisComplete',summary:{total_heap_size:1024,reachable_heap_size:reachable,
+      total_instances:3,total_classes:2,total_arrays:1,total_gc_roots:1},
+      topObjects:[],classHistogram:sampleClasses});
+    assert.deepEqual(percentages(h),['N/A','N/A']);
+    const input=h.elements.get('histogram-search');
+    input.value='example.A'; input.listeners.input({target:input});
+    assert.deepEqual(percentages(h),['N/A']);
+  }
+});
+test('Histogram percentages belong to each editor and use the new summary after Retry',()=>{
+  const first=harness(), second=harness();
+  histogram(first); histogram(second);
+  first.send({command:'serverCrashed'}); loading(first);
+  first.send({command:'analysisComplete',summary:{total_heap_size:2000,reachable_heap_size:1000,
+    total_instances:3,total_classes:2,total_arrays:1,total_gc_roots:1},
+    topObjects:[],classHistogram:sampleClasses});
+  assert.deepEqual(percentages(first),['12.0%','8.0%']);
+  assert.deepEqual(percentages(second),['23.4%','15.6%']);
+});
 test('Histogram lazily reuses sorting, filtering and bounded class rendering',()=>{
   const h=harness(), table=h.elements.get('histogram-table');
   complete(h); assert.equal(table.innerHTML,'');
@@ -253,6 +293,7 @@ test('Histogram lazily reuses sorting, filtering and bounded class rendering',()
   assert.equal(table.querySelectorAll('.hist-class-link').length,200);
   table.children.find(el=>el.attributes.id==='show-all-histogram').click();
   assert.equal(table.querySelectorAll('.hist-class-link').length,205);
+  assert.equal(percentages(h)[0],'39.8%');
   table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='instance_count').click();
   assert.equal(table.querySelectorAll('.hist-class-link')[0].dataset.class,'example.Class204');
   table.querySelectorAll('th[data-sort]').find(el=>el.dataset.sort==='instance_count').click();
@@ -333,8 +374,8 @@ test('Histogram hides unsupported actions and cannot send CSV to the host',()=>{
   const table=h.elements.get('histogram-table'), count=h.messages.length;
   table.children.find(el=>el.attributes.id==='export-csv-btn').click();
   assert.equal(h.messages.length,count);
-  for (const selector of ['#export-csv-btn','#histogram-table th:nth-child(5)',
-    '#histogram-table td:nth-child(5)','#histogram-instances-panel th:last-child',
+  for (const selector of ['#export-csv-btn','#histogram-instances-panel th:last-child',
     '#histogram-instances-panel .instance-actions']) assert.ok(css.includes(selector));
+  assert.doesNotMatch(css,/#histogram-table (?:th|td):nth-child\(5\)/);
   assert.match(lastRule('#tab-histogram th'), /top:\s*0\s*;/);
 });

@@ -1,7 +1,6 @@
 package com.heaplens.intellij;
 
 import com.google.gson.*;
-import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.ui.jcef.*;
@@ -15,11 +14,14 @@ import org.cef.network.CefRequest;
 import org.cef.handler.*;
 
 /** JCEF presentation adapter. No process lifecycle or analysis policy. */
-public final class HeapBrowser implements Disposable {
+public final class HeapBrowser implements HeapView {
     private final JBCefBrowser browser;
     private final JBCefJSQuery bridge;
     private final PageOrigin origin = new PageOrigin();
     private volatile boolean disposed;
+    static HeapView open(Consumer<String> messages) throws IOException {
+        return JBCefApp.isSupported() ? new HeapBrowser(messages) : null;
+    }
     public HeapBrowser(Consumer<String> messages) throws IOException {
         String html;
         try (var input = HeapBrowser.class.getResourceAsStream("/webview/index.html")) {
@@ -27,22 +29,28 @@ public final class HeapBrowser implements Disposable {
             html = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
         browser = new JBCefBrowser();
-        bridge = JBCefJSQuery.create((JBCefBrowserBase) browser);
         Disposer.register(this, browser);
-        Disposer.register(this, bridge);
-        browser.getJBCefClient().addRequestHandler(new CefRequestHandlerAdapter() {
-            @Override public boolean onBeforeBrowse(CefBrowser b, CefFrame f, CefRequest r, boolean gesture, boolean redirect) {
-                return !origin.allowsNavigation(r.getURL());
-            }
-            @Override public boolean onOpenURLFromTab(CefBrowser b, CefFrame f, String url, boolean gesture) { return true; }
-        }, browser.getCefBrowser());
-        browser.getJBCefClient().addLifeSpanHandler(new CefLifeSpanHandlerAdapter() {
-            @Override public boolean onBeforePopup(CefBrowser b, CefFrame f, String url, String name) { return true; }
-        }, browser.getCefBrowser());
-        bridge.addHandler(raw -> { messages.accept(raw); return null; });
-        html = html.replace("__NONCE__", UUID.randomUUID().toString().replace("-", ""))
-            .replace("__BRIDGE__", bridge.inject("JSON.stringify(message)"));
-        browser.loadHTML(html, origin.url());
+        try {
+            bridge = JBCefJSQuery.create((JBCefBrowserBase) browser);
+            Disposer.register(this, bridge);
+            browser.getJBCefClient().addRequestHandler(new CefRequestHandlerAdapter() {
+                @Override public boolean onBeforeBrowse(CefBrowser b, CefFrame f, CefRequest r, boolean gesture, boolean redirect) {
+                    return !origin.allowsNavigation(r.getURL());
+                }
+                @Override public boolean onOpenURLFromTab(CefBrowser b, CefFrame f, String url, boolean gesture) { return true; }
+            }, browser.getCefBrowser());
+            browser.getJBCefClient().addLifeSpanHandler(new CefLifeSpanHandlerAdapter() {
+                @Override public boolean onBeforePopup(CefBrowser b, CefFrame f, String url, String name) { return true; }
+            }, browser.getCefBrowser());
+            bridge.addHandler(raw -> { messages.accept(raw); return null; });
+            html = html.replace("__NONCE__", UUID.randomUUID().toString().replace("-", ""))
+                .replace("__BRIDGE__", bridge.inject("JSON.stringify(message)"));
+            browser.loadHTML(html, origin.url());
+        } catch (RuntimeException | LinkageError failure) {
+            // A constructor that fails never reaches the editor's disposal registration.
+            Disposer.dispose(this);
+            throw failure;
+        }
     }
     public JComponent component() { return browser.getComponent(); }
     public void send(JsonObject event) {

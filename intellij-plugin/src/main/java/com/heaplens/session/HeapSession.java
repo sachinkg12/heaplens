@@ -61,7 +61,7 @@ public final class HeapSession implements AutoCloseable {
                     fail("Analysis did not acknowledge this request. Retry is available.");
                 // No deadline for the actual analysis and no destructive heartbeat watchdog.
             }));
-        } catch (Exception e) { fail("Could not start the selected analysis server. Check its path and permissions, then Retry."); }
+        } catch (Exception e) { fail("Could not start the analysis server. Reinstall the matching platform package or select a trusted executable, then Retry."); }
     }
     private JsonObject params() { JsonObject p = new JsonObject(); p.addProperty("path", path); return p; }
     private void onNotification(String method, JsonObject p) {

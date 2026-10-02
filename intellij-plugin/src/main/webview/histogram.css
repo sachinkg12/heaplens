@@ -1,8 +1,6 @@
-/* Expose only implemented IntelliJ capabilities. The fifth shared column uses
-   summed class-retained totals, not the reachable heap, so omit that percentage. */
+/* Percentages use the shared reachable-heap calculation. Keep only actions
+   without an IntelliJ host implementation hidden. */
 #export-csv-btn,
-#histogram-table th:nth-child(5),
-#histogram-table td:nth-child(5),
 #histogram-instances-panel th:last-child,
 #histogram-instances-panel .instance-actions {
     display: none !important;

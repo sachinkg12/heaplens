@@ -7,9 +7,10 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileChooser.*;
 import com.intellij.openapi.fileEditor.*;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.util.*;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.ui.jcef.JBCefApp;
 import java.awt.BorderLayout;
 import java.beans.PropertyChangeListener;
 import java.nio.file.Path;
@@ -20,22 +21,32 @@ import org.jetbrains.annotations.*;
 public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private final VirtualFile file;
     private final JPanel panel = new JPanel(new BorderLayout());
-    private final JLabel status = new JLabel("Prototype: Overview, Histogram and HeapQL. Select the trusted hprof-server executable.");
+    private final JLabel status = new JLabel("Prototype: initializing the analysis interface.");
     private final JButton choose = new JButton("Select analysis server");
     private final JButton retry = new JButton("Retry");
     private final HeapSession session;
-    private HeapBrowser browser;
+    private HeapView browser;
     private volatile Path binary;
     private volatile boolean ready, disposed;
 
-    public HeapEditor(Project project, VirtualFile file) {
+    public HeapEditor(Project project, VirtualFile file, Path pluginRoot) {
+        // Resolve browser classes inside the guarded factory call, not while loading the editor.
+        this(project, file, pluginRoot, messages -> HeapBrowser.open(messages));
+    }
+
+    HeapEditor(Project project, VirtualFile file, Path pluginRoot, HeapView.Factory views) {
         this.file = file;
         // Explicit launch configuration, never an executable path supplied by a workspace.
         String configured = System.getProperty("heaplens.server.path");
-        if (configured != null && !configured.isBlank()) binary = Path.of(configured);
         session = new HeapSession(() -> {
-            if (binary == null) throw new IllegalStateException("Select a trusted server");
-            return new JsonLineRpcClient(binary);
+            // Resolution and checksum I/O run on the session worker, never the UI thread.
+            Path server = binary;
+            if (server == null && configured != null && !configured.isBlank()) server = Path.of(configured);
+            if (server == null) {
+                if (pluginRoot == null) throw new IllegalStateException("HeapLens installation is unavailable");
+                server = NativeServer.bundled(pluginRoot, System.getProperty("os.name"), System.getProperty("os.arch"));
+            }
+            return new JsonLineRpcClient(server);
         }, Path.of(file.getPath()), this::event);
         JPanel toolbar = new JPanel();
         toolbar.add(choose); toolbar.add(retry); toolbar.add(status);
@@ -51,23 +62,39 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
                 if (ready) { if (session.state() == HeapSession.State.NEW) session.start(); else session.retry(); }
             }
         });
-        if (!JBCefApp.isSupported()) {
-            choose.setEnabled(false);
-            panel.add(new JLabel("JCEF unavailable. Run this prototype with the supported JetBrains Runtime."), BorderLayout.CENTER);
-            return;
-        }
         try {
             CommandRouter router = CommandRouter.forSession(session, () -> {
                 ready = true;
-                if (binary != null) session.start();
+                session.start();
             }).with("histogramInstances", new HistogramQueries(session::query, this::event)::instances);
-            browser = new HeapBrowser(raw -> router.dispatch(raw));
+            browser = views.create(raw -> router.dispatch(raw));
+            if (browser == null) {
+                showUnavailable();
+                return;
+            }
             Disposer.register(this, browser);
             panel.add(browser.component(), BorderLayout.CENTER);
-        } catch (Exception e) {
-            choose.setEnabled(false);
-            panel.add(new JLabel("Could not initialize HeapLens web UI. Check the prototype build."), BorderLayout.CENTER);
+        } catch (ProcessCanceledException cancelled) {
+            if (browser != null) { Disposer.dispose(browser); browser = null; }
+            session.close();
+            throw cancelled;
+        } catch (Exception | LinkageError failure) {
+            // NoClassDefFoundError is not an Exception. Do not catch VM failures such as OOM.
+            if (browser != null) { Disposer.dispose(browser); browser = null; }
+            session.close();
+            Logger.getInstance(HeapEditor.class).warn("HeapLens browser initialization failed", failure);
+            showUnavailable();
         }
+    }
+    private void showUnavailable() {
+        choose.setEnabled(false);
+        retry.setEnabled(false);
+        status.setText("Prototype | UI unavailable | analysis not started");
+        panel.add(new JLabel("<html><h2>HeapLens could not start its analysis interface.</h2>"
+            + "The embedded browser (JCEF) is unavailable or failed to initialize.<br>"
+            + "Install the latest HeapLens package and restart IntelliJ using its bundled JetBrains Runtime.<br>"
+            + "If this persists, use Help &gt; Show Log in Finder/Explorer and share the HeapLens startup error."
+            + "</html>"), BorderLayout.CENTER);
     }
     private void event(JsonObject event) {
         if (disposed) return;

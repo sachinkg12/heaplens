@@ -1,10 +1,12 @@
 <idea-plugin>
-    <id>com.heaplens.intellij.prototype</id>
+    <id>com.heaplens.analyzer</id>
     <name>HeapLens Prototype</name>
     <vendor url="https://github.com/sachinkg12/heaplens">HeapLens</vendor>
     <description><![CDATA[Local development prototype: shared HeapLens Rust analysis and web UI.
-    Overview and HeapQL only. Not a production or full-parity plugin. No AI or MCP.]]></description>
+    Overview, Histogram and HeapQL. Not a production or full-parity plugin. No AI or MCP.]]></description>
     <depends>com.intellij.modules.platform</depends>
+    <!-- JCEF is in core on 251; on 262 it has a separate plugin classloader. -->
+    <depends optional="true" config-file="heaplens-jcef.xml">com.intellij.modules.jcef</depends>
     <extensions defaultExtensionNs="com.intellij">
         <fileType name="HeapLens HPROF" implementationClass="com.heaplens.intellij.HprofFileType"
                   fieldName="INSTANCE" extensions="hprof"/>
