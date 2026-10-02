@@ -1,0 +1,15 @@
+/* Percentages use the shared reachable-heap calculation. Keep only actions
+   without an IntelliJ host implementation hidden. */
+#export-csv-btn,
+#histogram-instances-panel th:last-child,
+#histogram-instances-panel .instance-actions {
+    display: none !important;
+}
+#tab-histogram th {
+    top: 0;
+}
+.histogram-hint {
+    padding: 8px;
+    font-size: 12px;
+    opacity: 0.8;
+}

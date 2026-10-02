@@ -20,6 +20,7 @@ scripts/
 # Open VSX both render a Changelog tab from it, and without the file that
 # tab is empty for every visitor.
 CLAUDE.md
+AGENTS.md
 CONTRIBUTING.md
 
 # Screenshots & media (served from GitHub, not needed in VSIX)
@@ -29,6 +30,9 @@ media/heaplens-usage-map.svg
 
 # JVM agent source (users build separately)
 jvm-agent/
+
+# Independent IntelliJ prototype and its development artifacts
+intellij-plugin/
 
 # Source SVG (PNG is used by the extension)
 icon.svg
