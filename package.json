@@ -2,7 +2,7 @@
   "name": "heaplens",
   "displayName": "HeapLens — Java & Android Heap Dump Analyzer",
   "description": "Analyze Java & Android heap dumps (.hprof) directly in VS Code — find memory leaks, explore dominator trees, and query heap data with HeapQL. Analyzes 1.5 GB dumps in 1 second, 14.8 GB in 9.5 seconds with a native Rust engine (1,500+ MB/s). 11 interactive views including HeapQL (SQL with JOINs for heap objects), leak detection, waste analysis, and AI-powered explanations. Free and open source.",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "publisher": "guptasachinn",
   "license": "Apache-2.0",
   "icon": "icon.png",
@@ -231,8 +231,9 @@
     "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js",
+    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js",
     "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
+    "test:histogram:matrix": "npm run compile && node --test ./out/test/histogramPercentage.integration.test.js",
     "test:privacy:matrix": "npm run compile && node --test ./out/test/llmPrivacy.integration.test.js"
   },
   "devDependencies": {

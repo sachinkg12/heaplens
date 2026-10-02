@@ -17,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Histogram and its CSV export now calculate `% of Heap` against reachable heap, not the sum of overlapping class-retained sizes. Filtering, sorting and the display limit preserve that denominator. Zero or unavailable reachable heap produces `N/A`; object counts and byte sizes are unchanged. Class percentages can overlap and need not sum to 100%.
 - Retry now starts a fresh per-editor analysis server after a process exit or spawn error, reconnects HeapQL and object actions, and reanalyzes without closing the dump. Repeated Retry clicks do not start duplicate jobs, and late messages from a retired server cannot overwrite the replacement's UI.
 - Crashes before the webview is ready are buffered. Failed restarts and failed analyses keep a visible Retry action. Intentional editor disposal is not reported as a crash; a live but slow server is not killed by heartbeat failures.
 

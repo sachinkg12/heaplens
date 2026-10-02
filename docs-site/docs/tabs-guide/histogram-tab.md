@@ -30,7 +30,12 @@ java.lang.Object[]                  8,200       12.30 MB     12.30 MB
 | **Class Name** | Fully-qualified Java class name (e.g., `java.util.HashMap$Node`) |
 | **Instances** | Number of objects of this class on the heap |
 | **Shallow Size** | Sum of shallow sizes of all instances of this class |
-| **Retained Size** | Sum of retained sizes of all instances of this class |
+| **Retained Size** | Aggregate retained size with overlapping retained subtrees within the same class counted once |
+| **% of Heap** | Class retained size divided by the dump's reachable heap size, multiplied by 100 |
+
+Retained sets can overlap **between different classes**. Their percentages therefore need not sum to 100%; they are not slices of a pie chart. Filtering, sorting and Show all do not change the denominator. If reachable heap is zero or unavailable, the percentage is shown as `N/A`, not calculated using total heap or summed class sizes.
+
+**Export CSV** uses the same percentages as the table and exports every matching row in the current sort order, not just the first 200 displayed rows. Column names are unchanged; an unavailable percentage is exported as `N/A`.
 
 ## Interactions
 
@@ -39,6 +44,7 @@ java.lang.Object[]                  8,200       12.30 MB     12.30 MB
 Click any column header to sort. Click again to toggle ascending/descending. The default sort is by **Retained Size** (descending).
 
 Useful sort orders:
+
 - **Retained Size** (default) — finds the classes that dominate memory
 - **Instances** — finds the most frequently allocated classes
 - **Shallow Size** — finds classes with the largest per-instance footprint
