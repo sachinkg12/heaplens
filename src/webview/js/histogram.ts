@@ -10,18 +10,25 @@ export function getHistogramJs(): string {
         var HISTOGRAM_PAGE_SIZE = 200;
         var _pendingInstanceClass = null;
 
-        function renderHistogram(histogram) {
+        // Shared by the table and CSV; unknown/zero heap has no defined ratio.
+        function histogramPercentage(retainedSize, reachableHeapSize) {
+            if (!Number.isFinite(reachableHeapSize) || reachableHeapSize <= 0 ||
+                !Number.isFinite(retainedSize) || retainedSize < 0) return 'N/A';
+            var percentage = (retainedSize / reachableHeapSize) * 100;
+            return Number.isFinite(percentage) ? percentage.toFixed(1) : 'N/A';
+        }
+
+        function renderHistogram(histogram, reachableHeapSize) {
             var container = document.getElementById('histogram-table');
             var sorted = histogram.slice();
-
-            // Compute total retained for % column
-            var totalRetained = sorted.reduce(function(sum, e) { return sum + e.retained_size; }, 0) || 1;
 
             sorted.sort(function(a, b) {
                 var va = a[_histSortCol], vb = b[_histSortCol];
                 if (_histSortCol === 'heap_pct') {
-                    va = a.retained_size / totalRetained;
-                    vb = b.retained_size / totalRetained;
+                    // All rows share one denominator; sorting the numerator also
+                    // avoids dividing by a missing or zero reachable heap.
+                    va = a.retained_size;
+                    vb = b.retained_size;
                 }
                 if (typeof va === 'string') return _histSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
                 return _histSortAsc ? va - vb : vb - va;
@@ -46,15 +53,17 @@ export function getHistogramJs(): string {
             var html = '<table><thead><tr>';
             cols.forEach(function(c) {
                 var arrow = _histSortCol === c.key ? (_histSortAsc ? ' \\u25B2' : ' \\u25BC') : '';
-                html += '<th class="' + c.cls + '" data-sort="' + c.key + '">' + c.label + '<span class="sort-arrow">' + arrow + '</span></th>';
+                var title = c.key === 'heap_pct' ? ' title="Class retained size divided by reachable heap size. N/A means the percentage is unavailable."' : '';
+                html += '<th class="' + c.cls + '" data-sort="' + c.key + '"' + title + '>' + c.label + '<span class="sort-arrow">' + arrow + '</span></th>';
             });
             html += '</tr></thead><tbody>';
 
             displayRows.forEach(function(e) {
-                var pct = ((e.retained_size / totalRetained) * 100).toFixed(1);
-                html += '<tr><td><span class="hist-class-link" data-class="' + escapeHtml(e.class_name) + '">' + escapeHtml(e.class_name) + '</span></td><td class="right">' + fmtNum(e.instance_count) + '</td><td class="right">' + fmt(e.shallow_size) + '</td><td class="right">' + fmt(e.retained_size) + '</td><td class="right">' + pct + '%</td></tr>';
+                var pct = histogramPercentage(e.retained_size, reachableHeapSize);
+                html += '<tr><td><span class="hist-class-link" data-class="' + escapeHtml(e.class_name) + '">' + escapeHtml(e.class_name) + '</span></td><td class="right">' + fmtNum(e.instance_count) + '</td><td class="right">' + fmt(e.shallow_size) + '</td><td class="right">' + fmt(e.retained_size) + '</td><td class="right">' + (pct === 'N/A' ? pct : pct + '%') + '</td></tr>';
             });
             html += '</tbody></table>';
+            html += '<p class="histogram-percentage-note">Percentages use reachable heap. Classes can retain the same objects, so percentages need not sum to 100%. N/A means the percentage is unavailable.</p>';
 
             if (!_histShowAll && totalCount > HISTOGRAM_PAGE_SIZE) {
                 html += '<div style="text-align:center;padding:12px;"><button id="show-all-histogram" style="padding:6px 16px;cursor:pointer;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:3px;">Show all ' + totalCount.toLocaleString() + ' classes</button></div>';
@@ -69,7 +78,7 @@ export function getHistogramJs(): string {
             if (showAllBtn) {
                 showAllBtn.addEventListener('click', function() {
                     _histShowAll = true;
-                    renderHistogram(histogram);
+                    renderHistogram(histogram, reachableHeapSize);
                 });
             }
 
@@ -79,7 +88,7 @@ export function getHistogramJs(): string {
                     if (_histSortCol === col) _histSortAsc = !_histSortAsc;
                     else { _histSortCol = col; _histSortAsc = false; }
                     _histShowAll = false;
-                    renderHistogram(histogram);
+                    renderHistogram(histogram, reachableHeapSize);
                 });
             });
 
@@ -88,7 +97,7 @@ export function getHistogramJs(): string {
                 exportBtn.addEventListener('click', function() {
                     var csv = 'Class Name,Instances,Shallow Size,Retained Size,% of Heap\\n';
                     sorted.forEach(function(e) {
-                        var pct = ((e.retained_size / totalRetained) * 100).toFixed(1);
+                        var pct = histogramPercentage(e.retained_size, reachableHeapSize);
                         csv += '"' + e.class_name.replace(/"/g, '""') + '",' + e.instance_count + ',' + e.shallow_size + ',' + e.retained_size + ',' + pct + '\\n';
                     });
                     vscode.postMessage({ command: 'exportHistogramCsv', csv: csv });
@@ -111,7 +120,8 @@ export function getHistogramJs(): string {
 
         // ---- Self-register ----
         onTabMessage('histogram', 'analysisComplete', function(msg) {
-            renderHistogram(msg.classHistogram || []);
+            // Lazy tab callbacks run before the orchestrator updates analysisData.
+            renderHistogram(msg.classHistogram || [], msg.summary && msg.summary.reachable_heap_size);
         });
 
         function renderInstancePanel(className, result) {
@@ -198,7 +208,7 @@ export function getHistogramJs(): string {
         document.getElementById('histogram-search').addEventListener('input', function(e) {
             _histFilter = e.target.value;
             _histShowAll = false;
-            if (analysisData) renderHistogram(analysisData.classHistogram || []);
+            if (analysisData) renderHistogram(analysisData.classHistogram || [], analysisData.summary && analysisData.summary.reachable_heap_size);
         });
     `;
 }
