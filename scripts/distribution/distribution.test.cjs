@@ -128,6 +128,10 @@ test('standalone workflow builds candidates with read-only credentials and canno
   const candidate = workflow.jobs['apple-silicon-candidate'], installed = workflow.jobs['installed-package-test'];
   assert.equal(candidate.steps.find(step => step.uses?.startsWith('actions/setup-node')).with['node-version'], 22);
   assert.doesNotMatch(JSON.stringify(candidate.steps), /smoke\.cjs/); // The installed suite runs per Node version below.
+  const runs = candidate.steps.map(step => step.run || '');
+  const fetchIndex = runs.findIndex(run => /cargo fetch --locked --target aarch64-apple-darwin/.test(run));
+  assert.ok(fetchIndex > runs.findIndex(run => /cargo build --locked/.test(run)), 'locked fetch follows the build');
+  assert.ok(fetchIndex < runs.findIndex(run => /scripts\/distribution\/build\.cjs/.test(run)), 'locked fetch precedes offline packaging');
   assert.equal(installed.needs, 'apple-silicon-candidate');
   assert.equal(installed['runs-on'], 'macos-14');
   assert.deepEqual(installed.strategy.matrix.node, [22, 24]);

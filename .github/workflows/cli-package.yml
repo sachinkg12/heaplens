@@ -47,6 +47,8 @@ jobs:
         run: cargo build --locked --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
       - name: Build shared browser assets
         run: node browser-ui/build.cjs
+      - name: Fetch the locked dependency graph so packaging can read it offline
+        run: cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
       - id: candidate
         name: Assemble standalone npm archive and Homebrew formula
         run: |
