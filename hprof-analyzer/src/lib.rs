@@ -1653,7 +1653,7 @@ impl Ord for ObjectReport {
 /// # }
 /// ```
 /// Entry in the class histogram showing aggregate stats per class.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClassHistogramEntry {
     /// The fully-qualified class name.
     pub class_name: String,
@@ -1668,7 +1668,7 @@ pub struct ClassHistogramEntry {
 }
 
 /// A suspected memory leak.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LeakSuspect {
     /// The class name of the suspected leaking object.
     pub class_name: String,

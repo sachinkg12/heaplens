@@ -569,8 +569,11 @@ impl<'a> Class<'a> {
         let (input, constant_pool_len) = number::be_u16(input)?;
         // constant pool len always 0 as per
         // https://github.com/openjdk/jdk/blob/08822b4e0526fe001c39fe08e241b849eddf481d/src/hotspot/share/services/heapDumper.cpp#L1031
-        // TODO parse failure
-        assert_eq!(0, constant_pool_len);
+        // Nonempty constant pools are unsupported, not grounds to panic on
+        // untrusted input. Let callers report an ordinary parsing error.
+        if constant_pool_len != 0 {
+            return Err(nom::Err::Failure((input, nom::error::ErrorKind::Tag)));
+        }
 
         let (input, num_static_fields) = number::be_u16(input)?;
 

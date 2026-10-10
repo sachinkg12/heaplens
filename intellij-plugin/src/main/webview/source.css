@@ -1,0 +1,4 @@
+#tab-source th { top: 0; }
+#tab-source .source-view-btn { white-space: nowrap; }
+#source-hint { line-height: 1.5; max-width: 80em; }
+#source-status { min-height: 1.5em; margin: 8px 0; }

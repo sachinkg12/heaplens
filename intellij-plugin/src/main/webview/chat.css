@@ -1,0 +1,7 @@
+#tab-chat.active { display: flex; flex-direction: column; }
+#tab-chat .chat-container { height: auto; flex: 1; min-height: 300px; }
+.ai-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+#ai-status { overflow-wrap: anywhere; flex: 1; min-width: 180px; font-size: 12px; }
+#tab-chat .chat-bubble { overflow-wrap: anywhere; }
+#tab-chat .md-code-block { white-space: pre-wrap; }
+#tab-chat button:disabled { opacity: .45; cursor: default; }

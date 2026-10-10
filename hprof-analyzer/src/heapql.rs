@@ -341,8 +341,6 @@ impl Tokenizer {
             }
         }
         let num_str: String = self.chars[start..self.pos].iter().collect();
-        let base: f64 = num_str.parse()
-            .map_err(|_| HeapQlError::Parse(format!("Invalid number: {}", num_str)))?;
 
         // Check for size suffix (B, KB, MB, GB) — optional whitespace before suffix
         let saved_pos = self.pos;
@@ -368,14 +366,27 @@ impl Tokenizer {
 
         if let Some(mult) = multiplier {
             self.pos = suffix_pos;
-            let val = (base * mult as f64) as u64;
-            Ok(Token::IntLit(val))
+            if !has_dot {
+                let base: u64 = num_str.parse().map_err(|_| HeapQlError::Parse("Integer out of range".into()))?;
+                let val = base.checked_mul(mult).ok_or_else(|| HeapQlError::Parse("Size out of range".into()))?;
+                Ok(Token::IntLit(val))
+            } else {
+                let base: f64 = num_str.parse().map_err(|_| HeapQlError::Parse("Invalid number".into()))?;
+                let val = base * mult as f64;
+                if !val.is_finite() || val < 0.0 || val >= u64::MAX as f64 {
+                    return Err(HeapQlError::Parse("Size out of range".into()));
+                }
+                Ok(Token::IntLit(val as u64))
+            }
         } else {
             self.pos = saved_pos;
             if has_dot {
+                let base: f64 = num_str.parse().map_err(|_| HeapQlError::Parse("Invalid number".into()))?;
+                if !base.is_finite() { return Err(HeapQlError::Parse("Number out of range".into())); }
                 Ok(Token::FloatLit(base))
             } else {
-                Ok(Token::IntLit(base as u64))
+                let base: u64 = num_str.parse().map_err(|_| HeapQlError::Parse("Integer out of range".into()))?;
+                Ok(Token::IntLit(base))
             }
         }
     }
@@ -869,6 +880,8 @@ fn get_col_value(row: &Row, columns: &[String], col_name: &str) -> Option<serde_
 fn compare_json_values(a: &serde_json::Value, b: &serde_json::Value) -> std::cmp::Ordering {
     match (a, b) {
         (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+            if let (Some(a), Some(b)) = (a.as_u64(), b.as_u64()) { return a.cmp(&b); }
+            if let (Some(a), Some(b)) = (a.as_i64(), b.as_i64()) { return a.cmp(&b); }
             let af = a.as_f64().unwrap_or(0.0);
             let bf = b.as_f64().unwrap_or(0.0);
             af.partial_cmp(&bf).unwrap_or(std::cmp::Ordering::Equal)
@@ -915,7 +928,7 @@ fn eval_condition(row: &Row, columns: &[String], cond: &Condition) -> bool {
                     match (&val, sv) {
                         (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
                         (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
-                            a.as_f64().unwrap_or(0.0) == b.as_f64().unwrap_or(0.0)
+                            compare_json_values(&serde_json::Value::Number(a.clone()), &serde_json::Value::Number(b.clone())) == std::cmp::Ordering::Equal
                         }
                         _ => val == *sv,
                     }

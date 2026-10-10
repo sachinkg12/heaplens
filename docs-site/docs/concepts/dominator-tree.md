@@ -83,7 +83,7 @@ Without the dominator tree, you would see 200,000 `Session` objects and 200,000 
 
 ## Algorithm
 
-HeapLens computes dominators using the **Lengauer-Tarjan algorithm** on CSR (Compressed Sparse Row) edge storage. This is the same algorithm used by Eclipse MAT, YourKit, and other production heap analyzers.
+HeapLens computes dominators using the **Lengauer-Tarjan algorithm** on CSR (Compressed Sparse Row) edge storage.
 
 **Complexity:** O(E * α(V)), where E is the number of edges (references), V is the number of nodes (objects), and α is the inverse Ackermann function (effectively constant). For a heap with 5 million objects and 20 million references, this runs in a few seconds.
 
@@ -94,13 +94,6 @@ HeapLens computes dominators using the **Lengauer-Tarjan algorithm** on CSR (Com
 3. Build a children map from the dominator relationships
 4. Compute retained sizes bottom-up (leaves first, then parents)
 
-## Relationship to Other Tools
+## Comparing Results
 
-| Tool | Dominator Algorithm |
-|------|-------------------|
-| Eclipse MAT | Lengauer-Tarjan |
-| YourKit | Custom iterative |
-| VisualVM | Simple DFS-based |
-| HeapLens | Lengauer-Tarjan (on CSR edge storage) |
-
-HeapLens matches Eclipse MAT's approach for maximum accuracy and comparability.
+Algorithm selection alone does not establish correctness or cross-tool parity. Compare the same heap dump with an independent reference analyzer, checking object identity, GC-root handling, reference strength, and the size model before interpreting differences.

@@ -1,4 +1,5 @@
 use crate::*;
+use std::convert::TryFrom;
 
 use strum_macros;
 use strum_macros::EnumIter;
@@ -75,7 +76,11 @@ impl<'a> PrimitiveArray<'a> {
             PrimitiveArrayType::Long => 8,
         };
 
-        let (input, contents) = bytes::take(num_elements * size)(input)?;
+        // A valid array may contain more than u32::MAX bytes. Widen before
+        // multiplying so malformed large counts cannot wrap to an empty payload.
+        let byte_length = usize::try_from(u64::from(num_elements) * u64::from(size))
+            .map_err(|_| nom::Err::Failure((input, nom::error::ErrorKind::TooLarge)))?;
+        let (input, contents) = bytes::take(byte_length)(input)?;
 
         Ok((
             input,

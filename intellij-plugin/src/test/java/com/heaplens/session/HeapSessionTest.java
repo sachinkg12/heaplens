@@ -1,0 +1,232 @@
+package com.heaplens.session;
+
+import com.google.gson.*;
+import com.heaplens.protocol.RpcClient;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.BooleanSupplier;
+import org.junit.jupiter.api.*;
+import static org.junit.jupiter.api.Assertions.*;
+
+class HeapSessionTest {
+    static class Fake implements RpcClient {
+        Listener listener;
+        final List<String> methods = new CopyOnWriteArrayList<>();
+        final Map<String, JsonObject> params = new ConcurrentHashMap<>();
+        volatile boolean closed;
+        volatile long analysisId;
+        CompletableFuture<JsonObject> ack = new CompletableFuture<>();
+        CompletableFuture<JsonObject> queryReply;
+        final List<CompletableFuture<JsonElement>> readReplies = new CopyOnWriteArrayList<>();
+        @Override public void start(Listener value) { listener = value; }
+        @Override public CompletableFuture<JsonObject> request(long id, String method, JsonObject p, Duration timeout) {
+            params.put(method, p); methods.add(method);
+            if (method.equals("analyze_heap")) { analysisId = id; return ack; }
+            if (method.equals("execute_query") && queryReply != null) return queryReply;
+            return CompletableFuture.completedFuture(new JsonObject());
+        }
+        @Override public CompletableFuture<JsonElement> requestValue(long id, String method, JsonObject p, Duration timeout) {
+            params.put(method, p); methods.add(method);
+            CompletableFuture<JsonElement> reply = new CompletableFuture<>(); readReplies.add(reply); return reply;
+        }
+        void notify(String method, String status, long id) {
+            JsonObject p = new JsonObject(); p.addProperty("request_id", id); p.addProperty("status", status);
+            p.addProperty("stage", status); p.add("summary", new JsonObject());
+            listener.notification(method, p);
+        }
+        void complete() { notify("heap_analysis_complete", "completed", analysisId); }
+        @Override public boolean isAlive() { return !closed; }
+        @Override public long pid() { return 123; }
+        @Override public void close() { closed = true; }
+    }
+    List<Fake> clients = new CopyOnWriteArrayList<>();
+    List<JsonObject> events = new CopyOnWriteArrayList<>();
+    HeapSession session;
+    @BeforeEach void setup() {
+        session = new HeapSession(() -> { Fake f = new Fake(); clients.add(f); return f; }, Path.of("dump with spaces.hprof"), events::add);
+    }
+    @AfterEach void close() { session.close(); await(() -> session.state() == HeapSession.State.CLOSED); }
+    static void await(BooleanSupplier condition) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            try { Thread.sleep(5); } catch (InterruptedException e) { throw new AssertionError(e); }
+        }
+        assertTrue(condition.getAsBoolean(), "Condition did not become true");
+    }
+    Fake started() { session.start(); await(() -> !clients.isEmpty() && clients.getFirst().analysisId > 0); return clients.getFirst(); }
+    @Test void realSessionWiringReportsCodesNotPathsOrErrorText() {
+        session.close();await(()->session.state()==HeapSession.State.CLOSED);
+        List<String> observed=new CopyOnWriteArrayList<>();
+        session=new HeapSession(()->{throw new java.io.IOException("private-canary");},Path.of("private-canary.hprof"),events::add,
+            (name,properties,measurements)->observed.add(name+properties+measurements));
+        session.start();await(()->session.state()==HeapSession.State.FAILED);
+        assertTrue(observed.stream().anyMatch(e->e.contains("server_spawn")));
+        assertFalse(observed.toString().contains("private-canary"));
+    }
+    boolean hasEvent(String command) { return events.stream().anyMatch(e -> command.equals(e.get("command").getAsString())); }
+
+    @Test void earlyCompletionDoesNotDependOnAckOrderAndStartIsIdempotent() {
+        Fake f = started(); session.start(); f.complete();
+        await(() -> session.state() == HeapSession.State.READY);
+        f.ack.completeExceptionally(new TimeoutException());
+        session.query("SELECT * FROM instances LIMIT 1", 1);
+        await(() -> hasEvent("queryResult")); assertEquals(1, clients.size());
+        assertEquals("dump with spaces.hprof", f.params.get("analyze_heap").get("path").getAsString());
+    }
+    @Test void cancelWaitsForWorkerTerminalAndCarriesCorrelationId() {
+        Fake f = started(); session.cancel();
+        await(() -> f.methods.contains("cancel_analysis"));
+        assertEquals(f.analysisId, f.params.get("cancel_analysis").get("analysis_request_id").getAsLong());
+        f.notify("heap_analysis_progress", "cancelled", f.analysisId);
+        session.query("ignored", 1); await(() -> hasEvent("queryError"));
+        assertEquals(HeapSession.State.CANCELLING, session.state());
+        assertFalse(hasEvent("analysisCancelled"));
+        f.notify("heap_analysis_complete", "cancelled", f.analysisId);
+        await(() -> session.state() == HeapSession.State.CANCELLED);
+        session.retry(); await(() -> clients.size() == 2); assertTrue(f.closed);
+    }
+    @Test void crashRetryCreatesOneClientAndFencesRetiredNotifications() {
+        Fake first = started(); first.complete(); await(() -> session.state() == HeapSession.State.READY);
+        first.listener.failed("test crash"); await(() -> session.state() == HeapSession.State.FAILED);
+        for (int i = 0; i < 25; i++) session.retry();
+        await(() -> clients.size() == 2 && clients.get(1).analysisId > 0);
+        first.complete(); first.listener.failed("late crash");
+        session.query("ignored", 1); await(() -> hasEvent("queryError"));
+        assertEquals(HeapSession.State.ANALYZING, session.state());
+        clients.get(1).complete(); await(() -> session.state() == HeapSession.State.READY);
+        session.query("SELECT 1", 2); await(() -> clients.get(1).methods.contains("execute_query"));
+        assertEquals(2, clients.size()); assertFalse(first.methods.contains("execute_query"));
+    }
+    @Test void wrongRequestIdCannotCompleteAnalysis() {
+        Fake f = started(); f.notify("heap_analysis_complete", "completed", f.analysisId + 1);
+        session.query("ignored", 1); await(() -> hasEvent("queryError"));
+        assertEquals(HeapSession.State.ANALYZING, session.state());
+        f.complete(); await(() -> session.state() == HeapSession.State.READY);
+    }
+    @Test void acknowledgementFailureHasVisibleRecovery() {
+        Fake f = started(); f.ack.complete(new JsonObject());
+        await(() -> hasEvent("serverCrashed")); assertTrue(f.closed);
+    }
+    @Test void malformedNotificationFailsClosedRatherThanLeavingAStuckSession() {
+        Fake f = started(); JsonObject bad = new JsonObject(); bad.add("request_id", new JsonArray());
+        f.listener.notification("heap_analysis_complete", bad);
+        await(() -> hasEvent("serverCrashed"));
+    }
+    @Test void spawnFailureDoesNotPreventFutureRetry() {
+        session.close(); await(() -> session.state() == HeapSession.State.CLOSED);
+        session = new HeapSession(() -> { throw new java.io.IOException("secret path"); }, Path.of("dump"), events::add);
+        session.start(); await(() -> hasEvent("serverCrashed"));
+        assertFalse(events.toString().contains("secret path"));
+        session.retry(); await(() -> events.stream().filter(e -> "serverCrashed".equals(e.get("command").getAsString())).count() == 2);
+    }
+    @Test void disposalClosesOnlyItsOwnClientAndIsIdempotent() {
+        Fake first = started(); List<JsonObject> otherEvents = new CopyOnWriteArrayList<>(); Fake other = new Fake();
+        try (HeapSession second = new HeapSession(() -> other, Path.of("other"), otherEvents::add)) {
+            second.start(); await(() -> other.analysisId > 0);
+            session.close(); session.close(); await(() -> first.closed);
+            assertFalse(other.closed); first.listener.failed("intentional close");
+            assertFalse(hasEvent("serverCrashed")); other.complete();
+            await(() -> second.state() == HeapSession.State.READY);
+        }
+    }
+    @Test void generatedEventOrdersIgnoreWrongIdsAndRetiredClients() {
+        Random random = new Random(72123); Fake f = started();
+        for (int i = 0; i < 200; i++) f.notify("heap_analysis_complete", "completed", 2 + random.nextInt(10000));
+        session.query("barrier", 1); await(() -> hasEvent("queryError"));
+        assertEquals(HeapSession.State.ANALYZING, session.state());
+        f.complete(); await(() -> session.state() == HeapSession.State.READY);
+    }
+    @Test void routerRejectsUnimplementedCapabilitiesAndMalformedInput() {
+        CommandRouter router = CommandRouter.forSession(session, () -> { });
+        for (String value : List.of("[]", "null", "{", "{}", "{\"command\":\"aiChat\"}", "{\"command\":\"executeQuery\"}", "x".repeat(128 * 1024 + 1)))
+            assertFalse(router.dispatch(value));
+        assertTrue(router.dispatch("{\"command\":\"ready\"}")); assertTrue(clients.isEmpty());
+    }
+    @Test void scopedQueriesDoNotBroadcastIntoTheQueryTabAndBusyErrorsReachTheirCaller() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("SELECT object_id FROM instances LIMIT 1", 1, scoped::add);
+        await(() -> f.methods.contains("execute_query"));
+        session.query("ordinary query", 1); await(() -> hasEvent("queryError"));
+        assertTrue(scoped.isEmpty());
+        f.queryReply.complete(new JsonObject());
+        await(() -> !scoped.isEmpty());
+        assertEquals("queryResult", scoped.getFirst().get("command").getAsString());
+        assertFalse(hasEvent("queryResult"));
+    }
+    @Test void scopedQueryFailureDoesNotKillServerOrAffectGlobalQueryStatus() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("bad SQL", 1, scoped::add); await(() -> f.methods.contains("execute_query"));
+        f.queryReply.completeExceptionally(new TimeoutException());
+        await(() -> !scoped.isEmpty());
+        assertEquals("queryError", scoped.getFirst().get("command").getAsString());
+        assertFalse(hasEvent("queryError")); assertEquals(HeapSession.State.READY, session.state());
+    }
+    @Test void retiredServersCannotReplyToScopedQueries() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.queryReply = new CompletableFuture<>();
+        List<JsonObject> scoped = new CopyOnWriteArrayList<>();
+        session.query("SELECT 1", 1, scoped::add); await(() -> f.methods.contains("execute_query"));
+        f.listener.failed("crashed"); await(() -> session.state() == HeapSession.State.FAILED);
+        f.queryReply.complete(new JsonObject());
+        session.query("barrier", 1); await(() -> hasEvent("queryError"));
+        assertTrue(scoped.isEmpty());
+    }
+    @Test void readsAreBoundedScopedAndCannotOverrideTheEditorPath() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        JsonObject params = new JsonObject(); params.addProperty("path", "another dump");
+        session.read("get_children", params, (result, error) -> { });
+        for (int i = 1; i <= 8; i++) tree.children(DominatorQueriesTest.request(i, "t" + i));
+        await(() -> !replies.isEmpty());
+        assertEquals(8, f.readReplies.size());
+        assertEquals("dump with spaces.hprof", f.params.get("get_children").get("path").getAsString());
+        assertEquals("dominatorChildrenError", replies.getFirst().get("command").getAsString());
+        f.readReplies.get(1).complete(new JsonArray());
+        await(() -> replies.size() == 2);
+        assertEquals("dominatorChildrenResult", replies.get(1).get("command").getAsString());
+        assertFalse(hasEvent("queryResult")); assertFalse(hasEvent("queryError"));
+    }
+    @Test void readFailureIsRetryableAndDoesNotKillTheSession() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        tree.children(DominatorQueriesTest.request(42, "first")); await(() -> f.readReplies.size() == 1);
+        f.readReplies.getFirst().completeExceptionally(new TimeoutException("private details"));
+        await(() -> replies.size() == 1);
+        assertFalse(replies.toString().contains("private details"));
+        tree.children(DominatorQueriesTest.request(42, "retry")); await(() -> f.readReplies.size() == 2);
+        f.readReplies.get(1).complete(new JsonArray()); await(() -> replies.size() == 2);
+        assertEquals(HeapSession.State.READY, session.state()); assertFalse(hasEvent("serverCrashed"));
+    }
+    @Test void oldReadRepliesCannotSurviveCrashRetryOrEditorClose() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        tree.children(DominatorQueriesTest.request(42, "old")); await(() -> f.readReplies.size() == 1);
+        f.listener.failed("test crash"); await(() -> session.state() == HeapSession.State.FAILED);
+        session.retry(); await(() -> clients.size() == 2 && clients.get(1).analysisId > 0);
+        Fake fresh = clients.get(1); fresh.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.readReplies.getFirst().complete(new JsonArray());
+        tree.children(DominatorQueriesTest.request(42, "fresh")); await(() -> fresh.readReplies.size() == 1);
+        assertTrue(replies.isEmpty());
+        fresh.readReplies.getFirst().complete(new JsonArray()); await(() -> replies.size() == 1);
+        assertEquals("fresh", replies.getFirst().get("requestId").getAsString());
+        tree.children(DominatorQueriesTest.request(43, "closed")); await(() -> fresh.readReplies.size() == 2);
+        session.close(); await(() -> session.state() == HeapSession.State.CLOSED);
+        fresh.readReplies.get(1).complete(new JsonArray()); assertEquals(1, replies.size());
+    }
+    @Test void readsBeforeAnalysisAreReportedOnlyToTheirCaller() {
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        new DominatorQueries(session::read, replies::add).children(DominatorQueriesTest.request(42, "early"));
+        await(() -> replies.size() == 1);
+        assertEquals("dominatorChildrenError", replies.getFirst().get("command").getAsString());
+        assertTrue(clients.isEmpty()); assertTrue(events.isEmpty());
+    }
+}

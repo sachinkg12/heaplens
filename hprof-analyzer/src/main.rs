@@ -1545,6 +1545,16 @@ async fn run_jsonrpc_server() -> Result<()> {
                     "execute_query" => handle_execute_query_request(request, &analysis_states).await,
                     "list_analyzed_files" => handle_list_analyzed_files_request(request, &analysis_states).await,
                     "compare_heaps" => handle_compare_heaps_request(request, &analysis_states).await,
+                    "compare_snapshots" => {
+                        if let Some(id) = request.id {
+                            let response = match hprof_analyzer::comparison::compare_snapshot_request(
+                                request.params.unwrap_or(serde_json::Value::Null)) {
+                                Ok(result) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
+                                Err(message) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}),
+                            };
+                            send_stdout(&response).map_err(|e| e.into())
+                        } else { Ok(()) }
+                    }
                     "get_dominator_subtree" => handle_get_dominator_subtree_request(request, &analysis_states).await,
                     "get_timeline_data" => handle_get_timeline_data_request(request, &analysis_states).await,
                     _ => {

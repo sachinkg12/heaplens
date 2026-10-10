@@ -179,8 +179,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                         this.outputChannel.appendLine(`[HeapLens] Server unavailable for ${hprofPath}: ${error.message}`);
                         this.analysisSessions.get(hprofPath)?.serverExited(error);
                         trackEvent('error/serverCrashed', {
-                            exitCode: String(code),
-                            signal: signal || 'none'
+                            exitCode: [0, 1, 2, 3, 4, 5, 6, 137, 139].includes(code as number) ? String(code) : 'unknown',
+                            signal: !signal ? 'none' : ['SIGKILL', 'SIGTERM', 'SIGSEGV', 'SIGABRT', 'SIGBUS'].includes(signal) ? signal : 'other'
                         });
                         deliverOrBufferWebviewMessage(state, { command: 'serverCrashed' },
                             message => state.webviewPanel.webview.postMessage(message));
@@ -348,8 +348,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     }
                     const errMsg = error.message || 'unknown';
                     trackEvent('analysis/failed', {
-                        errorType: classifyError(errMsg),
-                        errorSummary: errMsg.substring(0, 200).replace(/[/\\]/g, '_')
+                        errorType: classifyError(errMsg)
                     });
                     this.outputChannel.appendLine(`[HeapLens] ERROR: ${error.message}`);
                     vscode.window.showErrorMessage(`HeapLens: ${friendlyError(error.message)}`);
@@ -436,6 +435,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
 
         const state = this.editors.get(hprofPath);
         if (!state) { return; }
+        trackEvent('analysis/retry');
         // No await before ownership/session installation: repeated clicks cannot spawn twice.
         state.analysisData = null;
         state.pendingWebviewMessage = null;
