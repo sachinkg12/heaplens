@@ -34,6 +34,9 @@ jvm-agent/
 # Independent IntelliJ prototype and its development artifacts
 intellij-plugin/
 
+# Standalone browser host is independently built and tested.
+browser-ui/
+
 # Source SVG (PNG is used by the extension)
 icon.svg
 
@@ -44,6 +47,8 @@ Thumbs.db
 *.swo
 
 # Test and sample files
+telemetry/*.test.cjs
+telemetry/README.md
 *.hprof
 **/*.hprof
 
@@ -57,4 +62,4 @@ Thumbs.db
 **/dist-esm/
 
 # Node dev dependencies are excluded by vsce automatically
-# (do NOT add node_modules/ here — it would also strip production deps like @vscode/extension-telemetry)
+# The shared telemetry contract/transport is shipped under telemetry/, not an SDK dependency.

@@ -12,6 +12,8 @@ const expected = (vscode,intellij,rust,auto_release,publish_vscode=false) =>
   ({vscode,intellij,rust,auto_release,publish_vscode});
 
 for (const [label,files,plan] of [
+  ['shared telemetry contract', ['telemetry/contract.json'], expected(true,true,true,true)],
+  ['standalone browser', ['browser-ui/server.cjs'], expected(true,true,true,false)],
   ['IntelliJ Java', ['intellij-plugin/src/main/java/Editor.java'], expected(false,true,false,false)],
   ['IntelliJ build and docs', ['intellij-plugin/build.gradle.kts','intellij-plugin/README.md'], expected(false,true,false,false)],
   ['VS Code adapter', ['src/hprofEditorProvider.ts'], expected(true,false,false,true)],

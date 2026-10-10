@@ -113,14 +113,26 @@ jobs:
           restore-keys: rust-test-
       - name: Run Rust tests
         working-directory: hprof-analyzer
-        run: cargo test --release --lib --bins --test integration --test shallow_size
+        run: cargo test --release --lib --bins --test integration --test shallow_size --test cli
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build and test standalone browser host (synthetic heaps, mock providers)
+        run: |
+          cargo build --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
+          node browser-ui/build.cjs
+          node --test browser-ui/test.cjs browser-ui/telemetry.test.cjs
 
   # IntelliJ-only changes cannot publish VS Code. Shared changes test both hosts.
   test-intellij:
     needs: changes
     if: ${{ needs.changes.outputs.intellij == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 45
+    env:
+      DO_NOT_TRACK: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,16 +158,29 @@ jobs:
       - name: Build the shared analysis server
         working-directory: hprof-analyzer
         run: cargo build --release --bin hprof-server
-      - name: Generate a small public-source fixture and test the adapter
+      - name: Require Apple Silicon runner
+        run: node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Apple Silicon runner required')"
+      - name: Build and test the exact Apple Silicon package
         shell: bash
         run: |
           FIXTURE_DIR=$(mktemp -d "$RUNNER_TEMP/heaplens-ci.XXXXXX")
           javac -d "$FIXTURE_DIR" hprof-analyzer/tests/fixtures/ClassRetainedCounterexample.java
           java -Xmx128m -cp "$FIXTURE_DIR" ClassRetainedCounterexample "$FIXTURE_DIR/ci-smoke.hprof"
-          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon test verifyPluginProjectConfiguration \
+          SERVER="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server"
+          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon buildPlugin verifyPluginProjectConfiguration \
+            -PheaplensServerTarget=darwin-arm64 -PheaplensServerBinary="$SERVER"
+          PLUGIN_ROOT=$(node intellij-plugin/scripts/extract-built-package.cjs intellij-plugin/build/distributions darwin-arm64)
+          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon test verifyPlugin \
+            -PheaplensServerTarget=darwin-arm64 -PheaplensServerBinary="$SERVER" \
             -Dheaplens.test.ci=true \
-            -Dheaplens.test.server="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server" \
-            -Dheaplens.test.dump="$FIXTURE_DIR/ci-smoke.hprof"
+            -Dheaplens.test.server="$PLUGIN_ROOT/native/darwin-arm64/hprof-server" \
+            -Dheaplens.test.dump="$FIXTURE_DIR/ci-smoke.hprof" -Dheaplens.test.pluginRoot="$PLUGIN_ROOT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intellij-apple-silicon-candidate
+          path: intellij-plugin/build/distributions/*-darwin-arm64.zip
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
@@ -163,6 +188,7 @@ jobs:
           path: |
             intellij-plugin/build/reports/tests/
             intellij-plugin/build/test-results/
+            intellij-plugin/build/reports/pluginVerifier/
           retention-days: 7
 
   # Stable check name for branch protection; selected-but-skipped is a failure.

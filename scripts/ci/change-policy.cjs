@@ -1,6 +1,8 @@
 // Pure routing policy. Unknown paths run all checks, but never authorize a release.
 const all = {vscode:true, intellij:true, rust:true};
 const rules = [
+  [/^telemetry\//, {...all,release:true}],
+  [/^browser-ui\//, all], // Standalone checks, never a release permission.
   [/^intellij-plugin\//, {intellij:true}],
   [/^(?:\.github\/|scripts\/ci\/)/, all],
   [/^(?:docs-site\/|docs\/|papers\/|media\/screenshots\/)|\.md$/i, {}],

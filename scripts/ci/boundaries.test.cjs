@@ -23,6 +23,35 @@ test('stable aggregate gate handles skipped host jobs without hiding failures', 
   assert.match(runs(jobs.checks), /scripts\/ci\/check-results\.cjs/);
 });
 
+test('first IntelliJ candidate uses Apple Silicon and tests the exact bundled package',()=>{
+  const job=jobs['test-intellij'];
+  assert.match(job.if,/needs\.changes\.outputs\.intellij == 'true'/);
+  assert.equal(job['runs-on'],'macos-14');
+  assert.equal(job.env.DO_NOT_TRACK,'1');
+  assert.match(runs(job),/process\.platform.*process\.arch/);
+  assert.match(runs(job),/extract-built-package\.cjs/);
+  assert.match(runs(job),/heaplens\.test\.server=.*PLUGIN_ROOT\/native\/darwin-arm64/);
+  assert.match(runs(job),/heaplens\.test\.pluginRoot=/);
+  assert.match(runs(job),/heaplens\.test\.ci=true/);
+  assert.match(runs(job),/test verifyPlugin/);
+  assert.ok(job.steps.some(step=>step.uses?.startsWith('actions/upload-artifact@') && step.with.name==='intellij-apple-silicon-candidate'));
+  assert.doesNotMatch(runs(job),/publishPlugin|git push|git tag/);
+  assert.equal(jobs['build-intellij-native'],undefined);
+  assert.equal(jobs['build-intellij-universal'],undefined);
+});
+
+test('macOS ARM64 delivery is declared in metadata, not inferred from the ZIP filename',()=>{
+  const descriptor=fs.readFileSync(path.join(root,'intellij-plugin/src/main/resources/META-INF/plugin.xml'),'utf8');
+  assert.match(descriptor,/<dependencies>\s*<plugin id="com\.intellij\.modules\.os\.mac"\/>\s*<plugin id="com\.intellij\.modules\.arch\.arm64"\/>\s*<\/dependencies>/);
+  const build=fs.readFileSync(path.join(root,'intellij-plugin/build.gradle.kts'),'utf8');
+  assert.match(build,/sinceBuild = "261"/);
+  assert.match(build,/require\(serverTarget\.get\(\) == "darwin-arm64"\)/);
+  assert.match(build,/freeArgs = listOf\("-ignore-os-arch"\)/);
+  for(const gate of ['COMPATIBILITY_PROBLEMS','INTERNAL_API_USAGES','OVERRIDE_ONLY_API_USAGES','NON_EXTENDABLE_API_USAGES','MISSING_DEPENDENCIES','INVALID_PLUGIN'])
+    assert.match(build,new RegExp('FailureLevel\\.'+gate));
+  assert.doesNotMatch(build,/ignoredProblemsFile|externalPrefixes|FailureLevel\.NONE/);
+});
+
 test('IntelliJ CI tests the real engine using a generated, non-private fixture', () => {
   const job = jobs['test-intellij'];
   assert.ok(job, 'IntelliJ tests must run in CI');
