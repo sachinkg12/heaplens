@@ -4,6 +4,75 @@ use std::collections::HashMap;
 use crate::indexed::types::HeapAnalysis;
 use crate::{ClassHistogramEntry, LeakSuspect};
 
+// Transport-only totals: no object graph, strings, fields or local file access.
+macro_rules! totals {
+    ($name:ident, $source:ty, {$($field:ident: $ty:ty),* $(,)?}) => {
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+        pub struct $name { $(pub $field: $ty),* }
+        impl From<&$source> for $name {
+            fn from(value: &$source) -> Self { Self { $($field: value.$field),* } }
+        }
+    };
+}
+totals!(SummaryTotals, crate::HeapSummary, {
+    total_heap_size:u64, reachable_heap_size:u64, total_instances:u64,
+    total_classes:u64, total_arrays:u64, total_gc_roots:u64
+});
+totals!(WasteTotals, crate::WasteAnalysis, {
+    total_wasted_bytes:u64, waste_percentage:f64, duplicate_string_wasted_bytes:u64,
+    empty_collection_wasted_bytes:u64, over_allocated_wasted_bytes:u64, boxed_primitive_wasted_bytes:u64
+});
+
+/// Compact immutable output of an analysis, usable across isolated editor processes.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ComparisonSnapshot {
+    pub summary: SummaryTotals,
+    pub class_histogram: Vec<ClassHistogramEntry>,
+    pub leak_suspects: Vec<LeakSuspect>,
+    pub waste_analysis: WasteTotals,
+}
+
+pub fn compare_snapshots(baseline: &ComparisonSnapshot, current: &ComparisonSnapshot,
+    baseline_label: &str, current_label: &str) -> HeapComparisonResult {
+    compare_parts(&baseline.summary, &current.summary, &baseline.class_histogram,
+        &current.class_histogram, &baseline.leak_suspects, &current.leak_suspects,
+        &baseline.waste_analysis, &current.waste_analysis, baseline_label, current_label)
+}
+
+/// Bounded additive protocol; existing compare_heaps continues using the same calculation.
+pub fn compare_snapshot_request(params: serde_json::Value) -> Result<HeapComparisonResult, String> {
+    #[derive(serde::Deserialize)]
+    struct Request { baseline: ComparisonSnapshot, current: ComparisonSnapshot,
+        baseline_label: String, current_label: String }
+    let request: Request = serde_json::from_value(params).map_err(|_| "Invalid comparison snapshots")?;
+    for snapshot in [&request.baseline, &request.current] {
+        if snapshot.class_histogram.len() > 200_000 || snapshot.leak_suspects.len() > 10_000 {
+            return Err("Comparison snapshot exceeds row limit".into());
+        }
+        // i64 deltas cannot overflow when both unsigned operands fit i64.
+        let value = serde_json::to_value(snapshot).map_err(|_| "Invalid snapshot")?;
+        fn valid(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Number(n) => n.as_u64().map_or_else(
+                    || n.as_f64().is_some_and(|v| v.is_finite() && v >= 0.0 && v <= i64::MAX as f64),
+                    |v| v <= i64::MAX as u64),
+                serde_json::Value::String(s) => s.len() <= 16384,
+                serde_json::Value::Array(a) => a.iter().all(valid),
+                // Object addresses are identifiers, never operands in signed deltas.
+                // Deserialization already guarantees u64; do not reject a valid
+                // address merely because it exceeds the arithmetic range.
+                serde_json::Value::Object(o) => o.iter().all(|(key, value)| key == "object_id" || valid(value)),
+                _ => true,
+            }
+        }
+        if !valid(&value) { return Err("Invalid comparison values".into()); }
+    }
+    if request.baseline_label.len() > 4096 || request.current_label.len() > 4096 {
+        return Err("Comparison label too long".into());
+    }
+    Ok(compare_snapshots(&request.baseline, &request.current, &request.baseline_label, &request.current_label))
+}
+
 /// Summary delta between two heap dumps.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HeapSummaryDelta {
@@ -92,8 +161,16 @@ pub fn compare_heaps(
     baseline_path: &str,
     current_path: &str,
 ) -> HeapComparisonResult {
-    let bs = baseline.get_summary();
-    let cs = current.get_summary();
+    compare_parts(&SummaryTotals::from(baseline.get_summary()), &SummaryTotals::from(current.get_summary()),
+        baseline.get_class_histogram(), current.get_class_histogram(), baseline.get_leak_suspects(),
+        current.get_leak_suspects(), &WasteTotals::from(baseline.get_waste_analysis()),
+        &WasteTotals::from(current.get_waste_analysis()), baseline_path, current_path)
+}
+
+fn compare_parts(bs: &SummaryTotals, cs: &SummaryTotals,
+    baseline_histogram: &[ClassHistogramEntry], current_histogram: &[ClassHistogramEntry],
+    baseline_leak_suspects: &[LeakSuspect], current_leak_suspects: &[LeakSuspect],
+    bw: &WasteTotals, cw: &WasteTotals, baseline_path: &str, current_path: &str) -> HeapComparisonResult {
 
     // Summary delta
     let summary_delta = HeapSummaryDelta {
@@ -118,8 +195,6 @@ pub fn compare_heaps(
     };
 
     // Histogram delta
-    let baseline_histogram = baseline.get_class_histogram();
-    let current_histogram = current.get_class_histogram();
     let baseline_hist: HashMap<&str, &ClassHistogramEntry> = baseline_histogram
         .iter()
         .map(|e| (e.class_name.as_str(), e))
@@ -198,8 +273,6 @@ pub fn compare_heaps(
     });
 
     // Leak suspect changes
-    let baseline_leak_suspects = baseline.get_leak_suspects();
-    let current_leak_suspects = current.get_leak_suspects();
     let baseline_suspects: HashMap<&str, &LeakSuspect> = baseline_leak_suspects
         .iter()
         .map(|s| (s.class_name.as_str(), s))
@@ -257,8 +330,6 @@ pub fn compare_heaps(
     }
 
     // Waste delta
-    let bw = baseline.get_waste_analysis();
-    let cw = current.get_waste_analysis();
     let waste_delta = WasteDelta {
         baseline_total_wasted_bytes: bw.total_wasted_bytes,
         current_total_wasted_bytes: cw.total_wasted_bytes,
