@@ -118,16 +118,15 @@ npm run compile
 
 ## Analysis Accuracy Issues
 
-### Retained sizes don't match Eclipse MAT
+### Retained sizes differ from an independent reference analyzer
 
-Small differences (5-10%) between HeapLens and Eclipse MAT are expected due to:
-- Different handling of unreachable objects
-- Slight differences in edge extraction for complex inheritance chains
-- HeapLens uses `reachable_heap_size` as the denominator for percentages (matching MAT)
+Before interpreting differences, check:
+- Are both tools analyzing the exact same complete HPROF file?
+- Do they use the same object-size model, including headers, reference widths, and alignment?
+- Do they handle GC roots, weak/soft/phantom references, and unreachable objects the same way?
+- Are both percentages based on the same denominator? HeapLens uses `reachable_heap_size`.
 
-If differences are larger, check:
-- Is the HPROF file the same? (MAT sometimes re-parses)
-- Is the file complete? (truncated files produce different results)
+A difference is not automatically acceptable because it is small. Preserve the object IDs, exact byte values, tool versions, and settings when investigating a possible defect.
 
 ### No leak suspects detected
 

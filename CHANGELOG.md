@@ -8,10 +8,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- IntelliJ telemetry is **off until explicit approval**. The initial dialog offers Errors Only, Usage and Errors, or No Telemetry; Cancel/dismissal keeps it off. The choice persists locally and is not synced. Earlier prototype On settings require fresh approval. **Telemetry → Off** stops collection, clears local records and cancels pending delivery; already transmitted records cannot be recalled.
+- VS Code and standalone CLI/browser telemetry still default to filtered usage and errors, subject to VS Code's editor permission, existing explicit Off, development/CI disablement and `DO_NOT_TRACK=1`. Disable with **HeapLens: Configure Telemetry → Off** or User setting `"heaplens.telemetry.level": "off"`; use `--telemetry off` on each CLI command. The browser's **Telemetry → Disable telemetry** action disables the current running host; use the flag for future launches.
+- The first IntelliJ Marketplace candidate targets **macOS Apple Silicon only**, with explicit OS/architecture dependencies and an IntelliJ 2026.1–2026.2 build range. Intel Mac, Windows and Linux packages are deferred. CI prepares and verifies an Apple Silicon ZIP; it does not publish to JetBrains Marketplace automatically.
 - CI now runs the maintained extension test suite through `npm test`, including compilation and linting. Platform packaging and tag publication depend on this check; failing extension tests block them. The existing automatic version/tag creation is unchanged.
 
 ### Security
 
+- Telemetry now uses a shared allowlist and bounded delivery instead of the VS Code telemetry SDK's automatic metadata/error forwarding. Events contain fixed codes/actions, coarse host/platform/version information and rounded counts, sizes or timings; paths, raw errors/stacks, dump/source/query text, class names, credentials and stable user/session identifiers are excluded. Local diagnostic review does not upload the report. Network services may process IP addresses; this is not guaranteed anonymity. See [telemetry fields, controls and limitations](docs-site/docs/runbook/telemetry.md).
 - AI Chat, Copilot context, and Explain no longer automatically include duplicate-string contents or primitive field values. Counts, sizes, class/field names, and local inspection/report data are preserved. This minimizes data, but does not anonymize names or redact user-entered text.
 - Fix with AI now asks before every source submission and displays the configured endpoint's origin. Cancel, dismissal, or Review Source sends nothing. The prompt no longer adds the absolute source-file path. Approved source is sent in full, not automatically redacted; Ollama and proxies require the same confirmation. MCP tool output is a separate boundary and is unchanged.
 
@@ -30,11 +34,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Analysis Compatibility
 
-- Overview, incident reports and summary metadata identify byte values as JVM layout estimates. Hidden VM fields and class metadata remain excluded. Reanalyze both snapshots with the same version when comparing growth; old payload-only values are not comparable to the new model. See `hprof-analyzer/SHALLOW_SIZES.md`.
+- Overview, incident reports and summary metadata identify byte values as JVM layout estimates. Hidden VM fields and class metadata remain excluded. Reanalyze both snapshots with the same version when comparing growth; old payload-only values are not comparable to the new model. See `hprof-analyzer/docs/SHALLOW_SIZES.md`.
 
 ### Added
 
-- `hprof-analyzer/SHALLOW_SIZES.md`, documenting the `conventional-jvm-v1` model: what is estimated, what is deliberately not reconstructed, and how reference and class-pointer widths are inferred.
+- `hprof-analyzer/docs/SHALLOW_SIZES.md`, documenting the `conventional-jvm-v1` model: what is estimated, what is deliberately not reconstructed, and how reference and class-pointer widths are inferred.
 - A shallow-size fixture whose expected values come from Java Instrumentation, so the model is checked against a JVM-reported oracle rather than against another analyzer. CI now runs this suite alongside the existing ones.
 - `size_oracle` and `audit_heap` examples for inspecting modeled sizes directly.
 
