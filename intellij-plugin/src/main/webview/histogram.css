@@ -1,10 +1,4 @@
-/* Percentages use the shared reachable-heap calculation. Keep only actions
-   without an IntelliJ host implementation hidden. */
-#export-csv-btn,
-#histogram-instances-panel th:last-child,
-#histogram-instances-panel .instance-actions {
-    display: none !important;
-}
+/* Percentages and actions reuse the shared renderer. */
 #tab-histogram th {
     top: 0;
 }

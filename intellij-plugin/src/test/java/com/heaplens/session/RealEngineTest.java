@@ -67,6 +67,15 @@ class RealEngineTest {
             assertEquals("real-histogram", reply.get("requestId").getAsString());
             return reply.getAsJsonObject("result");
         }
+        JsonArray children(long objectId) {
+            List<JsonObject> replies = new CopyOnWriteArrayList<>();
+            new DominatorQueries(session::read, replies::add).children(DominatorQueriesTest.request(objectId, "real-tree"));
+            until(() -> !replies.isEmpty());
+            JsonObject reply = replies.getFirst();
+            assertEquals("dominatorChildrenResult", reply.get("command").getAsString(), reply.toString());
+            assertEquals(objectId, reply.get("objectId").getAsLong());
+            return reply.getAsJsonArray("children");
+        }
         @Override public void close() { session.close(); until(() -> session.state() == HeapSession.State.CLOSED); }
     }
     @Test @Tag("local-fixture") void layoutDefaultMatchesFivePreviouslyMatVerifiedObjects() {
@@ -85,6 +94,8 @@ class RealEngineTest {
     @Test void killAfterCompletionRetryAndQueryUseNewProcess() {
         try (Run run = new Run(dump, false)) {
             JsonObject before = run.analysis().getAsJsonObject("summary");
+            long entry = run.analysis().getAsJsonArray("topLayers").get(0).getAsJsonObject().get("object_id").getAsLong();
+            JsonArray beforeChildren = run.children(entry);
             long original = run.session.pid();
             assertTrue(ProcessHandle.of(original).orElseThrow().destroyForcibly()); // Only this test-owned child.
             until(() -> run.session.state() == HeapSession.State.FAILED);
@@ -94,6 +105,74 @@ class RealEngineTest {
             assertEquals(before, run.analysis().getAsJsonObject("summary"));
             assertFalse(run.query("SELECT class_name, retained_size FROM class_histogram ORDER BY retained_size DESC LIMIT 3").getAsJsonArray("rows").isEmpty());
             assertFalse(run.instances("java.lang.String").getAsJsonArray("rows").isEmpty());
+            assertEquals(beforeChildren, run.children(entry));
+        }
+    }
+    @Test void comparisonSnapshotProtocolMatchesExistingEngineForSameRealDump()throws Exception {
+        try(Run run=new Run(dump,false)){
+            var catalog=new com.heaplens.snapshots.SnapshotCatalog();catalog.publish("a","before",1,run.analysis());
+            var data=catalog.get("a").data();JsonObject params=new JsonObject();params.add("baseline",data);params.add("current",data);
+            params.addProperty("baseline_label",dump.toString());params.addProperty("current_label",dump.toString());
+            var compact=new CompletableFuture<JsonElement>();run.session.read("compare_snapshots",params,(v,e)->{if(e!=null)compact.completeExceptionally(new AssertionError(e));else compact.complete(v);});
+            JsonObject paths=new JsonObject();paths.addProperty("baseline_path",dump.toString());paths.addProperty("current_path",dump.toString());
+            var original=new CompletableFuture<JsonElement>();run.session.read("compare_heaps",paths,(v,e)->{if(e!=null)original.completeExceptionally(new AssertionError(e));else original.complete(v);});
+            JsonObject first=compact.get(10,TimeUnit.SECONDS).getAsJsonObject(),second=original.get(10,TimeUnit.SECONDS).getAsJsonObject();
+            assertComparisonParity(second.get("summary_delta"),first.get("summary_delta"),"summary");
+            assertComparisonParity(second.get("waste_delta"),first.get("waste_delta"),"waste");
+            for(String key:List.of("histogram_delta","leak_suspect_changes")){
+                var left=new TreeMap<String,JsonElement>();var right=new TreeMap<String,JsonElement>();
+                for(JsonElement row:first.getAsJsonArray(key))left.put(row.getAsJsonObject().get("class_name").getAsString(),row);
+                for(JsonElement row:second.getAsJsonArray(key))right.put(row.getAsJsonObject().get("class_name").getAsString(),row);
+                assertEquals(right.keySet(),left.keySet());for(String name:right.keySet())assertComparisonParity(right.get(name),left.get(name),name);
+            }
+        }
+    }
+    private static void assertComparisonParity(JsonElement expected,JsonElement actual,String key){
+        if(expected.isJsonObject()){
+            assertTrue(actual.isJsonObject());assertEquals(expected.getAsJsonObject().keySet(),actual.getAsJsonObject().keySet());
+            for(var entry:expected.getAsJsonObject().entrySet())assertComparisonParity(entry.getValue(),actual.getAsJsonObject().get(entry.getKey()),entry.getKey());
+        }else if(key.contains("percentage")){
+            // JSON serialization/deserialization can round the final binary float digit.
+            // Counts and byte sizes below still require exact equality.
+            assertEquals(expected.getAsDouble(),actual.getAsDouble(),1e-12,key);
+        }else assertEquals(expected,actual,key);
+    }
+    @Test void dominatorChildrenMatchTheirHeapqlSizesOnBothBackends() {
+        for (boolean legacy : List.of(false, true)) try (Run run = new Run(dump, legacy)) {
+            int checked = 0;
+            for (JsonElement value : run.analysis().getAsJsonArray("topLayers")) {
+                JsonObject parent = value.getAsJsonObject();
+                if (!Set.of("Instance", "Array").contains(parent.get("node_type").getAsString())) continue;
+                JsonArray children = run.children(parent.get("object_id").getAsLong());
+                for (JsonElement child : children) {
+                    JsonObject node = child.getAsJsonObject();
+                    if (!Set.of("Instance", "Array").contains(node.get("node_type").getAsString())) continue;
+                    JsonArray rows = run.query("SELECT shallow_size, retained_size FROM instances WHERE object_id = "
+                        + node.get("object_id").getAsLong()).getAsJsonArray("rows");
+                    assertEquals(1, rows.size());
+                    assertEquals(node.get("shallow_size"), rows.get(0).getAsJsonArray().get(0));
+                    assertEquals(node.get("retained_size"), rows.get(0).getAsJsonArray().get(1));
+                    assertTrue(node.get("retained_size").getAsLong() <= parent.get("retained_size").getAsLong());
+                    if (++checked >= 8) break;
+                }
+                if (checked >= 8) break;
+            }
+            assertTrue(checked > 0, "Fixture must exercise an expandable dominator");
+            assertTrue(run.children(9007199254740991L).isEmpty());
+        }
+    }
+    @Test void objectActionsUseTheRealEngineOnBothBackends() {
+        for(boolean legacy:List.of(false,true))try(Run run=new Run(dump,legacy)){
+            long id=run.query("SELECT object_id FROM instances WHERE class_name = 'java.lang.String' LIMIT 1")
+                .getAsJsonArray("rows").get(0).getAsJsonArray().get(0).getAsLong();
+            for(String command:List.of("inspectObject","gcRootPath","getReferrers","getDominatorSubtree")){
+                List<JsonObject> replies=new CopyOnWriteArrayList<>();
+                JsonObject request=ObjectActionsTest.request(command,command.equals("getDominatorSubtree")?0:id);
+                new ObjectActions(run.session::read,replies::add).handle(request);until(()->!replies.isEmpty());
+                JsonObject reply=replies.getFirst();assertFalse(reply.has("error"),reply.toString());
+                if(command.equals("inspectObject"))assertFalse(reply.getAsJsonArray("fields").isEmpty());
+                if(command.equals("getDominatorSubtree"))assertTrue(reply.getAsJsonObject("subtree").get("retained_size").getAsLong()>0);
+            }
         }
     }
     @Test void histogramDtoMatchesHeapqlForTopClasses() {

@@ -23,6 +23,35 @@ body {
     display: block;
     height: var(--hl-space-lg);
 }
+/* JCEF otherwise defaults unstyled explanatory text to 16px. Keep the
+   host's normal text size without overriding deliberate per-view typography. */
+:where(.tab-content > p, .timeline-controls > p, .monitor-histogram-section > p, #source-status) {
+    font-size: var(--vscode-font-size, 13px);
+}
 #tab-overview th {
     top: 0;
 }
+/* Explicit, contrasted scroll affordances rather than relying on macOS overlays. */
+.tab-content.active, .query-results, .inspector-panel {
+    scrollbar-gutter: stable;
+    scrollbar-color: var(--hl-scrollbar-thumb, #969aa3) var(--vscode-editor-background);
+    scrollbar-width: auto;
+}
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: var(--vscode-editor-background); }
+::-webkit-scrollbar-thumb {
+    background: var(--hl-scrollbar-thumb, #969aa3);
+    border: 2px solid var(--vscode-editor-background);
+    border-radius: 6px;
+}
+::-webkit-scrollbar-corner { background: var(--vscode-editor-background); }
+.local-source-feedback {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    font-size: var(--vscode-font-size);
+    overflow-wrap: anywhere;
+}
+.local-source-feedback[hidden] { display: none; }
+[data-fix-unavailable] { opacity: .45; cursor: not-allowed; }

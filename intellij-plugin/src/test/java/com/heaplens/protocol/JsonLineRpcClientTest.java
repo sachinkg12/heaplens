@@ -30,6 +30,12 @@ class JsonLineRpcClientTest {
         assertTrue(client.isAlive());
         assertNotNull(client.request(2, "echo", new JsonObject(), Duration.ofSeconds(3)).get());
     }
+    @Test void arrayResultsCrossTheRealProcessBoundaryWithoutBreakingObjectRequests() throws Exception {
+        assertTrue(client.requestValue(1, "array", new JsonObject(), Duration.ofSeconds(3)).get().isJsonArray());
+        assertThrows(ExecutionException.class, () -> client.request(2, "array", new JsonObject(), Duration.ofSeconds(3)).get());
+        assertNotNull(client.request(3, "echo", new JsonObject(), Duration.ofSeconds(3)).get());
+        assertTrue(client.isAlive()); assertTrue(failures.isEmpty());
+    }
     @Test void invalidJsonRejectsPendingAndReportsFailure() throws Exception { rejects("malformed"); }
     @Test void truncatedJsonRejectsPendingAndReportsFailure() throws Exception { rejects("truncated"); }
     @Test void oversizedFrameFailsBoundedly() throws Exception { rejects("oversized"); }

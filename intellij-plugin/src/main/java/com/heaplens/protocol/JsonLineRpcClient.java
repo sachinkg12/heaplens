@@ -14,7 +14,7 @@ public final class JsonLineRpcClient implements RpcClient {
     private static final int MAX_LINE = 32 * 1024 * 1024;
     private final Process process;
     private final BufferedWriter stdin;
-    private final ConcurrentMap<Long, CompletableFuture<JsonObject>> pending = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Long, CompletableFuture<JsonElement>> pending = new ConcurrentHashMap<>();
     private final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "heaplens-rpc-timeouts"); t.setDaemon(true); return t;
     });
@@ -42,7 +42,14 @@ public final class JsonLineRpcClient implements RpcClient {
     }
 
     @Override public CompletableFuture<JsonObject> request(long id, String method, JsonObject params, Duration timeout) {
-        CompletableFuture<JsonObject> result = new CompletableFuture<>();
+        return requestValue(id, method, params, timeout).thenApply(value -> {
+            if (!value.isJsonObject()) throw new CompletionException(new IOException("Expected an object RPC result"));
+            return value.getAsJsonObject();
+        });
+    }
+
+    @Override public CompletableFuture<JsonElement> requestValue(long id, String method, JsonObject params, Duration timeout) {
+        CompletableFuture<JsonElement> result = new CompletableFuture<>();
         if (closed.get()) return CompletableFuture.failedFuture(new IOException("Analysis server is unavailable"));
         if (pending.putIfAbsent(id, result) != null) throw new IllegalArgumentException("Duplicate request ID");
         try {
@@ -82,10 +89,15 @@ public final class JsonLineRpcClient implements RpcClient {
             throw new IllegalArgumentException("Invalid JSON-RPC envelope");
         if (message.has("id")) {
             long id = message.get("id").getAsLong();
-            CompletableFuture<JsonObject> future = pending.remove(id);
+            CompletableFuture<JsonElement> future = pending.remove(id);
             if (future == null) return; // Late response after timeout; never match another request.
-            if (message.has("error")) future.completeExceptionally(new IOException("Analysis server rejected the request"));
-            else if (message.has("result") && message.get("result").isJsonObject()) future.complete(message.getAsJsonObject("result"));
+            if (message.has("error")) {
+                JsonObject error=message.getAsJsonObject("error");
+                String detail=error.has("message") && error.get("message").isJsonPrimitive()
+                    ? error.get("message").getAsString() : "Analysis server rejected the request";
+                future.completeExceptionally(new RpcResponseException(detail.substring(0,Math.min(detail.length(),4096))));
+            }
+            else if (message.has("result")) future.complete(message.get("result"));
             else future.completeExceptionally(new IOException("Invalid RPC result"));
         } else {
             listener.notification(message.get("method").getAsString(), message.getAsJsonObject("params"));

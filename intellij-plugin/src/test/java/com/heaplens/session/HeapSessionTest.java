@@ -19,12 +19,17 @@ class HeapSessionTest {
         volatile long analysisId;
         CompletableFuture<JsonObject> ack = new CompletableFuture<>();
         CompletableFuture<JsonObject> queryReply;
+        final List<CompletableFuture<JsonElement>> readReplies = new CopyOnWriteArrayList<>();
         @Override public void start(Listener value) { listener = value; }
         @Override public CompletableFuture<JsonObject> request(long id, String method, JsonObject p, Duration timeout) {
             params.put(method, p); methods.add(method);
             if (method.equals("analyze_heap")) { analysisId = id; return ack; }
             if (method.equals("execute_query") && queryReply != null) return queryReply;
             return CompletableFuture.completedFuture(new JsonObject());
+        }
+        @Override public CompletableFuture<JsonElement> requestValue(long id, String method, JsonObject p, Duration timeout) {
+            params.put(method, p); methods.add(method);
+            CompletableFuture<JsonElement> reply = new CompletableFuture<>(); readReplies.add(reply); return reply;
         }
         void notify(String method, String status, long id) {
             JsonObject p = new JsonObject(); p.addProperty("request_id", id); p.addProperty("status", status);
@@ -51,6 +56,15 @@ class HeapSessionTest {
         assertTrue(condition.getAsBoolean(), "Condition did not become true");
     }
     Fake started() { session.start(); await(() -> !clients.isEmpty() && clients.getFirst().analysisId > 0); return clients.getFirst(); }
+    @Test void realSessionWiringReportsCodesNotPathsOrErrorText() {
+        session.close();await(()->session.state()==HeapSession.State.CLOSED);
+        List<String> observed=new CopyOnWriteArrayList<>();
+        session=new HeapSession(()->{throw new java.io.IOException("private-canary");},Path.of("private-canary.hprof"),events::add,
+            (name,properties,measurements)->observed.add(name+properties+measurements));
+        session.start();await(()->session.state()==HeapSession.State.FAILED);
+        assertTrue(observed.stream().anyMatch(e->e.contains("server_spawn")));
+        assertFalse(observed.toString().contains("private-canary"));
+    }
     boolean hasEvent(String command) { return events.stream().anyMatch(e -> command.equals(e.get("command").getAsString())); }
 
     @Test void earlyCompletionDoesNotDependOnAckOrderAndStartIsIdempotent() {
@@ -162,5 +176,57 @@ class HeapSessionTest {
         f.queryReply.complete(new JsonObject());
         session.query("barrier", 1); await(() -> hasEvent("queryError"));
         assertTrue(scoped.isEmpty());
+    }
+    @Test void readsAreBoundedScopedAndCannotOverrideTheEditorPath() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        JsonObject params = new JsonObject(); params.addProperty("path", "another dump");
+        session.read("get_children", params, (result, error) -> { });
+        for (int i = 1; i <= 8; i++) tree.children(DominatorQueriesTest.request(i, "t" + i));
+        await(() -> !replies.isEmpty());
+        assertEquals(8, f.readReplies.size());
+        assertEquals("dump with spaces.hprof", f.params.get("get_children").get("path").getAsString());
+        assertEquals("dominatorChildrenError", replies.getFirst().get("command").getAsString());
+        f.readReplies.get(1).complete(new JsonArray());
+        await(() -> replies.size() == 2);
+        assertEquals("dominatorChildrenResult", replies.get(1).get("command").getAsString());
+        assertFalse(hasEvent("queryResult")); assertFalse(hasEvent("queryError"));
+    }
+    @Test void readFailureIsRetryableAndDoesNotKillTheSession() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        tree.children(DominatorQueriesTest.request(42, "first")); await(() -> f.readReplies.size() == 1);
+        f.readReplies.getFirst().completeExceptionally(new TimeoutException("private details"));
+        await(() -> replies.size() == 1);
+        assertFalse(replies.toString().contains("private details"));
+        tree.children(DominatorQueriesTest.request(42, "retry")); await(() -> f.readReplies.size() == 2);
+        f.readReplies.get(1).complete(new JsonArray()); await(() -> replies.size() == 2);
+        assertEquals(HeapSession.State.READY, session.state()); assertFalse(hasEvent("serverCrashed"));
+    }
+    @Test void oldReadRepliesCannotSurviveCrashRetryOrEditorClose() {
+        Fake f = started(); f.complete(); await(() -> session.state() == HeapSession.State.READY);
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        DominatorQueries tree = new DominatorQueries(session::read, replies::add);
+        tree.children(DominatorQueriesTest.request(42, "old")); await(() -> f.readReplies.size() == 1);
+        f.listener.failed("test crash"); await(() -> session.state() == HeapSession.State.FAILED);
+        session.retry(); await(() -> clients.size() == 2 && clients.get(1).analysisId > 0);
+        Fake fresh = clients.get(1); fresh.complete(); await(() -> session.state() == HeapSession.State.READY);
+        f.readReplies.getFirst().complete(new JsonArray());
+        tree.children(DominatorQueriesTest.request(42, "fresh")); await(() -> fresh.readReplies.size() == 1);
+        assertTrue(replies.isEmpty());
+        fresh.readReplies.getFirst().complete(new JsonArray()); await(() -> replies.size() == 1);
+        assertEquals("fresh", replies.getFirst().get("requestId").getAsString());
+        tree.children(DominatorQueriesTest.request(43, "closed")); await(() -> fresh.readReplies.size() == 2);
+        session.close(); await(() -> session.state() == HeapSession.State.CLOSED);
+        fresh.readReplies.get(1).complete(new JsonArray()); assertEquals(1, replies.size());
+    }
+    @Test void readsBeforeAnalysisAreReportedOnlyToTheirCaller() {
+        List<JsonObject> replies = new CopyOnWriteArrayList<>();
+        new DominatorQueries(session::read, replies::add).children(DominatorQueriesTest.request(42, "early"));
+        await(() -> replies.size() == 1);
+        assertEquals("dominatorChildrenError", replies.getFirst().get("command").getAsString());
+        assertTrue(clients.isEmpty()); assertTrue(events.isEmpty());
     }
 }

@@ -24,6 +24,7 @@ public final class WebviewEvents {
         JsonObject value = event("analysisProgress");
         Map.of("stage", "stage", "phase", "phase", "total_phases", "totalPhases")
             .forEach((from, to) -> { if (params.has(from)) value.add(to, params.get(from)); });
+        if (params.has("summary") && params.get("summary").isJsonObject()) value.add("summary",params.get("summary"));
         return value;
     }
 }

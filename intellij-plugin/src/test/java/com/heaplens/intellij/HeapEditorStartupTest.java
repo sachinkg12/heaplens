@@ -33,8 +33,13 @@ class HeapEditorStartupTest {
                 .map(c -> ((JLabel)c).getText()).anyMatch(t -> t.contains("UI unavailable | analysis not started")));
             assertTrue(components.stream().filter(c -> c instanceof JLabel)
                 .map(c -> ((JLabel)c).getText()).anyMatch(t -> t.contains("embedded browser (JCEF)")));
-            assertEquals(2, components.stream().filter(c -> c instanceof JButton).count());
-            assertTrue(components.stream().filter(c -> c instanceof JButton).noneMatch(Component::isEnabled));
+            var buttons = components.stream().filter(c -> c instanceof JButton)
+                .map(c -> (JButton)c).toList();
+            assertEquals(3, buttons.size());
+            assertTrue(buttons.stream().anyMatch(b -> "Telemetry".equals(b.getText())));
+            // Consent controls remain independent of the embedded analysis UI.
+            assertTrue(buttons.stream().filter(b -> !"Telemetry".equals(b.getText()))
+                .noneMatch(Component::isEnabled));
         } finally { Disposer.dispose(editor); }
     }
     @Test void missingBrowserClassShowsActionableFallbackInsteadOfBlankEditor() {

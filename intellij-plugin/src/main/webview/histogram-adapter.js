@@ -14,9 +14,8 @@ function histogramStatus(text) {
 }
 
 function requestHistogramInstances(message) {
-    // Other shared renderer actions (CSV, inspect, references) are not capabilities
-    // of this increment. Their controls are hidden and they cannot reach the host.
-    if (message.command !== 'executeQuery' || !_pendingInstanceClass) return;
+    if (message.command !== 'executeQuery') { send(message); return; }
+    if (!_pendingInstanceClass) return;
     if (!histogramReady) {
         histogramStatus('Wait for analysis to finish. Use Retry above if the server is unavailable.');
         return;

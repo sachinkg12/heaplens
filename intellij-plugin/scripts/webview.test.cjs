@@ -4,6 +4,20 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const html = fs.readFileSync('build/generated/webview/webview/index.html', 'utf8');
 
+test('native telemetry consent is requested only for an active created editor',()=>{
+  const editor=fs.readFileSync('src/main/java/com/heaplens/intellij/HeapEditor.java','utf8');
+  assert.match(editor,/requestConsent\(project,\(\)->!disposed\)/);
+  const created=editor.indexOf('browser = views.create(');
+  assert.ok(created>=0,'Recheck the native browser factory boundary if it changes');
+  assert.ok(editor.indexOf('requestConsent(')>created);
+  const host=fs.readFileSync('src/main/java/com/heaplens/intellij/IntellijTelemetry.java','utf8');
+  assert.match(host,/if\(!permission.beginPrompt\(\)\)return/);
+  assert.match(host,/invokeLater/);
+  assert.match(host,/if\(!permission.promptPending\(\)\)return/);
+  assert.match(host,/!active.getAsBoolean\(\)/);
+  assert.match(host,/"No Telemetry"\},2/);
+});
+
 // JCEF does not inject VS Code's theme variables. A missing surface color makes
 // sticky headers transparent even when their stacking order is correct.
 const css = html.match(/<style>([\s\S]*?)<\/style>/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
@@ -44,6 +58,21 @@ test('IntelliJ keeps navigation outside the active scrolling pane', () => {
 });
 test('IntelliJ Overview headers stick to the pane edge without a guessed tab height', () => {
   assert.match(lastRule('#tab-overview th'), /top:\s*0\s*;/);
+});
+test('IntelliJ explanatory paragraphs use the host text size, not the browser default', () => {
+  assert.match(lastRule(':where(.tab-content > p, .timeline-controls > p, .monitor-histogram-section > p, #source-status)'),
+    /font-size:\s*var\(--vscode-font-size,\s*13px\)\s*;/);
+  assert.doesNotMatch(lastRule('body'), /font-size\s*:/,
+    'The paragraph fix must not resize every inherited control and heading');
+});
+test('native appearance initializes before load and subscribes with browser-owned disposal',()=>{
+  const native=fs.readFileSync('src/main/java/com/heaplens/intellij/HeapBrowser.java','utf8');
+  assert.match(native,/HeapAppearance.initialCss\(\)/);
+  assert.match(native,/getMessageBus\(\).connect\(this\)/);
+  assert.match(native,/subscribe\(LafManagerListener.TOPIC/);
+  assert.match(native,/"ready"\.equals/);
+  assert.match(css,/::-webkit-scrollbar-thumb/);
+  assert.match(lastRule('.tab-content.active, .query-results, .inspector-panel'),/scrollbar-gutter:\s*stable/);
 });
 
 // DOM contract harness, not a claim of native JCEF layout/accessibility coverage.
@@ -97,7 +126,7 @@ function harness() {
   const markup = html.slice(0, html.indexOf('<script'));
   const elements = new Map([...markup.matchAll(/\bid="([^"]+)"/g)].map(m => [m[1], new Element()]));
   for (const id of ['progress-cancel-btn','progress-retry-btn']) elements.set(id,new Element());
-  const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(m => {
+  const tabs = [...markup.matchAll(/<button[^>]*class="tab-btn[^"]*"[^>]*data-tab="([^"]+)"/g)].map(m => {
     const el = new Element(); el.dataset.tab = m[1]; return el;
   });
   const window = new Element(), messages = [];
@@ -106,19 +135,59 @@ function harness() {
       return elements.get(id) || [...elements.values()].flatMap(el => el.children).find(el => el.attributes.id === id) || null;
     },
     querySelectorAll(selector) { return selector === '.tab-btn' ? tabs.filter(t=>!t.removed) : []; },
-    querySelector() { return new Element(); }, createElement() { return new Element(); },
+    querySelector(selector) { return selector === '.tab-content.active' ? null : new Element(); }, createElement() { return new Element(); },
     addEventListener() {}
   };
   const scripts = [...html.matchAll(/<script nonce="__NONCE__">([\s\S]*?)<\/script>/g)];
-  vm.runInNewContext(scripts.at(-1)[1].replace('__BRIDGE__','messages.push(message)'), {
+  const context = vm.createContext({
     window, document, messages, setTimeout, clearTimeout, console
   });
-  return {elements,tabs,messages, send: data=>window.listeners.message({data})};
+  vm.runInContext(scripts.at(-1)[1].replace('__BRIDGE__','messages.push(message)')
+    .replace('function dispatchHost(message)', 'window.testDispatch = dispatchHost; function dispatchHost(message)'), context);
+  return {elements,tabs,messages, send: data=>window.listeners.message({data}),
+    action: message=>window.testDispatch(message) };
 }
-test('generated UI boots, posts ready and exposes only the three implemented tabs',()=>{
+test('object actions strip page context, correlate replies and cancel an abandoned explanation',()=>{
+  const h=harness();complete(h);
+  h.action({command:'explainObject',objectId:42,fields:'PRIVATE_FIELDS',source:'PRIVATE_SOURCE'});
+  const explain=h.messages.at(-1);
+  assert.deepEqual(Object.keys(explain).sort(),['command','objectId','requestId']);
+  assert.equal(h.elements.get('local-action-stop').disabled,false);
+  h.action({command:'inspectObject',objectId:43});
+  assert.equal(h.messages.at(-2).command,'cancelAiAssistance');
+  assert.equal(h.messages.at(-1).command,'inspectObject');
+  h.send({...explain,command:'explainError',message:'stale error'});
+  assert.doesNotMatch(h.elements.get('local-action-status').textContent,/stale/);
+  h.send({command:'serverCrashed'});
+  const count=h.messages.length;h.action({command:'inspectObject',objectId:42});assert.equal(h.messages.length,count);
+});
+test('object requests reject lossy IDs and AI requests cannot overlap or submit page source',()=>{
+  const h=harness();complete(h);const initial=h.messages.length;
+  for(const objectId of [-1,0,1.5,Number.MAX_SAFE_INTEGER+1,'42'])h.action({command:'inspectObject',objectId});
+  assert.equal(h.messages.length,initial);
+  h.action({command:'fixWithAi',className:'example.Owner',path:'/private/source',source:'SECRET'});
+  const request=h.messages.at(-1);assert.deepEqual(Object.keys(request).sort(),['className','command','requestId']);
+  h.action({command:'fixWithAi',className:'example.Owner'});assert.equal(h.messages.at(-1),request);
+  assert.match(h.elements.get('local-action-status').textContent,/already running/);
+  h.send({...request,command:'fixAiResult',message:'Cancelled'});
+  assert.equal(h.elements.get('local-action-stop').disabled,true);
+  assert.equal(h.elements.get('local-action-stop').hidden,true);
+  h.action({command:'fixWithAi',className:'example.Other'});assert.notEqual(h.messages.at(-1).requestId,request.requestId);
+});
+test('idle AI Stop stays hidden with terminal status and Dismiss does not cancel work',()=>{
+  const h=harness();complete(h);
+  h.action({command:'fixWithAi',className:'example.Owner'});const request=h.messages.at(-1);
+  assert.equal(h.elements.get('local-action-stop').hidden,false);
+  h.send({...request,command:'fixAiResult',message:'Cancelled before sending.'});
+  assert.equal(h.elements.get('local-action-stop').hidden,true);
+  assert.match(h.elements.get('local-action-status').textContent,/Cancelled/);
+  const count=h.messages.length;h.elements.get('local-action-dismiss').click();
+  assert.equal(h.messages.length,count);assert.equal(h.elements.get('local-action-bar').hidden,true);
+});
+test('generated UI boots, posts ready and exposes all eleven implemented tabs',()=>{
   const h=harness();
   assert.equal(h.messages[0].command,'ready');
-  assert.deepEqual(h.tabs.filter(t=>!t.removed).map(t=>t.dataset.tab),['overview','histogram','query']);
+  assert.deepEqual(h.tabs.filter(t=>!t.removed).map(t=>t.dataset.tab),['overview','histogram','domtree','leaks','waste','source','query','compare','timeline','monitor','chat']);
 });
 test('same Overview and query renderers consume translated engine DTOs safely',()=>{
   const h=harness();
@@ -217,10 +286,40 @@ test('query errors unrelated to server recovery are not silently cleared',()=>{
     assert.match(status.textContent,/Invalid syntax/);
   }
 });
-test('prototype CSP denies network calls and unavailable actions remain hidden',()=>{
+test('prototype CSP denies page network calls while host-backed object actions are exposed',()=>{
   assert.match(html,/connect-src 'none'/);
-  assert.match(html,/#report-actions, .why-alive-btn \{ display:none!important/);
+  assert.equal(html.includes('#report-actions, .why-alive-btn { display:none!important'),false);
   assert.doesNotMatch(html,/<script[^>]+src="https?:/);
+});
+
+test('AI commands never contain settings or credentials and require analyzed state',()=>{
+  const h=harness();
+  assert.equal(h.elements.get('chat-send').disabled,true);
+  h.elements.get('ai-configure').click();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages.at(-1))),{command:'aiConfigure'});
+  h.send({command:'aiConfiguration',message:'Configured test provider'});complete(h);
+  h.elements.get('chat-input').value='What retains memory?';h.elements.get('chat-send').click();
+  const request=h.messages.at(-1);
+  assert.deepEqual(Object.keys(request).sort(),['command','requestId','text']);assert.equal(request.command,'aiSend');
+  assert.equal(h.elements.get('ai-stop').disabled,false);
+  h.send({command:'aiError',requestId:'wrong',message:'STALE'});
+  assert.doesNotMatch(h.elements.get('ai-status').textContent,/STALE/);
+  h.send({command:'aiError',requestId:request.requestId,message:'Cancelled before sending.'});
+  assert.equal(h.elements.get('chat-send').disabled,false);
+  assert.match(h.elements.get('ai-status').textContent,/Cancelled/);
+});
+test('AI Clear and unavailable states retire replies and cannot affect Query',()=>{
+  const h=harness();complete(h);
+  h.elements.get('query-status').textContent='independent';
+  h.elements.get('chat-input').value='question';h.elements.get('chat-send').click();const request=h.messages.at(-1);
+  h.elements.get('ai-stop').click();assert.equal(h.messages.at(-1).command,'aiStop');
+  h.elements.get('chat-clear').click();assert.equal(h.messages.at(-1).command,'aiClear');
+  for(const command of ['aiChunk','aiDone','aiError']) h.send({command,requestId:request.requestId,text:'late',message:'late'});
+  assert.match(h.elements.get('ai-status').textContent,/cleared/);
+  assert.equal(h.elements.get('query-status').textContent,'independent');
+  h.send({command:'serverCrashed'});assert.equal(h.elements.get('chat-send').disabled,true);
+  loading(h);complete(h);assert.equal(h.elements.get('chat-send').disabled,false);
+  assert.equal(h.elements.get('chat-input').getAttribute('maxlength'),'4000');
 });
 
 const sampleClasses = [
@@ -369,13 +468,14 @@ test('closing an instance panel does not let a duplicate reply reopen it',()=>{
   instances(h,request);
   assert.equal(panel.innerHTML,'');
 });
-test('Histogram hides unsupported actions and cannot send CSV to the host',()=>{
+test('Histogram exports shared CSV through the host without permitting an output path',()=>{
   const h=harness(); histogram(h);
   const table=h.elements.get('histogram-table'), count=h.messages.length;
   table.children.find(el=>el.attributes.id==='export-csv-btn').click();
-  assert.equal(h.messages.length,count);
-  for (const selector of ['#export-csv-btn','#histogram-instances-panel th:last-child',
-    '#histogram-instances-panel .instance-actions']) assert.ok(css.includes(selector));
+  assert.equal(h.messages.length,count+1);
+  assert.equal(h.messages.at(-1).command,'exportHistogramCsv');
+  assert.deepEqual(Object.keys(h.messages.at(-1)).sort(),['command','csv']);
+  assert.match(h.messages.at(-1).csv,/example.A/);
   assert.doesNotMatch(css,/#histogram-table (?:th|td):nth-child\(5\)/);
   assert.match(lastRule('#tab-histogram th'), /top:\s*0\s*;/);
 });

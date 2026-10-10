@@ -2,6 +2,7 @@ package com.heaplens.intellij;
 
 import com.google.gson.*;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.ide.ui.LafManagerListener;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.ui.jcef.*;
 import java.io.IOException;
@@ -42,9 +43,20 @@ public final class HeapBrowser implements HeapView {
             browser.getJBCefClient().addLifeSpanHandler(new CefLifeSpanHandlerAdapter() {
                 @Override public boolean onBeforePopup(CefBrowser b, CefFrame f, String url, String name) { return true; }
             }, browser.getCefBrowser());
-            bridge.addHandler(raw -> { messages.accept(raw); return null; });
+            bridge.addHandler(raw -> {
+                // Page-ready handshake avoids losing the initial palette while HTML loads.
+                try {
+                    var message = JsonParser.parseString(raw).getAsJsonObject();
+                    if (message.has("command") && "ready".equals(message.get("command").getAsString()))
+                        ApplicationManager.getApplication().invokeLater(() -> send(HeapAppearance.current()));
+                } catch (RuntimeException ignored) { /* The command router rejects malformed input. */ }
+                messages.accept(raw); return null;
+            });
+            ApplicationManager.getApplication().getMessageBus().connect(this)
+                .subscribe(LafManagerListener.TOPIC, manager -> send(HeapAppearance.current()));
             html = html.replace("__NONCE__", UUID.randomUUID().toString().replace("-", ""))
                 .replace("__BRIDGE__", bridge.inject("JSON.stringify(message)"));
+            html = html.replace("</head>","<style>"+HeapAppearance.initialCss()+"</style></head>");
             browser.loadHTML(html, origin.url());
         } catch (RuntimeException | LinkageError failure) {
             // A constructor that fails never reaches the editor's disposal registration.

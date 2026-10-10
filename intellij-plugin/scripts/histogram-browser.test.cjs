@@ -48,7 +48,7 @@ for (const width of [1280, 600]) {
       assert.equal(await page.locator('#histogram-table th:visible').count(), 5);
       assert.equal(await page.locator('#histogram-table tbody tr').first().locator('td').last().textContent(), '4.6%');
       assert.match(await page.locator('th[data-sort="heap_pct"]').getAttribute('title'), /reachable heap/);
-      assert.equal(await page.locator('#export-csv-btn').isVisible(), false);
+      assert.equal(await page.locator('#export-csv-btn').isVisible(), true);
       await page.locator('#show-all-histogram').click();
       assert.equal(await page.locator('#histogram-table tbody tr').count(), 205);
       await page.locator('#tab-histogram').evaluate(el => { el.scrollTop = 500; });
@@ -72,7 +72,7 @@ for (const width of [1280, 600]) {
       assert.equal(request.className, 'example.Class204');
       await send(page, result(request));
       assert.equal(await page.locator('#histogram-instances-panel tbody tr').count(), 1);
-      assert.equal(await page.locator('#histogram-instances-panel .instance-action:visible').count(), 0);
+      assert.equal(await page.locator('#histogram-instances-panel .instance-action:visible').count(), 3);
       assert.match(await page.locator('.histogram-hint').textContent(), /up to 200/);
       assert.equal(await page.locator('#query-results').innerHTML(), queryHtml);
       assert.equal(await page.locator('#query-history').innerHTML(), history);

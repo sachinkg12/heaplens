@@ -35,6 +35,13 @@ class BundledServerTest {
             RealEngineTest.until(() -> events.stream().anyMatch(e -> "queryResult".equals(e.get("command").getAsString())));
             JsonObject result = events.stream().filter(e -> "queryResult".equals(e.get("command").getAsString())).findFirst().orElseThrow();
             assertEquals(3, result.getAsJsonObject("result").getAsJsonArray("rows").size());
+            JsonObject analysis = events.stream().filter(e -> "analysisComplete".equals(e.get("command").getAsString())).toList().getLast();
+            long entry = analysis.getAsJsonArray("topLayers").get(0).getAsJsonObject().get("object_id").getAsLong();
+            List<JsonObject> tree = new CopyOnWriteArrayList<>();
+            new DominatorQueries(session::read, tree::add).children(DominatorQueriesTest.request(entry, "packaged-tree"));
+            RealEngineTest.until(() -> !tree.isEmpty());
+            assertEquals("dominatorChildrenResult", tree.getFirst().get("command").getAsString());
+            assertTrue(tree.getFirst().get("children").isJsonArray());
         } finally {
             session.close();
             RealEngineTest.until(() -> session.state() == HeapSession.State.CLOSED);
