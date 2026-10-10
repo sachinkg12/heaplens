@@ -37,13 +37,14 @@ From the repository root:
 npm ci
 cargo build --locked --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
 node browser-ui/build.cjs
+cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
 node --test scripts/distribution/distribution.test.cjs
 CLI_CANDIDATE_DIR=$(mktemp -d /private/tmp/heaplens-cli-candidate.XXXXXX)
 node scripts/distribution/build.cjs --out "$CLI_CANDIDATE_DIR"
 node scripts/distribution/smoke.cjs "$CLI_CANDIDATE_DIR"
 ```
 
-The output directory must be empty and outside the checkout. Both executables must contain Apple Silicon Mach-O bytes, and the native CLI version must match `config.json`. `cargo metadata` runs offline against Cargo.lock after the build has populated the cache. Missing dependency notices fail packaging. Symlinks are not accepted as package inputs. The source commit, dirty-worktree flag, file inventory, and SHA-256 checksums preserve provenance; a dirty local candidate is not a clean release.
+The output directory must be empty and outside the checkout. Both executables must contain Apple Silicon Mach-O bytes, and the native CLI version must match `config.json`. `cargo metadata` runs offline against the tracked `Cargo.lock`, so the locked graph must be fetched first: a release build downloads only what the two binaries need, while the metadata call resolves every package in the lockfile for the target, including dev-dependencies. On a fresh checkout, skipping `cargo fetch` fails packaging with a download error. Missing dependency notices fail packaging. Symlinks are not accepted as package inputs. The source commit, dirty-worktree flag, file inventory, and SHA-256 checksums preserve provenance; a dirty local candidate is not a clean release.
 
 The output contains:
 
