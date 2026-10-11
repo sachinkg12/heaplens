@@ -1,75 +1,33 @@
 ---
 sidebar_position: 1
-title: Heap Dump Fundamentals
+title: Heap dump fundamentals
 ---
 
-# Heap Dump Fundamentals
+import FlowDiagram from '@site/src/components/FlowDiagram';
 
-A heap dump is a snapshot of every object alive in a Java Virtual Machine at a single point in time. It captures what objects exist, how much memory each uses, and how they reference each other. HeapLens parses this snapshot and builds a model you can explore interactively.
+A heap dump is a **snapshot** of recorded objects and relationships—not allocation history, a CPU profile, or proof that an object is obsolete. HeapLens builds a reference graph and derives modeled sizes and ownership locally.
 
-## What's Inside a Heap Dump
+<FlowDiagram kind="analysis" />
 
-When the JVM writes an HPROF file, it records four categories of data:
+## What is recorded?
 
-### 1. Objects (Instances)
+Class layouts distinguish references from primitive fields. Instances/arrays carry opaque IDs and contents. GC-root records supply reachability entry points. Some format variants provide heap-type information and extended roots.
 
-Every Java object on the heap is dumped with:
-- Its **object ID** (a unique address)
-- Its **class** (which class this is an instance of)
-- Its **field values** (primitives stored inline, references stored as IDs pointing to other objects)
+The serialized ID width does not prove the JVM's physical reference width. The HPROF format header is **not a reliable Java release number**: `JAVA PROFILE 1.0.2` alone cannot identify JDK 27. Compatibility depends on supported records/layouts and fixtures. OpenJ9 PHD is a different format; renaming it does not convert it. Android records do not establish universal JVM/Android-version coverage.
 
-For example, a `HashMap` instance stores its `size` field (an int), its `table` field (a reference to a `Node[]` array), and its `loadFactor` (a float).
+## Four different sizes
 
-### 2. Arrays
+| Quantity | Meaning |
+| --- | --- |
+| File bytes | Serialized HPROF length |
+| Total modeled heap | Sum of shallow sizes, including recorded unreachable objects |
+| Reachable modeled heap | Shallow bytes reachable in the retaining graph |
+| Analyzer RSS | Resident mapped pages plus analysis/process allocations |
 
-Both object arrays (`String[]`, `Node[]`) and primitive arrays (`byte[]`, `int[]`) are recorded. Object arrays store a list of references to other objects. Primitive arrays store raw values.
+Memory mapping avoids an eager application-buffer copy. It does **not** consume zero RAM or eliminate graph memory requirements.
 
-### 3. Classes
+## Interpret relationships
 
-Each loaded class is dumped with its:
-- Class name and superclass
-- Static fields (these are roots — they keep objects alive across the entire application)
-- Instance field descriptors (names and types, used to correctly parse instance data)
+Removing one reference makes an object collectible only if no other retaining path remains. Static fields retain values while their class/classloader is reachable, not forever. Tracing GC can collect unreachable cycles.
 
-### 4. GC Roots
-
-GC roots are the starting points for reachability analysis. An object is "alive" if and only if there is a reference chain from at least one GC root to that object. Common GC root types:
-
-| Root Type | Source |
-|-----------|--------|
-| System Class | Bootstrap classloader classes (`java.lang.String`, `java.util.HashMap`, etc.) |
-| JNI Global | Native code holding a global reference |
-| Thread | Active thread objects and their stack frames |
-| Java Stack Frame | Local variables on active method stacks |
-| Monitor | Objects currently used as synchronization locks |
-
-## The Object Graph
-
-All these references form a **directed graph**:
-
-```
-GC Root (Thread)
-  └─→ Controller
-        ├─→ UserService
-        │     └─→ HashMap (user cache)
-        │           ├─→ Node[] (table)
-        │           │     ├─→ Node → "alice" → User(...)
-        │           │     └─→ Node → "bob"   → User(...)
-        │           └─→ ...
-        └─→ Logger
-              └─→ ArrayList (handlers)
-```
-
-Every arrow is a reference — one object holding a pointer to another. If you cut the arrow from `Controller` to `UserService`, everything below it (the HashMap, its entries, the User objects) becomes unreachable and eligible for garbage collection.
-
-This graph is the foundation of all HeapLens analysis. The [Dominator Tree](./dominator-tree) simplifies this graph into a hierarchy of ownership. The [Retained vs. Shallow Size](./retained-vs-shallow-size) concepts tell you how much memory each node in that hierarchy controls.
-
-## Why Heap Dumps Matter
-
-Heap dumps answer questions that profilers, metrics, and logs cannot:
-
-- **"Why is my service using 4 GB when it should use 500 MB?"** — The heap dump shows exactly which objects exist and what holds them alive.
-- **"Where is the memory leak?"** — Leak detection algorithms find objects retaining disproportionate memory.
-- **"What's wasting memory?"** — Waste analysis identifies duplicate strings, empty collections, and oversized buffers that can be reduced without code changes.
-
-They are a snapshot, not a timeline. They tell you *what is*, not *how it got there*. For that reason, heap dumps pair well with flight recordings (JFR) or allocation profilers that show *where* objects were created.
+A [dominator tree](./dominator-tree.md) summarizes unavoidable ownership, not every actual reference. Use [Why alive / Inspect](../tabs-guide/object-inspector.md) to investigate. Protect immutable captures and compare equivalent workloads/GC conditions. See [safe capture](../getting-started/generating-heap-dumps.md).

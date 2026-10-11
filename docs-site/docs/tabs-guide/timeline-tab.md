@@ -1,35 +1,25 @@
 ---
 sidebar_position: 9
+title: Timeline
 ---
 
-# Timeline
+Timeline compares at least two selected analyzed snapshots. It is an ordered snapshot view, **not continuous recording or allocation history**.
 
-The Timeline tab provides multi-snapshot trend analysis, letting you track how your application's memory usage changes over time.
+## Build a three-snapshot investigation
 
-## What It Shows
+1. Capture three dumps under documented, comparable workload/GC conditions.
+2. Open/analyze each in the host. Select available snapshots in Timeline; uncheck any you do not want.
+3. Build Timeline and verify the returned snapshot order/labels.
+4. Read total-heap trends, top-class lines, and growth tables. Rebuild after changing selection.
 
-Load multiple heap dump snapshots and visualize memory trends with interactive D3.js line charts. This is useful for identifying gradual memory leaks that only become apparent over time.
+The native timeline uses file modification timestamps for ordering; those may reflect a copy, not true capture time. Other host adapters may assemble compact snapshots differently. Record capture times yourself and verify labels; do not derive a per-minute rate from an arbitrary filename/order.
 
-## How to Use
+## Interpret missing and growing classes
 
-1. Open a heap dump file in HeapLens
-2. Navigate to the **Timeline** tab
-3. Load additional snapshots to compare trends
-4. Hover over data points to see exact values at each snapshot
+Class summaries are bounded to selected top classes. A missing line is not necessarily a missing class in the heap. Zero/missing aggregates and changed class rankings can affect charts. Names group classes, not persistent individual object IDs.
 
-## Key Metrics Tracked
+Growth is a signal, not proof of leakage: workload, GC, and layout choices matter. Use Compare, root paths, and lifecycle evidence. Retained totals across class lines can overlap.
 
-- **Total heap size** across snapshots
-- **Top growing classes** that increase in retained size over time
-- **Object count trends** by class
+Use available native export/browser downloads for local results; do not assume every host has the same export controls. Disconnecting/closing a dump can remove its availability for future rebuilds; previously drawn results are not proof its server still runs.
 
-## When to Use Timeline
-
-- **Gradual leaks**: Memory slowly grows over hours or days
-- **Before/after deployments**: Compare memory behavior across releases
-- **Load testing**: Track memory during sustained traffic
-- **GC tuning**: Observe heap behavior across GC cycles
-
-:::tip
-For comparing exactly two snapshots in detail, use the [Compare tab](./compare-tab) instead. Timeline is best for 3+ snapshots to identify trends.
-:::
+For live metrics use [Monitor](./monitor-tab.md), which has a separate agent and network boundary.

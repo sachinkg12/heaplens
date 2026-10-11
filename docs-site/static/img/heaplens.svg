@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f3460"/>
+      <stop offset="100%" stop-color="#1a1a2e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="100%" stop-color="#3a7bd5"/>
+    </linearGradient>
+    <linearGradient id="node1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e94560"/>
+      <stop offset="100%" stop-color="#c23152"/>
+    </linearGradient>
+    <linearGradient id="node2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="100%" stop-color="#3a7bd5"/>
+    </linearGradient>
+    <linearGradient id="node3" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f5a623"/>
+      <stop offset="100%" stop-color="#e8951a"/>
+    </linearGradient>
+    <clipPath id="lensClip">
+      <circle cx="110" cy="110" r="62"/>
+    </clipPath>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background: rounded square -->
+  <rect width="256" height="256" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- Subtle grid pattern for tech feel -->
+  <g opacity="0.04" stroke="#fff" stroke-width="0.5">
+    <line x1="0" y1="64" x2="256" y2="64"/>
+    <line x1="0" y1="128" x2="256" y2="128"/>
+    <line x1="0" y1="192" x2="256" y2="192"/>
+    <line x1="64" y1="0" x2="64" y2="256"/>
+    <line x1="128" y1="0" x2="128" y2="256"/>
+    <line x1="192" y1="0" x2="192" y2="256"/>
+  </g>
+
+  <!-- Magnifying glass body -->
+  <g filter="url(#shadow)">
+    <!-- Lens circle (outer ring) -->
+    <circle cx="110" cy="110" r="68" fill="none" stroke="url(#accent)" stroke-width="6" opacity="0.9"/>
+    <!-- Lens fill -->
+    <circle cx="110" cy="110" r="62" fill="url(#lens)" opacity="0.85"/>
+
+    <!-- Handle -->
+    <line x1="157" y1="157" x2="210" y2="210" stroke="url(#accent)" stroke-width="10" stroke-linecap="round" opacity="0.9"/>
+    <!-- Handle highlight -->
+    <line x1="159" y1="155" x2="208" y2="204" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity="0.15"/>
+  </g>
+
+  <!-- Dominator tree inside lens (clipped) -->
+  <g clip-path="url(#lensClip)" filter="url(#glow)">
+    <!-- Tree edges (lines connecting nodes) -->
+    <line x1="110" y1="72" x2="82" y2="108" stroke="#00d2ff" stroke-width="2" opacity="0.5"/>
+    <line x1="110" y1="72" x2="138" y2="108" stroke="#00d2ff" stroke-width="2" opacity="0.5"/>
+    <line x1="82" y1="108" x2="66" y2="140" stroke="#00d2ff" stroke-width="1.5" opacity="0.35"/>
+    <line x1="82" y1="108" x2="98" y2="140" stroke="#00d2ff" stroke-width="1.5" opacity="0.35"/>
+    <line x1="138" y1="108" x2="122" y2="140" stroke="#00d2ff" stroke-width="1.5" opacity="0.35"/>
+    <line x1="138" y1="108" x2="154" y2="140" stroke="#00d2ff" stroke-width="1.5" opacity="0.35"/>
+
+    <!-- Root node (top) - red/coral for "big object" -->
+    <circle cx="110" cy="72" r="11" fill="url(#node1)"/>
+    <circle cx="110" cy="72" r="7" fill="none" stroke="#fff" stroke-width="1" opacity="0.3"/>
+
+    <!-- Level 2 nodes - blue/cyan -->
+    <circle cx="82" cy="108" r="9" fill="url(#node2)"/>
+    <circle cx="138" cy="108" r="9" fill="url(#node2)"/>
+
+    <!-- Level 3 nodes - amber (smaller) -->
+    <circle cx="66" cy="140" r="6" fill="url(#node3)" opacity="0.9"/>
+    <circle cx="98" cy="140" r="6" fill="url(#node3)" opacity="0.9"/>
+    <circle cx="122" cy="140" r="6" fill="url(#node3)" opacity="0.9"/>
+    <circle cx="154" cy="140" r="6" fill="url(#node3)" opacity="0.9"/>
+
+    <!-- Subtle size bars inside lens (retained size visualization) -->
+    <rect x="60" y="156" width="40" height="3" rx="1.5" fill="#e94560" opacity="0.5"/>
+    <rect x="60" y="162" width="28" height="3" rx="1.5" fill="#00d2ff" opacity="0.4"/>
+    <rect x="60" y="168" width="18" height="3" rx="1.5" fill="#f5a623" opacity="0.3"/>
+  </g>
+
+  <!-- Lens glass reflection -->
+  <ellipse cx="92" cy="85" rx="22" ry="12" fill="#fff" opacity="0.06" transform="rotate(-30 92 85)"/>
+
+  <!-- "HL" text badge (bottom-left corner) -->
+  <g transform="translate(20, 200)">
+    <rect width="42" height="22" rx="6" fill="#e94560" opacity="0.9"/>
+    <text x="21" y="16" text-anchor="middle" font-family="SF Pro Display, -apple-system, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="13" fill="#fff" letter-spacing="1">HL</text>
+  </g>
+</svg>

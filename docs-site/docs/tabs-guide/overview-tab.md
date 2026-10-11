@@ -1,75 +1,29 @@
 ---
 sidebar_position: 1
-title: Overview Tab
+title: Overview
 ---
 
-# Overview Tab
+Overview is the starting point: modeled total/reachable heap, object/class/array/root counts, size-model provenance, top retained objects, and Quick Checks.
 
-The Overview tab is the first thing you see after analysis completes. It provides a high-level summary of the heap and highlights the largest memory consumers.
+## Read the summary first
 
-## What You See
+Total heap includes modeled shallow bytes of recorded objects. Reachable heap uses the retaining graph. Neither equals file length or analyzer RSS. Size-model warnings describe uncertainty; hidden VM fields/class metadata are excluded.
 
-### Stat Cards
+Top retained objects and the heap-composition treemap/bar charts are **selected ownership entries**, not a disjoint partition. A collection, its array, and elements can describe overlapping storage.
 
-A row of key metrics at the top:
+## Actions
 
-| Metric | Meaning | Example Value |
-|--------|---------|---------------|
-| **Reachable Heap Size** | Memory held by objects reachable from GC roots | 163.50 MB |
-| **Total Heap Size** | All objects in the dump, including unreachable garbage | 212.00 MB |
-| **Objects** | Total instance count | 2,847,312 |
-| **Classes** | Loaded class count | 8,421 |
-| **Arrays** | Array object count (both object[] and primitive[]) | 612,455 |
-| **GC Roots** | Number of garbage collection root references | 3,847 |
+- Select **Why alive?** on an object to inspect a root path.
+- Use Inspect / Show referrers where offered; IDs are scoped to the dump.
+- **Copy Incident Report** copies a local summary/report. It can include paths and previews; scrub before sharing.
+- Follow class/source actions into the project, then validate whether that owner is the repair location.
 
-**Reading the numbers:** If "Reachable Heap" is much smaller than "Total Heap," the JVM had pending garbage when the dump was taken. Focus on the reachable number — that is what your application is actually using.
+Quick Checks are heuristic leads. A high `byte[]` percentage identifies storage, not automatically a stream-close bug. Warnings/errors should be read as text as well as color.
 
-### Top Objects Table
+## Progress and recovery
 
-A table of the 10 largest objects sorted by retained size:
+Early summary/progress updates can arrive before full analysis finishes; actions needing the completed graph may not yet be available. Hosts can present progress differently.
 
-```
- #  Class                              Type      Shallow    Retained
- 1  com.example.cache.DataCache        Instance  48 B       512.30 MB
- 2  java.util.HashMap                  Instance  48 B       245.10 MB
- 3  byte[]                             Array     1.02 MB    1.02 MB
- 4  com.example.model.UserSession      Instance  64 B       890.40 KB
- ...
-```
+A dead per-tab server exposes Retry. Slow analysis offers waiting/cancellation rather than proving a crash. Closing one editor should not stop another editor's server. See [troubleshooting](../runbook/troubleshooting.md).
 
-**How to read this:**
-- **Shallow vs. Retained gap** — `DataCache` has a 48-byte shallow size but retains 512 MB. This means it holds references to a massive subgraph of objects. It's a "gatekeeper."
-- **byte[] at #3** — When a `byte[]` array has equal shallow and retained size, it's a leaf node holding raw data. Its parent in the dominator tree is the real memory holder.
-- **Sorted by Retained** — The table is sorted by retained size. The first entry is the object responsible for the most memory.
-
-### Pie Chart
-
-An interactive D3.js pie chart showing how the top objects divide the heap by retained size. Hover over any slice to see:
-
-```
-com.example.cache.DataCache
-Retained: 512.30 MB (31.4%)
-```
-
-The chart gives you an instant visual answer to "where is my memory going?" If one slice dominates, that's your investigation target.
-
-## Example Walkthrough
-
-Suppose you open a heap dump from a Spring Boot service that is using 2 GB of heap when it should use 500 MB.
-
-**Stat cards show:**
-- Reachable Heap: 1.82 GB
-- Objects: 12.4 million
-- GC Roots: 5,200
-
-**Top objects table shows:**
-
-| # | Class | Retained |
-|---|-------|----------|
-| 1 | `c.e.audit.AuditLogBuffer` | 1.45 GB |
-| 2 | `java.util.ArrayList` | 1.44 GB |
-| 3 | `byte[]` | 12.8 MB |
-
-**Interpretation:** A single `AuditLogBuffer` retains 1.45 GB — nearly 80% of the heap. The `ArrayList` at #2 is almost certainly the backing list *inside* the `AuditLogBuffer`. The audit log is unbounded and never flushed.
-
-**Next step:** Switch to the [Dominator Tree tab](./dominator-tree-tab) and expand `AuditLogBuffer` to confirm the retention chain. Then check the [Leak Suspects tab](./leak-suspects-tab) — it should flag this automatically.
+[Host availability](../getting-started/choose-host.md) distinguishes published VSIX targets from candidates. For investigation continue to [Histogram](./histogram-tab.md).

@@ -1,167 +1,42 @@
 ---
 sidebar_position: 1
-title: Troubleshooting
+title: Troubleshooting and recovery
 ---
 
-# Troubleshooting
+import FlowDiagram from '@site/src/components/FlowDiagram';
 
-Common issues and their solutions when using HeapLens.
+## Native server missing or wrong target
 
-## Extension Issues
+For an installed extension, reinstall the correct OS/architecture package; confirm it contains the native server. Do not require ordinary users to compile Rust. On remote hosts match the **server machine**. Check file permissions, platform/security quarantine, and trusted artifact provenance before overriding a binary. Do not bypass security warnings for an untrusted executable.
 
-### "Rust server binary not found"
+Source contributors should use the documented build/staging flow from the repository root. See [installation](../getting-started/installation.md).
 
-The extension cannot find the `hprof-server` binary.
+## Analysis is slow
 
-**Solution:**
-1. Verify the binary exists:
-   ```bash
-   ls hprof-analyzer/target/release/hprof-server
-   ```
-2. If not, build it:
-   ```bash
-   cd hprof-analyzer && cargo build --release
-   ```
-3. Check file permissions:
-   ```bash
-   chmod +x hprof-analyzer/target/release/hprof-server
-   ```
+Check the selected process's CPU/RSS and whether it still runs. Large graphs, disk faults, paging, and concurrent dumps can slow analysis. Continue Waiting is different from Retry. Cancel can stop work; wait for acknowledgement/exit before restarting.
 
-### Analysis never completes (stuck at "Analyzing...")
+A warning after several minutes is not evidence of a fixed hard analysis deadline. An RPC request timeout also differs from async analysis completion. See [memory guidance](./performance-tuning.md).
 
-The Rust backend may have crashed or hung.
+## Server exited
 
-**Diagnosis:**
-1. Check the Output channel: **View → Output → HeapLens**
-2. Look for progress messages or error traces
-3. Check if the `hprof-server` process is still running:
-   ```bash
-   ps aux | grep hprof-server
-   ```
+<FlowDiagram kind="recovery" />
 
-**Common causes:**
-- **Corrupted HPROF file** — Incomplete dump (e.g., process was killed during jmap). Try re-capturing.
-- **Out of memory** — The server needs ~3-4x the file size in RAM. Check `Activity Monitor` / `htop`.
-- **Very large file** — Files over 1 GB can take several minutes. Wait longer.
+Use Retry in the affected editor. It starts a replacement, reconnects object/query actions, and analyzes without closing the dump. Other open dumps should remain independent. If it fails, preserve the visible error and sanitized local diagnostics.
 
-### Webview is blank or shows only the tab bar
+SIGKILL or exit 137 can be manual/external termination or memory pressure; it is not proof of OOM. Check OS evidence before assigning a cause. Successful Retry establishes recovery, not the original failure cause. Older releases without delivered Retry may need closing/reopening or updating.
 
-The webview loaded but data was not received.
+## Blank editor or missing charts
 
-**Solution:**
-1. Close and reopen the `.hprof` file
-2. If persistent, open Developer Tools (see [Debugging Webview](./debugging-webview)) and check the Console tab for errors
-3. Ensure `npm run compile` was run after any TypeScript changes
+Check renderer/host diagnostics separately. D3 is packaged locally, not loaded from a public CDN. Verify local assets, content-security rules, and the correct host bridge. IntelliJ additionally needs compatible JCEF/native packaging. Light/dark mismatch is a host theme issue, not heap-data failure.
 
-### Analysis server crashed and Retry cannot recover
+## AI and source
 
-In v1.0.30 and earlier, Retry cannot replace a terminated analysis process; close
-and reopen that dump as a workaround. The development fix for P1-01 changes Retry
-to start a fresh server and reanalyze in the same tab. It is not released yet.
+Set/replace the provider's credential using host secret controls; Ollama is keyless by default. Check exact model ID/endpoint compatibility, access/rate limits, and explicit approval. Redact keys and private endpoints before sharing errors.
 
-With the fix, click **Retry** once and wait for analysis to complete. HeapQL and
-object-inspection requests then use the replacement process. If restarting fails,
-the error keeps a Retry button; check **Output → HeapLens** for details first.
+Source matches depend on project/version/tier. IntelliJ's broader library list is not VS Code's filtered candidate list. Fix with AI must resolve eligible project code independently; decompiled code is not automatically writable.
 
-Recovery does not identify or prevent the original crash. Preserve the exit code,
-signal and preceding logs if it recurs. `SIGKILL` alone does not prove an
-out-of-memory condition. A long-running but live analysis is not automatically
-killed or restarted, and closing a dump intentionally should not show a crash.
+## Accuracy and empty views
 
-### AI Chat says "No API key configured"
+Compare backend, size model, reachable versus total heap, reference policy, and same-class/cross-class aggregation before calling differing values wrong. Dominator percentage differences are [disclosed](../tabs-guide/dominator-tree-tab.md). No suspects/waste does not prove an application is healthy; filters and coverage matter.
 
-**Solution:**
-1. Open VS Code Settings (`Cmd+,` on macOS or `Ctrl+,` on Windows/Linux)
-2. Search for `heaplens.llm` and select your provider
-3. Run **HeapLens: Set or Replace LLM API Key** from the Command Palette
-4. Enter the provider key in the masked prompt; use the eye button only to inspect the value while typing
-5. Run **HeapLens: Show LLM API Key Status** to confirm the saved key by its masked suffix
-
-Saved keys cannot be revealed in full. VS Code, Cursor, and other compatible editors keep separate SecretStorage databases, so configure the key again in each editor and profile.
-
-## Build Issues
-
-### Rust: `cargo build` fails with "linking" errors
-
-**macOS:** Ensure Xcode command line tools are installed:
-```bash
-xcode-select --install
-```
-
-**Linux:** Install build essentials:
-```bash
-sudo apt install build-essential
-```
-
-### Rust: `cargo test` killed by SIGKILL
-
-On macOS, debug-mode tests can consume excessive memory and trigger the OOM killer.
-
-**Solution:** Always run tests in release mode:
-```bash
-cargo test --release --lib
-```
-
-### TypeScript: `npm run compile` shows type errors
-
-Ensure dependencies are installed:
-```bash
-npm install
-```
-
-If errors persist, try cleaning:
-```bash
-rm -rf out/ node_modules/
-npm install
-npm run compile
-```
-
-## Analysis Accuracy Issues
-
-### Retained sizes differ from an independent reference analyzer
-
-Before interpreting differences, check:
-- Are both tools analyzing the exact same complete HPROF file?
-- Do they use the same object-size model, including headers, reference widths, and alignment?
-- Do they handle GC roots, weak/soft/phantom references, and unreachable objects the same way?
-- Are both percentages based on the same denominator? HeapLens uses `reachable_heap_size`.
-
-A difference is not automatically acceptable because it is small. Preserve the object IDs, exact byte values, tool versions, and settings when investigating a possible defect.
-
-### No leak suspects detected
-
-Leak suspects require at least one object or class retaining >5% of the reachable heap. If memory is evenly distributed, no suspects will be flagged.
-
-**What to try:**
-- Check the Histogram tab for classes with unusually high instance counts
-- Look at the Dominator Tree top entries manually
-- Use the AI Chat to ask about memory patterns
-
-### Waste analysis shows 0% waste
-
-This can happen if:
-- The heap has very few `java.lang.String` instances (e.g., a non-Java-standard JVM)
-- All strings are unique (no duplicates)
-- No empty `HashMap`, `ArrayList`, or `LinkedHashMap` instances
-
-## Performance Issues
-
-### Analysis takes too long
-
-| File Size | Expected Time | If Slower |
-|-----------|--------------|-----------|
-| &lt; 50 MB | &lt; 5s | Check if other processes are consuming CPU |
-| 50-200 MB | 5-15s | Normal |
-| 200 MB - 1 GB | 15-60s | Normal; consider more RAM |
-| > 1 GB | 1-5 min | Close other applications to free RAM |
-
-**Optimization tips:**
-- Close unnecessary applications to free RAM (the server needs ~3-4x file size)
-- Use an SSD — memory-mapped I/O is faster with SSD page cache
-- The first analysis of a file is slower; the OS caches pages for subsequent runs
-
-### Extension Development Host is slow
-
-When developing:
-- Use `npm run watch` instead of `npm run compile` for incremental builds
-- Disable other extensions in the Development Host to isolate performance
+For build/test failures, use [contributor setup](../architecture/contributing.md); avoid broad cleanup/destructive reset commands. Report a minimal sanitized reproduction through [support](./support.md).

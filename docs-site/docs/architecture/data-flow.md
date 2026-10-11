@@ -1,190 +1,38 @@
 ---
 sidebar_position: 4
-title: Data Flow
+title: Requests, results, and actions
 ---
 
-# Data Flow
+import FlowDiagram from '@site/src/components/FlowDiagram';
 
-This page traces data through the entire HeapLens system, from HPROF bytes on disk to pixels on screen.
+<FlowDiagram />
 
-## Analysis Data Flow
+## Analysis events
 
-### 1. HPROF File → Rust Analysis Engine
+1. Host starts its trusted native server and sends analyze_heap with a local server-machine path.
+2. Server acknowledges processing with a request_id. This is not completion.
+3. Progress/summary events may update the UI during computation.
+4. Completion supplies summary, bounded objects/layers, histogram, suspects, and waste; errors/cancellation are distinct outcomes.
+5. Host routes the event only to its current session and renders views.
 
-```
-.hprof file (binary on disk)
-    │
-    ▼  memmap2: zero-copy memory mapping
-Raw bytes (&[u8])
-    │
-    ▼  jvm-hprof: record parsing
-Records (UTF8, LoadClass, HeapDump segments)
-    │
-    ▼  build_graph() Pass 1: nodes
-Graph nodes (Instance, Array, Class, GCRoot)
-    │
-    ▼  build_graph() Pass 2: edges + waste data
-HeapGraph + WasteRawData
-    │
-    ▼  calculate_dominators_with_state()
-AnalysisState {
-    retained_sizes, shallow_sizes,
-    children_map, class_histogram,
-    leak_suspects, waste_analysis,
-    reverse_refs, summary
-}
-```
+Exact wire keys are in [RPC](../api-reference/rpc-methods.md). A modeled heap of 1 MiB cannot contain a 512 MiB retained object; examples here use no fabricated measurement payloads.
 
-### 2. Rust → TypeScript (JSON-RPC Notification)
+## On-demand investigation
 
-The Rust server serializes the analysis results into a JSON notification:
+Expand → get_children → ObjectReport rows. Why alive → gc_root_path → ordered bounded path. Inspect → inspect_object → optional field records. Query → execute_query → columns/rows, timing and optional pagination. These operations read cached analysis; view loading is not complete lazy graph construction.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "heap_analysis_complete",
-  "params": {
-    "request_id": 1,
-    "status": "completed",
-    "top_objects": [
-      { "object_id": 123, "class_name": "com.example.DataCache",
-        "node_type": "Instance", "shallow_size": 48, "retained_size": 536870912 }
-    ],
-    "top_layers": [...],
-    "summary": {
-      "total_heap_size": 222298112,
-      "reachable_heap_size": 171245568,
-      "total_instances": 2847312,
-      "total_classes": 8421,
-      "total_arrays": 612455,
-      "total_gc_roots": 3847
-    },
-    "class_histogram": [...],
-    "leak_suspects": [...],
-    "waste_analysis": {
-      "total_wasted_bytes": 47396864,
-      "waste_percentage": 8.8,
-      "duplicate_string_wasted_bytes": 37322752,
-      "empty_collection_wasted_bytes": 10074112,
-      "duplicate_strings": [...],
-      "empty_collections": [...]
-    }
-  }
-}
-```
+Referrers show actual incoming references; dominator children show immediate domination, not necessarily a direct field edge.
 
-### 3. TypeScript → Webview (postMessage)
+## Optional source/model flow
 
-The `HprofEditorProvider` extracts the notification params and forwards them to the webview:
+<FlowDiagram kind="ai" />
 
-```typescript
-webviewPanel.webview.postMessage({
-    command: 'analysisComplete',
-    data: {
-        topObjects: params.top_objects,
-        topLayers: params.top_layers,
-        summary: params.summary,
-        classHistogram: params.class_histogram,
-        leakSuspects: params.leak_suspects,
-        wasteAnalysis: params.waste_analysis,
-    }
-});
-```
+Fix resolves eligible source, confirms destination/full-file disclosure, sends only after approval, then opens a proposal for review. Cancel/Review Source do not transmit source. Model output cannot execute a repair by itself.
 
-### 4. Webview Renders All Tabs
+Chat context is bounded/minimized. Current VS Code follow-ups can omit the initial analysis injection; do not equate stored plain chat history with persistent complete heap context. MCP tool output is a separate client-controlled boundary.
 
-The webview's `message` event handler dispatches to tab-specific render functions:
+## Persistence and export
 
-```javascript
-window.addEventListener('message', event => {
-    const msg = event.data;
-    if (msg.command === 'analysisComplete') {
-        renderOverview(msg.data.summary, msg.data.topObjects);
-        renderHistogram(msg.data.classHistogram);
-        renderLeakSuspects(msg.data.leakSuspects);
-        renderWaste(msg.data.wasteAnalysis);
-        // Dominator tree, Source, Chat initialized with data references
-    }
-});
-```
+Graphs/maps live in native process state. Host settings, secrets, chat history, and source proposals have separate lifetimes. Closing/disposal releases owned processes; Retry creates new analysis rather than reviving the same graph.
 
-## Interaction Data Flows
-
-### Dominator Tree Drill-Down
-
-```
-User clicks ▶ on tree node (objectId: 456)
-    │
-    ▼  webview → postMessage
-{ command: 'getChildren', objectId: 456 }
-    │
-    ▼  HprofEditorProvider message handler
-rustClient.sendRequest('get_children', { path, object_id: 456 })
-    │
-    ▼  JSON-RPC request over stdin
-{"jsonrpc":"2.0","id":5,"method":"get_children","params":{"path":"/tmp/heap.hprof","object_id":456}}
-    │
-    ▼  hprof-server: AnalysisState.get_children(456)
-Looks up NodeIndex for object_id 456 in id_to_node map
-Returns children from children_map, sorted by retained size
-    │
-    ▼  JSON-RPC response over stdout
-{"jsonrpc":"2.0","id":5,"result":[{"object_id":789,"class_name":"HashMap",...},...]
-    │
-    ▼  RustClient resolves pending promise
-    │
-    ▼  HprofEditorProvider → postMessage to webview
-{ command: 'childrenResponse', objectId: 456, children: [...] }
-    │
-    ▼  Webview inserts child nodes under the expanded parent
-```
-
-**Round-trip time:** Typically < 10ms (all data is in-memory after initial analysis).
-
-### AI Chat Message
-
-```
-User types "What is the biggest memory consumer?" and clicks Send
-    │
-    ▼  webview → postMessage
-{ command: 'chatMessage', text: "What is the biggest memory consumer?" }
-    │
-    ▼  HprofEditorProvider.handleChatMessage()
-    │
-    ├─ If first message: prepend formatAnalysisContext(analysisData)
-    │   as system context (~2-3K tokens of heap summary)
-    │
-    ▼  llmClient.streamLlmResponse(messages, config)
-    │
-    ├─ Stream chunk 1 → postMessage({ command: 'chatChunk', text: "Based on..." })
-    ├─ Stream chunk 2 → postMessage({ command: 'chatChunk', text: "the heap..." })
-    └─ Stream done    → postMessage({ command: 'chatDone' })
-    │
-    ▼  Webview renders response progressively
-```
-
-### GC Root Path
-
-```
-User clicks pin icon on object (objectId: 789)
-    │
-    ▼  webview → postMessage
-{ command: 'gcRootPath', objectId: 789 }
-    │
-    ▼  HprofEditorProvider → rustClient.sendRequest('gc_root_path', ...)
-    │
-    ▼  hprof-server: AnalysisState.gc_root_path(789, max_depth=100)
-BFS backward through reverse_refs from target to SuperRoot
-    │
-    ▼  Returns path as Vec<ObjectReport>
-[Root("Thread main"), Instance("AppContext"), Instance("DataCache"), Instance("HashMap")]
-    │
-    ▼  webview renders breadcrumb trail
-Thread "main" → AppContext → DataCache → HashMap
-```
-
-## Data Persistence
-
-HeapLens does not persist analysis results across VS Code sessions. Each time a `.hprof` file is opened, a fresh analysis is performed. The `export_json` command allows explicit persistence to a JSON file.
-
-The Rust server's `AnalysisState` is cached per file path for the duration of the editor session. Closing the editor tab kills the subprocess and discards the state.
+Export writes/downloads local data, not automatic cloud upload. Reports can contain names, paths, and previews. Telemetry sends only its approved bounded contract and does not approve source submission. See [telemetry](../runbook/telemetry.md).

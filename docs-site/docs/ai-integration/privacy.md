@@ -1,34 +1,43 @@
 ---
-sidebar_position: 5
-title: "AI Data Sharing & Privacy"
+sidebar_position: 4
+title: AI data sharing and privacy
 ---
 
-# AI Data Sharing & Privacy
+Policy scope: current editor/browser implementation, reviewed October 11, 2026. Analysis is local; **AI requests are optional but can send data to a model service**. Telemetry has a [separate policy](../runbook/telemetry.md).
 
-Heap analysis runs locally. Using AI sends selected information to a model provider or AI client. A summary is not necessarily non-sensitive, and storing API keys securely does not anonymize prompt contents.
+## What can be sent?
 
-## Editor AI Chat, Explain, and Copilot
+| Action | Supplied information | Important limit |
+| --- | --- | --- |
+| AI Chat / participant context | Summary, counts/sizes, class names, leak descriptions, reference/path metadata | Bounded selections, not all objects; typed text/history is not anonymized |
+| Explain | Object/field names and types, sizes, reference metadata | Primitive contents and duplicate-string previews are omitted from minimized prompts |
+| Fix with AI | Approved **entire source file** plus relevant analysis/context | No automatic redaction; the local absolute source path is omitted from the prompt |
+| MCP tools | Tool-specific analysis data, potentially previews and primitive values | Editor prompt minimization does **not** filter tool results |
 
-HeapLens automatically supplies summary counts and sizes, class/field names, leak descriptions, and reference-path metadata as appropriate. Duplicate-string contents and primitive field values are omitted from these prompts. The local Waste tab, Object Inspector, and copied incident report still contain their normal data.
+Counts and names can still be identifying. Local Waste/Inspector data, copied incident reports, downloads, and exports keep their full local information. Do not assume a report is safe to share because AI prompts are minimized.
 
-Class/field names and dependency coordinates can identify internal systems. Messages you type and conversation history are sent as entered, not automatically redacted. Do not paste credentials, customer information, or code you are not authorized to share. Copilot uses the editor-selected model and that provider's policies, not the direct HeapLens API configuration.
+## Approval and credentials differ by host
 
-## Fix with AI
+| Host | Credentials | Approval / history |
+| --- | --- | --- |
+| VS Code | SecretStorage, not ordinary settings/sync | Fresh source approval per Fix request; editor-specific chat history/state |
+| IntelliJ candidate | Password-safe adapter | Chat session approval is separate from full-source confirmation; local persisted preferences/history follow the adapter |
+| Standalone browser candidate | In-memory running-host session | Session controls plus explicit full-source confirmation; no persistent OS credential vault |
+| Participant | Editor language-model API | Current code prefers GPT-4o/fallback-first, not guaranteed editor-selected model |
+| MCP | Configured client | Client owns model/tool permissions, prompting, retention, and upload policy |
 
-Each request asks **Send the entire source file … for an AI fix?** The modal names the configured endpoint's origin, including custom URLs, and explains the data being shared.
+For source submission, check the **actual configured destination** and whole-file disclosure. Send Source approves that request. Review Source opens locally and cancels transmission. Cancel, Escape, or dismissal sends nothing. Approved code is sent in full; do not approve a file containing secrets you cannot disclose. Provider changes during confirmation must not redirect an already approved source request.
 
-- **Send Source** approves that request only. HeapLens sends the complete resolved source file and minimized heap context.
-- **Review Source** opens the resolved file locally and cancels this request. Run Fix with AI again after reviewing it.
-- **Cancel**, Escape, or dismissal sends nothing.
+A loopback endpoint may forward requests remotely. “Local Ollama” or localhost is not evidence that processing remains on your machine.
 
-The prompt does not add the local absolute file path. It does not redact the approved source: comments, credentials, paths, and other sensitive contents inside the file will be sent. The existing diff review/save workflow is unchanged; approving transmission does not automatically apply a fix.
+## Context and correctness limits
 
-The consent applies to all providers, including Ollama. A local endpoint or proxy can forward to a remote service, so neither the provider name nor a loopback URL proves local-only model processing. Confirm your endpoint's operation and retention policy. AI Fix rejects malformed/non-HTTP(S) endpoints and URLs containing credentials, queries or fragments; use the secure API key command for authentication.
+Model responses are hypotheses, not verified diagnoses. Current VS Code follow-up history does not reliably preserve the initially injected heap context: ask with explicit bounded evidence and verify against the UI/query. Different hosts/models can construct different requests and produce different answers.
 
-## MCP is a separate boundary
+Top-N metadata cannot reveal unprovided objects, lifecycle intent, allocation history, or whether a proposed repair is semantically correct. Review proposals, tests, and resulting captures. Do not rely on generic resource-closing advice to release retained buffers.
 
-The standalone MCP server is not covered by the editor's source-consent modal or prompt minimization. Its analysis/waste tool output can include string previews, and query tools can expose additional heap data. An MCP client may forward tool results to its model. Only connect authorized clients to dumps you are allowed to share. MCP output minimization/consent is tracked separately; do not assume all HeapLens-to-AI paths are sanitized.
+## Handling shared data
 
-## Existing data
+Your configured service/client's retention, training, logging, account policy, and jurisdiction apply to transmitted data. HeapLens does not certify those policies. Disabling telemetry does not disable AI, and approving telemetry does not approve source upload.
 
-This change prevents the automatic disclosures described above in new editor prompts. It cannot recall previous provider requests, erase remote logs, or scrub secrets you previously typed into a conversation. Clear old chats and review provider retention controls when relevant.
+Keep credentials out of settings JSON, Git, command lines, screenshots, and logs. Review local reports before support sharing. For security reports use [support and security](../runbook/support.md), without attaching dumps or source publicly.

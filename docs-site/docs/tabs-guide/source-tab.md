@@ -1,86 +1,34 @@
 ---
 sidebar_position: 6
-title: Source Tab
+title: Source
 ---
 
-# Source Tab
+import FlowDiagram from '@site/src/components/FlowDiagram';
 
-The Source tab bridges heap analysis with your application's source code. It maps classes from the heap dump to source files in your workspace, allowing you to navigate directly from a memory-heavy class to the code that defines it.
+Source connects a heap class name to locally available code. It does not establish that the class owning memory is where a repair belongs.
 
-## What You See
+<FlowDiagram kind="source" />
 
-A table similar to the Histogram tab, but filtered to show only classes that can potentially be resolved to source files, with an additional tier badge:
+## Different host lookup tiers
 
-```
-Class Name                         Tier          Instances   Shallow    Retained
-com.example.cache.DataCache        App           1           48 B       512 MB
-com.example.model.UserSession      App           45,000      6.8 MB     312 MB
-org.springframework.context...     Third-party   12          1.2 KB     85 MB
-java.util.HashMap                  Core          12,400      580 KB     245 MB
-```
+| Host | Candidates / resolution |
+| --- | --- |
+| VS Code | Filtered workspace candidates; excludes java., javax., sun., com.sun., jdk. prefixes. Project search and supported dependency-source resolution are separate tiers |
+| IntelliJ | Broader class list including libraries/JDK; project files, attached sources, then IDE decompiler. Libraries must belong to the project; no automatic downloads |
+| Browser | Java files under explicitly supplied source roots; no dependency-JAR lookup or IDE decompiler |
 
-### Tier Classification
+VS Code “resolvable classes” is a candidate count, not proof each file exists. IntelliJ “matching classes / opened locally” counts a different list and actual openings. A 200-row display limit is not the complete matching total: filter to find omitted classes. Different counts or java.lang.String visibility alone do not prove numerical heap mismatch.
 
-| Tier | Badge Color | Description |
-|------|------------|-------------|
-| **App** | Green | Your project's source code — classes found in the current workspace |
-| **Third-party** | Blue | Classes from Maven/Gradle dependencies |
-| **Core** | Gray | JDK standard library classes |
+Inner classes typically open their containing file, not an exact declaration. Duplicate-name/project matches may need a chooser. Source from another version can be misleading.
 
-## Interactions
+## Fix with AI is independent
 
-### Go to Source
+Press Fix with AI without first opening source; the host can resolve it independently. Only eligible **project source** may be submitted as an editable repair target. A visible action does not guarantee a dependency/decompiled file is eligible.
 
-Click on any class name with an **App** tier badge. HeapLens opens the corresponding source file in an adjacent editor column.
+Approve the actual destination and **entire file**. Review Source opens locally and cancels transmission; Cancel sends nothing. Credentials and primitive-value filtering are not source redaction.
 
-For example, clicking `com.example.cache.DataCache` opens `src/main/java/com/example/cache/DataCache.java`.
+## Proposal versus applied change
 
-### Sorting and Filtering
+Review differences first. IntelliJ uses native proposal/apply and Undo support; VS Code uses its editor diff/proposal workflow; browser proposals use host-specific local-file/download controls. Read labels and confirm the actual target—do not assume arrows or a download already modified the project.
 
-The same sorting (click column headers) and search filtering as the Histogram tab are available. Useful filters:
-
-- Type your package prefix to see only your code
-- Sort by Retained Size to focus on the biggest memory consumers in your codebase
-
-## How Source Resolution Works
-
-HeapLens resolves class names to source files using a three-step process:
-
-1. **Workspace search** — Converts the fully-qualified class name to a file path pattern (`com.example.Foo` → `**/com/example/Foo.java`) and searches your VS Code workspace
-2. **Dependency resolution** — If not found locally, checks Maven (`pom.xml`) or Gradle (`build.gradle`) dependencies to identify the library
-3. **JDK classification** — Known `java.*`, `javax.*`, `sun.*` packages are classified as Core
-
-Results are cached per editor session to avoid redundant filesystem lookups.
-
-## Example Walkthrough
-
-**Scenario:** The Leak Suspects tab flagged `com.example.service.NotificationQueue` as retaining 35% of the heap.
-
-**Step 1:** Open the Source tab, search for `NotificationQueue`.
-
-```
-com.example.service.NotificationQueue    App    1    64 B    525 MB
-```
-
-**Step 2:** Click the class name. VS Code opens `NotificationQueue.java`:
-
-```java
-public class NotificationQueue {
-    private final Queue<Notification> pending = new LinkedList<>();
-
-    public void enqueue(Notification n) {
-        pending.add(n);
-    }
-
-    // No dequeue or size limit!
-}
-```
-
-**Step 3:** The issue is clear — notifications are enqueued but never consumed or bounded. Add a size limit and a consumer thread.
-
-## When Source Resolution Fails
-
-If a class cannot be resolved:
-- **Inner classes** (`Foo$Bar`) — The resolver looks for the outer class file
-- **Generated classes** (proxies, lambdas) — These don't have source files; use the Dominator Tree to understand their context
-- **Dependency not in workspace** — Third-party classes require the library source to be attached or the dependency to be declared in your build file
+Recheck changed code, build/tests, and equivalent captures. Source changed since approval must not silently overwrite newer edits. See [privacy](../ai-integration/privacy.md) and [host scope](../getting-started/choose-host.md).

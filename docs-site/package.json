@@ -12,7 +12,11 @@
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "check:contracts": "node scripts/check-contracts.cjs",
+    "check:examples": "node scripts/check-examples.cjs",
+    "check:links": "node scripts/check-links.cjs",
+    "test:checks": "node --test scripts/checks.test.cjs"
   },
   "dependencies": {
     "@docusaurus/core": "3.9.2",
@@ -25,6 +29,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "cheerio": "1.0.0-rc.12",
     "@docusaurus/module-type-aliases": "3.9.2",
     "@docusaurus/tsconfig": "3.9.2",
     "@docusaurus/types": "3.9.2",
@@ -43,6 +48,6 @@
     ]
   },
   "engines": {
-    "node": ">=20.0"
+    "node": ">=22.0"
   }
 }

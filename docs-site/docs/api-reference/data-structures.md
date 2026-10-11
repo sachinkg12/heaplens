@@ -1,129 +1,126 @@
 ---
 sidebar_position: 2
-title: Data Structures
+title: Native data structures
 ---
 
-# Data Structures
+These shapes describe current native JSON-RPC serialization, not MCP formatted text or the standalone CLI's versioned envelope. Optional fields can be **omitted**, not always null. Bytes are integers unless stated otherwise.
 
-These are the JSON data structures used in HeapLens's JSON-RPC protocol and MCP responses.
-
-## ObjectReport
-
-Represents a single object in the heap. Returned by `analyze_heap` (in `top_objects` and `top_layers`) and by `get_children`.
+## ObjectReport and fields
 
 ```typescript
 interface ObjectReport {
-  object_id: number;      // HPROF object ID (unique address)
-  node_type: string;      // "Instance" | "Array" | "Class" | "Root" | "SuperRoot"
-  class_name: string;     // Fully-qualified class name, e.g., "java.util.HashMap"
-  shallow_size: number;   // Bytes: the object's own memory footprint
-  retained_size: number;  // Bytes: total memory freed if this object were collected
+  object_id: number; // native u64, opaque dump ID
+  node_type: string;
+  class_name: string;
+  shallow_size: number;
+  retained_size: number;
+  field_name?: string;
+}
+interface RefSummary {
+  class_name: string;
+  node_type: string;
+  shallow_size: number;
+  retained_size: number;
+}
+interface FieldInfo {
+  name: string;
+  field_type: string;
+  primitive_value?: string;
+  ref_object_id?: number;
+  ref_summary?: RefSummary;
 }
 ```
+
+Inspect results can be an array or null when no supported instance data is available. Reference summary is a **structured object**, not a display string. Synthetic Root/SuperRoot/Class records can use ID 0; they are not normal source objects. ObjectReport lists are bounded selections, not all objects.
 
 ## HeapSummary
 
-Aggregate statistics for the entire heap. Returned in the `summary` field of `heap_analysis_complete`.
-
 ```typescript
 interface HeapSummary {
-  total_heap_size: number;      // Total bytes of all objects
-  reachable_heap_size: number;  // Bytes reachable from GC roots
-  total_instances: number;      // Count of Instance objects
-  total_classes: number;        // Count of loaded classes
-  total_arrays: number;         // Count of array objects
-  total_gc_roots: number;       // Count of GC root references
-}
-```
-
-## ClassHistogramEntry
-
-One row in the class histogram. Aggregates all instances of the same class.
-
-```typescript
-interface ClassHistogramEntry {
-  class_name: string;      // Fully-qualified class name
-  instance_count: number;  // Number of instances of this class
-  shallow_size: number;    // Sum of shallow sizes of all instances
-  retained_size: number;   // Sum of retained sizes of all instances
-}
-```
-
-Sorted by `retained_size` descending.
-
-## LeakSuspect
-
-A detected memory leak candidate.
-
-```typescript
-interface LeakSuspect {
-  class_name: string;           // Class name of the suspect
-  object_id: number;            // HPROF object ID (0 for class-level suspects)
-  retained_size: number;        // Bytes retained by this suspect
-  retained_percentage: number;  // Percentage of reachable heap (e.g., 42.1)
-  description: string;          // Human-readable explanation
-  dependency?: {                // Present if class is from a known dependency
-    groupId: string;            // Maven group ID
-    artifactId: string;         // Maven artifact ID
-    version: string;            // Dependency version
+  total_heap_size: number;
+  reachable_heap_size: number;
+  total_instances: number;
+  total_classes: number;
+  total_arrays: number;
+  total_gc_roots: number;
+  hprof_version: string;
+  heap_types: string[];
+  size_model?: {
+    name: string;
+    estimated: boolean;
+    layout: {
+      word_bytes: number;
+      reference_bytes: number;
+      class_pointer_bytes: number;
+      alignment: number;
+    };
+    layout_source: string;
+    incomplete_classes: number;
   };
 }
 ```
 
-## WasteAnalysis
+Total/reachable refer to modeled heap bytes, not file bytes/RSS. hprof_version is a format string, not a JDK release. Size metadata may be absent for older/synthetic states.
 
-Waste analysis results including duplicate strings and empty collections.
+## Histogram and suspects
+
+```typescript
+interface ClassHistogramEntry {
+  class_name: string;
+  instance_count: number;
+  shallow_size: number;
+  retained_size: number;
+}
+interface LeakSuspect {
+  class_name: string;
+  object_id: number;
+  retained_size: number;
+  retained_percentage: number;
+  description: string;
+  accumulation_point?: string;
+}
+```
+
+Histogram retained counts non-overlapping within-class subtrees, not a simple sum. Cross-class retained totals overlap. Candidate percentages are heuristics, not probabilities. Host-enriched dependency information is not a guaranteed native LeakSuspect field.
+
+## WasteAnalysis
 
 ```typescript
 interface WasteAnalysis {
-  total_wasted_bytes: number;              // Combined waste
-  waste_percentage: number;                // As percentage of total heap
-  duplicate_string_wasted_bytes: number;   // Waste from duplicate strings
-  empty_collection_wasted_bytes: number;   // Waste from empty collections
-  duplicate_strings: DuplicateStringGroup[];
-  empty_collections: EmptyCollectionGroup[];
-}
-
-interface DuplicateStringGroup {
-  preview: string;       // First 120 characters of the string content
-  count: number;         // Number of identical copies
-  wasted_bytes: number;  // (count - 1) * per_copy_size
-  total_bytes: number;   // count * per_copy_size
-}
-
-interface EmptyCollectionGroup {
-  class_name: string;    // e.g., "java.util.HashMap"
-  count: number;         // Number of empty instances
-  wasted_bytes: number;  // Total shallow size of all empty instances
+  total_wasted_bytes: number;
+  waste_percentage: number;
+  duplicate_string_wasted_bytes: number;
+  empty_collection_wasted_bytes: number;
+  over_allocated_wasted_bytes: number;
+  boxed_primitive_wasted_bytes: number;
+  duplicate_strings: {preview: string; count: number; wasted_bytes: number; total_bytes: number}[];
+  empty_collections: {class_name: string; count: number; wasted_bytes: number}[];
+  over_allocated_collections: {class_name: string; count: number; wasted_bytes: number; avg_fill_ratio: number}[];
+  boxed_primitives: {class_name: string; count: number; wasted_bytes: number; unboxed_size: number}[];
 }
 ```
 
-## AnalyzeHeapResult
+Duplicate groups are bounded; preview length is truncated to 120 characters by the backend. All categories are estimates; waste_percentage uses total modeled heap. See [limits](../concepts/waste-analysis.md).
 
-The full notification payload sent by `heap_analysis_complete`.
+## QueryResult
 
 ```typescript
-interface AnalyzeHeapResult {
-  request_id: number;
-  status: "completed" | "error";
-  top_objects?: ObjectReport[];          // All objects sorted by retained size
-  top_layers?: ObjectReport[];           // Filtered: no Class/SuperRoot, top 20
-  summary?: HeapSummary;
-  class_histogram?: ClassHistogramEntry[];
-  leak_suspects?: LeakSuspect[];
-  waste_analysis?: WasteAnalysis;
-  error?: string;                        // Present only when status is "error"
+interface QueryResult {
+  columns: string[];
+  rows: unknown[][];
+  total_scanned: number;
+  total_matched: number;
+  execution_time_ms: number;
+  page?: number;
+  total_pages?: number;
+  total_rows?: number;
 }
 ```
 
-## Type Mapping
+Native IDs/counts/bytes are u64 JSON numbers. JavaScript Number loses integer precision beyond 2^53−1; use precision-preserving parsing rather than rounding identifiers. This page does **not** invent a string-ID wire migration. CLI query integer-cell encoding is a separate decimal-string envelope.
 
-The `node_type` field uses these values:
+## Comparison
 
-| Value | Description |
-|-------|-------------|
-| `"SuperRoot"` | Synthetic root (filtered from UI) |
-| `"Root"` | GC root entry point |
-| `"Class"` | Java class definition (filtered from most views) |
-| `"Instance"` | Regular Java object instance |
-| `"Array"` | Array object (object[] or primitive[]) |
+The native result has baseline_path, current_path, summary_delta, **histogram_delta**, a flat **leak_suspect_changes array**, and waste_delta. Histogram rows contain baseline/current instance/shallow/retained values, signed deltas, and change_type (grew/shrank/new/removed/unchanged). Suspect changes contain class_name, current/baseline retention/percentage, signed deltas, description, and change_type (new/resolved/persisted). Waste deltas include all four categories.
+
+Signed deltas are current minus baseline; paths/labels can be sensitive. Resolved does not establish a verified repair. See [RPC](./rpc-methods.md) and [Compare](../tabs-guide/compare-tab.md).

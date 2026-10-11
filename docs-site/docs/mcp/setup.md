@@ -1,111 +1,68 @@
 ---
 sidebar_position: 2
-title: Setup
+title: Configure a local MCP server
 ---
 
-# MCP Server Setup
+Use a trusted native `hprof-server` for the server machine's OS/architecture. A source checkout is an option for contributors, not a universal user requirement. The current standalone candidate can supply the native server; check [distribution status](../getting-started/choose-host.md).
 
-This guide covers how to configure HeapLens as an MCP server for use with Claude Desktop or other MCP-compatible AI clients.
+## Client configuration
 
-## Prerequisites
-
-1. Build the `hprof-server` binary:
-
-```bash
-cd hprof-analyzer
-cargo build --release
-```
-
-The binary will be at `hprof-analyzer/target/release/hprof-server`.
-
-## Claude Desktop Configuration
-
-Add HeapLens to your Claude Desktop MCP configuration file:
-
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+In a client supporting local stdio MCP, configure the actual executable:
 
 ```json
 {
   "mcpServers": {
     "heaplens": {
-      "command": "/absolute/path/to/hprof-server",
+      "command": "/absolute/path/hprof-server",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/hprof-server` with the actual path to the built binary, e.g.:
+This is a common configuration shape, not a promise every client uses this file/schema. Use its documented configuration location and approve permissions. Windows JSON paths must be escaped:
 
 ```json
 {
   "mcpServers": {
     "heaplens": {
-      "command": "/Users/you/HeapLens/hprof-analyzer/target/release/hprof-server",
+      "command": "C:\\tools\\heaplens\\hprof-server.exe",
       "args": ["--mcp"]
     }
   }
 }
 ```
 
-## Verification
+The server itself does not need an LLM API key. The client may need one for its own model.
 
-1. Restart Claude Desktop after saving the configuration
-2. Open a new conversation
-3. You should see HeapLens's tools available (look for the tools icon)
-4. Ask Claude to analyze a heap dump:
+## Initialization contract
 
-```
-Please analyze the heap dump at /tmp/my-heap.hprof
-```
+Current server code advertises **2024-11-05**. A standards-aware client must inspect the returned version/capabilities instead of assuming the newest protocol is implemented. An illustrative manual stdio exchange:
 
-Claude will call the `analyze_heap` tool and return the results.
-
-## Manual Testing
-
-You can test the MCP server directly from the command line:
-
-```bash
-# Start the server
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ./hprof-server --mcp
-```
-
-Expected response:
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"heaplens","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"heaplens-docs-check","version":"1.0"}}}
 ```
 
-To list available tools:
-```bash
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./hprof-server --mcp
+After accepting a compatible initialization response, send:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/initialized"}
 ```
 
-## How the MCP Server Differs from JSON-RPC Mode
+Then list/call tools:
 
-| Aspect | JSON-RPC Mode (VS Code) | MCP Mode |
-|--------|------------------------|----------|
-| Startup | `hprof-server` (no flag) | `hprof-server --mcp` |
-| Protocol | Custom JSON-RPC 2.0 | MCP standard |
-| Analysis | Async (returns "processing", then notification) | Synchronous (blocks until done) |
-| Responses | Structured JSON objects | LLM-friendly markdown text |
-| State | Per-file, persistent across requests | Per-file, persistent across requests |
-| Concurrency | Async tokio runtime | Synchronous stdin loop |
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+```
 
-Both modes use the same analysis engine and produce identical results. The difference is in how the results are formatted and delivered.
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"analyze_heap","arguments":{"path":"/absolute/path/app.hprof"}}}
+```
 
-## Troubleshooting
+Messages are newline-delimited JSON on stdio. Keep stdout for protocol data and stderr for diagnostics. This is not the editor RPC notification sequence. The [MCP lifecycle specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) explains negotiation; it does not establish that HeapLens implements every newer capability.
 
-### "No tools available" in Claude Desktop
+## Verify and stop
 
-- Verify the path in `claude_desktop_config.json` is absolute and the binary exists
-- Check that the binary has execute permissions: `chmod +x hprof-server`
-- Restart Claude Desktop completely (quit and relaunch)
+Check nine tool names, analyze one safe dump, run a bounded valid query, and inspect client errors/permissions. Use server-machine paths. Do not assume arbitrary remote paths or every coding agent are supported. On shutdown terminate the owned process to release state. Client cancellation support differs; no general cancellable MCP-analysis guarantee is made.
 
-### Analysis takes too long
-
-MCP mode runs analysis synchronously. A 2 GB dump completes in ~1-2 seconds; a 14 GB dump takes ~11 seconds. Claude Desktop may show a timeout warning for very large files — this is normal; the result will appear when done.
-
-### "No analysis found" errors
-
-You must call `analyze_heap` before using other tools like `get_leak_suspects` or `drill_down`. Each tool requires a `path` parameter, and the file must have been analyzed first in the same session.
+Tool output can be sensitive. Read [privacy](../ai-integration/privacy.md) before allowing a cloud-model client to use it.

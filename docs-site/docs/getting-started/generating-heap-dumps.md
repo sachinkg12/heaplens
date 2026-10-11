@@ -1,112 +1,51 @@
 ---
 sidebar_position: 3
-title: Generating Heap Dumps
+title: Capture a heap dump safely
 ---
 
-# Generating Heap Dumps
+Dumps can contain passwords, tokens, personal data, and business content. Capture only authorized applications, protect the output folder, and never put dumps in public support attachments or source control. Capture can pause the JVM, trigger GC depending on options, and consume substantial disk space. Wait until writing finishes before analysis.
 
-HeapLens analyzes Java heap dumps in HPROF binary format. This page covers the most common ways to capture one.
+## HotSpot with jcmd
 
-## From a Running JVM
-
-### jmap (JDK tool)
+Use a compatible JDK tool and an account permitted to attach:
 
 ```bash
-# Find your Java process ID
-jps -l
-
-# Capture a heap dump
-jmap -dump:format=b,file=heap.hprof <pid>
+jcmd -l
+jcmd 12345 GC.heap_dump /secure/captures/app.hprof
 ```
 
-`jmap` pauses the JVM while dumping — use with care in production.
+Replace the PID/path. Check `jcmd 12345 help GC.heap_dump` for that JVM's options. Containers, disabled attach, permissions, and JRE-only installs can prevent capture.
 
-### jcmd (preferred for JDK 9+)
+Windows PowerShell:
 
-```bash
-jcmd <pid> GC.heap_dump /tmp/heap.hprof
+```powershell
+jcmd 12345 GC.heap_dump 'C:\secure\captures\app.hprof'
 ```
 
-### JVM flag (on OutOfMemoryError)
+## Capture on out-of-memory
 
-Add this to your application's JVM arguments to capture a heap dump automatically when the JVM runs out of memory:
+Start a compatible HotSpot JVM with:
 
 ```bash
 java -XX:+HeapDumpOnOutOfMemoryError \
-     -XX:HeapDumpPath=/tmp/heapdump.hprof \
-     -jar myapp.jar
+  -XX:HeapDumpPath=/secure/captures app.Main
 ```
 
-This is the most common way production heap dumps are captured — the dump is created at the exact moment memory pressure peaks.
+Ensure a writable destination and capacity first. This does not capture every failure: OS kills, native-memory failures, and incomplete writes are distinct cases.
 
-## From Application Frameworks
+## Spring Boot Actuator
 
-### Spring Boot Actuator
-
-If your Spring Boot application has Actuator enabled:
+The authorized, protected endpoint uses **GET**:
 
 ```bash
-curl -X POST http://localhost:8080/actuator/heapdump -o heap.hprof
+curl --fail --output /secure/captures/app.hprof \
+  https://your-protected-service/actuator/heapdump
 ```
 
-### Kubernetes / Docker
+Use your authentication mechanism without leaking tokens in shared commands. Do not publicly expose this endpoint. [Spring documents](https://docs.spring.io/spring-boot/api/rest/actuator/heapdump.html) HPROF on HotSpot but **PHD on OpenJ9**. Renaming PHD to `.hprof` does not convert it.
 
-```bash
-# Find the PID inside the container (usually 1)
-kubectl exec -it <pod> -- jcmd 1 GC.heap_dump /tmp/heap.hprof
+## Remote and container capture
 
-# Copy the dump to your local machine
-kubectl cp <pod>:/tmp/heap.hprof ./heap.hprof
-```
+Run the tool where the PID is visible and attachment allowed. Ensure the container has the tool and writable storage. Copy the completed capture securely or analyze on that machine with a matching binary. Do not replace/truncate mapped files.
 
-## Generating a Test Dump
-
-If you need a heap dump for testing HeapLens, create a simple Java program:
-
-```java
-import java.util.*;
-
-public class LeakyApp {
-    static List<byte[]> leak = new ArrayList<>();
-
-    public static void main(String[] args) throws Exception {
-        // Allocate ~100 MB in 1 MB chunks
-        for (int i = 0; i < 100; i++) {
-            leak.add(new byte[1024 * 1024]);
-        }
-
-        // Keep running so you can take a dump
-        System.out.println("PID: " + ProcessHandle.current().pid());
-        System.out.println("Press Enter to exit...");
-        System.in.read();
-    }
-}
-```
-
-```bash
-javac LeakyApp.java
-java -Xmx256m LeakyApp &
-jmap -dump:format=b,file=test.hprof $(jps -l | grep LeakyApp | awk '{print $1}')
-```
-
-## HPROF Format Reference
-
-The HPROF binary format consists of:
-
-| Section | Content |
-|---------|---------|
-| Header | Magic string `JAVA PROFILE 1.0.2\0`, ID size (4 or 8 bytes), timestamp |
-| Records | Sequential records: UTF8 strings, LoadClass, HeapDump segments |
-| Heap Dump | Sub-records: GC roots, class definitions, instance dumps, array dumps |
-
-HeapLens reads this format using the `jvm-hprof` Rust crate with zero-copy memory-mapped I/O — the file is never loaded entirely into RAM.
-
-## File Size Guidelines
-
-| Application Type | Typical Dump Size |
-|-----------------|-------------------|
-| Microservice (256 MB heap) | 50-200 MB |
-| Monolith (2 GB heap) | 500 MB - 2 GB |
-| Data-intensive (8 GB heap) | 2-8 GB |
-
-HeapLens handles multi-GB files efficiently through memory mapping. The analysis server's RAM usage is typically 2-3x the dump file size during graph construction.
+See [remote workflows](./remote-development.md) and [format fundamentals](../concepts/heap-dump-fundamentals.md).

@@ -1,116 +1,33 @@
-/**
- * HeapLens branded theme — inspired by ScamShield's Docusaurus design.
- * Primary: blue-600 (#2563eb), accent: purple (#7c3aed).
- */
-
-/* ── Light mode ─────────────────────────────────────────────────────── */
 :root {
-  --ifm-color-primary: #2563eb;
-  --ifm-color-primary-dark: #1d4ed8;
-  --ifm-color-primary-darker: #1e40af;
-  --ifm-color-primary-darkest: #1e3a8a;
-  --ifm-color-primary-light: #3b82f6;
-  --ifm-color-primary-lighter: #60a5fa;
-  --ifm-color-primary-lightest: #93bbfd;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(37, 99, 235, 0.1);
+  --ifm-color-primary:#245ac6;--ifm-color-primary-dark:#204fab;--ifm-color-primary-darker:#1e499f;--ifm-color-primary-darkest:#193c83;
+  --ifm-color-primary-light:#326cd9;--ifm-color-primary-lighter:#4277de;--ifm-color-primary-lightest:#6994e7;
+  --ifm-background-color:#fafbfd;--ifm-background-surface-color:#fff;--ifm-font-color-base:#1c283c;
+  --ifm-font-family-base:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --ifm-heading-font-family:var(--ifm-font-family-base);--ifm-font-size-base:16px;--ifm-line-height-base:1.7;
+  --ifm-heading-font-weight:650;--ifm-code-font-size:90%;--ifm-navbar-shadow:0 1px 0 #26344a12;
+  --ifm-global-radius:8px;--docusaurus-highlighted-code-line-bg:#245ac614;
 }
-
-/* ── Dark mode ──────────────────────────────────────────────────────── */
 [data-theme='dark'] {
-  --ifm-color-primary: #3b82f6;
-  --ifm-color-primary-dark: #2563eb;
-  --ifm-color-primary-darker: #1d4ed8;
-  --ifm-color-primary-darkest: #1e3a8a;
-  --ifm-color-primary-light: #60a5fa;
-  --ifm-color-primary-lighter: #93bbfd;
-  --ifm-color-primary-lightest: #bfdbfe;
-  --ifm-background-color: #0f172a;
-  --ifm-background-surface-color: #1e293b;
-  --docusaurus-highlighted-code-line-bg: rgba(59, 130, 246, 0.15);
+  --ifm-color-primary:#90b6ff;--ifm-color-primary-dark:#73a3ff;--ifm-color-primary-darker:#6196ff;--ifm-color-primary-darkest:#3c7bfa;
+  --ifm-color-primary-light:#adcbff;--ifm-color-primary-lighter:#c0d7ff;--ifm-color-primary-lightest:#d7e6ff;
+  --ifm-background-color:#111923;--ifm-background-surface-color:#172231;--ifm-font-color-base:#e6ecf5;
+  --ifm-color-emphasis-200:#2c3b4e;--ifm-color-emphasis-300:#40516a;--ifm-color-emphasis-400:#73849c;
+  --ifm-color-emphasis-700:#a9b8ce;--ifm-color-emphasis-800:#cbd6e7;--docusaurus-highlighted-code-line-bg:#90b6ff18;
 }
-
-/* ── Hero Section ───────────────────────────────────────────────────── */
-.hero--heaplens {
-  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #7c3aed 100%);
-  position: relative;
-  overflow: hidden;
-  padding: 6rem 2rem;
-  text-align: center;
-}
-
-.hero--heaplens::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(
-    ellipse at 30% 50%,
-    rgba(255, 255, 255, 0.08) 0%,
-    transparent 70%
-  );
-  animation: heroPulse 6s ease-in-out infinite alternate;
-  pointer-events: none;
-}
-
-@keyframes heroPulse {
-  0% {
-    opacity: 0.4;
-    transform: scale(1);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1.15);
-  }
-}
-
-.hero__title--gradient {
-  background: linear-gradient(90deg, #ffffff 0%, #bfdbfe 50%, #c4b5fd 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-size: 3.5rem;
-  font-weight: 800;
-}
-
-.hero__subtitle--light {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 1.35rem;
-  max-width: 640px;
-  margin: 0 auto;
-}
-
-/* ── Steps Container (Getting Started guides) ───────────────────────── */
-.steps-container {
-  counter-reset: step;
-}
-
-.steps-container h3::before {
-  counter-increment: step;
-  content: counter(step);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  margin-right: 0.75rem;
-  border-radius: 50%;
-  background: var(--ifm-color-primary);
-  color: #fff;
-  font-weight: 700;
-  font-size: 0.9rem;
-}
-
-/* ── Responsive ─────────────────────────────────────────────────────── */
-@media screen and (max-width: 768px) {
-  .hero--heaplens {
-    padding: 3rem 1.5rem;
-  }
-
-  .hero__title--gradient {
-    font-size: 2.2rem;
-  }
-
-  .hero__subtitle--light {
-    font-size: 1.1rem;
-  }
-}
+.navbar {background:var(--ifm-background-color);}.navbar__title {font-weight:650;letter-spacing:-.025em;}
+.navbar__logo img {border-radius:7px;}.navbar__item {font-size:.85rem;}
+.menu {font-size:.86rem;}.menu__link {border-radius:6px;}.menu__list-item-collapsible {font-weight:600;}
+.markdown {font-size:1rem;overflow-wrap:anywhere;}
+.markdown h1 {font-size:clamp(2rem,4vw,2.7rem);letter-spacing:-.035em;line-height:1.2;}
+.markdown h2 {font-size:1.6rem;letter-spacing:-.025em;}.markdown h3 {font-size:1.2rem;}
+.markdown p,.markdown li {line-height:1.8;}.markdown table {font-size:.9rem;max-width:100%;overflow-x:auto;}
+.markdown pre {font-size:.86rem;}.markdown code {overflow-wrap:anywhere;}
+.markdown blockquote {font-size:.94rem;border-color:var(--ifm-color-primary);}
+.theme-doc-markdown {max-width:78ch;}.theme-doc-toc-desktop {font-size:.78rem;}
+.button--primary {background:#245ac6;color:#fff;border-color:#245ac6;}
+.button--primary:hover {background:#1e499f;color:#fff;border-color:#1e499f;}
+.button--secondary {background:var(--ifm-background-surface-color);color:var(--ifm-font-color-base);border-color:var(--ifm-color-emphasis-300);}
+.footer {background:#142033;font-size:.85rem;padding:3rem 1rem;}
+:focus-visible {outline:3px solid var(--ifm-color-primary);outline-offset:4px;}
+@media(max-width:600px) {.markdown h2 {font-size:1.4rem;}.markdown pre {font-size:.8rem;}}
+@media(prefers-reduced-motion:reduce) {*,*::before,*::after {scroll-behavior:auto!important;}}

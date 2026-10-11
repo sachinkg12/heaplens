@@ -1,136 +1,47 @@
-import type {ReactNode} from 'react';
+import React from 'react';
 import Link from '@docusaurus/Link';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 import Heading from '@theme/Heading';
-
+import FlowDiagram from '@site/src/components/FlowDiagram';
 import styles from './index.module.css';
 
-/* ── Data ─────────────────────────────────────────────────────────────── */
-
-const stats = [
-  {number: '10', label: 'Interactive Views'},
-  {number: '10+', label: 'LLM Providers'},
-  {number: '< 60s', label: '1 GB Parse Time'},
-  {number: 'SQL-like', label: 'HeapQL Queries'},
+const paths=[
+  {label:'01 / Orient',title:'Understand the snapshot',text:'Start with totals, then separate shallow storage from retained ownership.',to:'/docs/tabs-guide/overview-tab'},
+  {label:'02 / Investigate',title:'Follow the evidence',text:'Explore dominators, actual references, object fields, and paths to GC roots.',to:'/docs/concepts/dominator-tree'},
+  {label:'03 / Ask',title:'Query precisely',text:'Use HeapQL filters, aggregates, joins, and supported subqueries.',to:'/docs/api-reference/heapql'},
+  {label:'04 / Review',title:'Bridge to code',text:'Resolve source through your host. AI suggestions remain proposals to inspect and test.',to:'/docs/tabs-guide/source-tab'},
 ];
-
-const features = [
-  {
-    emoji: '\u26A1',
-    title: 'High-Performance Rust Engine',
-    description:
-      'Zero-copy mmap parsing with Lengauer-Tarjan dominator tree computation. 1 GB heap dump parsed in ~60 seconds on Apple M1.',
-  },
-  {
-    emoji: '\uD83D\uDD0D',
-    title: '10 Interactive Analysis Views',
-    description:
-      'Overview, Histogram, Dominator Tree, Leak Suspects, Waste Detection, Source Bridging, HeapQL, Compare, Timeline, and AI Chat.',
-  },
-  {
-    emoji: '\uD83E\uDD16',
-    title: 'AI-Native Analysis',
-    description:
-      'Built-in LLM chat supporting 10+ providers including Claude, GPT, Gemini, and local models via Ollama. Ask questions in plain English.',
-  },
-  {
-    emoji: '\uD83D\uDDC4\uFE0F',
-    title: 'HeapQL Query Language',
-    description:
-      'SQL-like queries purpose-built for heap analysis. Filter by class, size, retained size with autocomplete and syntax highlighting.',
-  },
-  {
-    emoji: '\uD83D\uDD0C',
-    title: 'MCP Integration',
-    description:
-      'Model Context Protocol server mode lets Claude Desktop and other AI clients analyze heap dumps programmatically.',
-  },
-  {
-    emoji: '\uD83D\uDCCA',
-    title: 'Compare & Timeline',
-    description:
-      'Diff two heap dumps side-by-side or track memory trends across multiple snapshots with D3.js visualizations.',
-  },
-];
-
-/* ── Components ───────────────────────────────────────────────────────── */
-
-function HomepageHeader(): ReactNode {
-  const {siteConfig} = useDocusaurusContext();
-  return (
-    <header className="hero--heaplens">
-      <div className="container">
-        <Heading as="h1" className={styles.heroTitle}>
-          {siteConfig.title}
-        </Heading>
-        <p className={styles.heroSubtitle}>
-          AI-Powered Java &amp; Android Heap Dump Analyzer for VS Code
-        </p>
-        <div className={styles.buttons}>
-          <Link
-            className="button button--primary button--lg"
-            to="/docs/getting-started/installation">
-            Get Started
-          </Link>
-          <Link
-            className="button button--outline button--lg"
-            to="/docs/concepts/heap-dump-fundamentals"
-            style={{color: '#fff', borderColor: 'rgba(255,255,255,0.5)'}}>
-            How It Works
-          </Link>
+export default function Home() {
+  return <Layout title="From heap snapshot to code investigation" description="HeapLens documentation: local Java heap analysis, HeapQL, source navigation, optional AI, and host-specific setup.">
+    <main className={styles.main}>
+      <header className={styles.hero}>
+        <div className={styles.eyebrow}><span aria-hidden="true" /> OPEN SOURCE / LOCAL HEAP ANALYSIS</div>
+        <Heading as="h1">Find what keeps<br />memory <span>alive.</span></Heading>
+        <p className={styles.intro}>Turn a Java heap snapshot into an investigation. Explore retained memory, trace references, query objects, and review the code—without treating a suspect as a verdict.</p>
+        <div className={styles.actions}>
+          <Link className="button button--primary button--lg" to="/docs/getting-started/installation">Install for VS Code</Link>
+          <Link className="button button--secondary button--lg" to="/docs/getting-started/choose-host">Choose your host →</Link>
         </div>
-      </div>
-    </header>
-  );
-}
-
-function StatsSection(): ReactNode {
-  return (
-    <section className={styles.statsSection}>
-      {stats.map((s, i) => (
-        <div key={i} className={styles.statItem}>
-          <div className={styles.statNumber}>{s.number}</div>
-          <div className={styles.statLabel}>{s.label}</div>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function FeaturesSection(): ReactNode {
-  return (
-    <section className={styles.featuresSection}>
-      <div className="container">
-        <Heading as="h2" className={styles.sectionTitle}>
-          Why HeapLens?
-        </Heading>
-        <div className={styles.featureGrid}>
-          {features.map((f, i) => (
-            <div key={i} className={styles.featureCard}>
-              <span className={styles.featureEmoji}>{f.emoji}</span>
-              <Heading as="h3">{f.title}</Heading>
-              <p>{f.description}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ── Page ──────────────────────────────────────────────────────────────── */
-
-export default function Home(): ReactNode {
-  return (
-    <Layout
-      title="AI-Powered Java Heap Dump Analyzer"
-      description="HeapLens is a VS Code extension with a Rust backend for analyzing Java heap dumps. Features automatic leak detection, waste analysis, dominator tree exploration, and AI-powered insights.">
-      <HomepageHeader />
-      <main>
-        <StatsSection />
-        <FeaturesSection />
-      </main>
-    </Layout>
-  );
+        <p className={styles.release}>VS Code: released · IntelliJ and standalone packages: preview guides<br />Availability depends on the published package, platform, and version.</p>
+      </header>
+      <section className={styles.flow} aria-label="HeapLens data flow"><FlowDiagram /></section>
+      <section className={styles.strip} aria-label="Implemented capabilities">
+        <div><strong>11</strong><span>analysis & workflow tabs</span></div>
+        <div><strong>10</strong><span>configured AI providers</span></div>
+        <div><strong>9</strong><span>MCP tools</span></div>
+        <div><strong>Apache 2.0</strong><span>open-source license</span></div>
+      </section>
+      <section className={styles.section}>
+        <div className={styles.sectionHead}><div className={styles.eyebrow}>A SMALLER PATH TO CLARITY</div><Heading as="h2">Start with evidence.<br />Keep the boundaries visible.</Heading></div>
+        <div className={styles.grid}>{paths.map(item=><Link key={item.label} to={item.to} className={styles.card}>
+          <span className={styles.cardLabel}>{item.label}</span><Heading as="h3">{item.title}</Heading><p>{item.text}</p><span aria-hidden="true" className={styles.cardArrow}>↗</span>
+        </Link>)}</div>
+      </section>
+      <section className={styles.boundaries}>
+        <div><div className={styles.eyebrow}>YOUR DATA / YOUR DECISION</div><Heading as="h2">Local analysis.<br />Optional AI. Explicit limits.</Heading><p>The analysis engine reads your local dump. AI actions and telemetry have separate controls. Metadata can still be sensitive; approved AI fixes send the full source file.</p></div>
+        <div className={styles.links}><Link to="/docs/ai-integration/privacy">What AI receives →</Link><Link to="/docs/runbook/telemetry">Telemetry and opt-out →</Link><Link to="/docs/runbook/performance-tuning">Memory limits and large heaps →</Link></div>
+      </section>
+      <section className={styles.bottom}><Heading as="h2">One engine. Different environments.</Heading><p>VS Code, IntelliJ, terminal, browser, and MCP adapters reuse analysis—not every host capability. Setup and limitations are documented separately.</p><Link to="/docs/getting-started/choose-host">Explore the host guide →</Link></section>
+    </main>
+  </Layout>;
 }

@@ -1,93 +1,34 @@
 ---
 sidebar_position: 3
-title: Performance Tuning
+title: Large dumps and analyzer memory
 ---
 
-# Performance Tuning
+There is **no universal file-size-to-RAM multiplier** or maximum-file-size guarantee. Object/edge density, class/layout metadata, representation, temporary arrays, mapped pages, concurrent dumps, and available memory all matter.
 
-Guidelines for analyzing large heap dumps and optimizing HeapLens's resource usage.
+A 25 GB capture is not guaranteed to fit a 64 GB machine. LIMIT, --rows, and collapsed tabs bound output/rendering, not the initial graph/dominator memory budget. Persistent disk-backed analysis is planned, not currently a promised low-memory mode.
 
-## System Requirements
+## Before analysis
 
-| Heap Dump Size | Recommended RAM | Recommended Storage |
-|---------------|----------------|-------------------|
-| &lt; 100 MB | 4 GB | SSD preferred |
-| 100 MB - 500 MB | 8 GB | SSD preferred |
-| 500 MB - 2 GB | 16 GB | SSD required |
-| > 2 GB | 32 GB | SSD required |
+Use local SSD storage, completed immutable captures, adequate free RAM/disk/swap, and a matching native target. Close unused dump tabs because each can own a resident graph. Begin with a smaller representative capture to observe memory/shape; extrapolation remains approximate.
 
-The Rust analysis server uses approximately **2-3x the HPROF file size** in peak memory during edge extraction and dominator computation. This is temporary — after analysis completes, memory usage drops to ~1-2x for the cached state.
+Memory mapping avoids an eager buffer copy but still faults pages into RAM. Warm page caches can change repeat timings. Compression such as xz is not a random-access replacement for graph indexes; it needs a decompression/access design, not a filename extension swap.
 
-## Memory-Mapped I/O
+## Observe one process
 
-HeapLens uses memory-mapped I/O to read HPROF files. The operating system loads pages on demand from the file into the page cache. This has implications:
-
-- **First analysis is slower** — Pages are loaded from disk on first access
-- **Repeat analysis is faster** — The OS page cache retains the file data
-- **SSD matters** — Random page faults are fast on SSD, slow on HDD
-- **Available RAM matters** — The OS may evict pages under memory pressure, causing re-reads
-
-## Optimizations in the Analysis Engine
-
-HeapLens includes several performance optimizations:
-
-### Graph Building
-- **Single-pass record scanning** — UTF8, LoadClass, and HeapDump records are scanned in one pass
-- **Pre-sized data structures** — All major HashMaps use `with_capacity()` based on heuristics from the file size
-- **Memoized inheritance chains** — Class field layouts resolved once and cached
-
-### Dominator Computation
-- **O(V+E) retained size computation** — Stack-based DFS post-order traversal instead of iterative fixpoint
-- **Vec-indexed state** — `retained_sizes`, `shallow_sizes`, and `node_data_map` use `Vec<T>` indexed by `NodeIndex` for cache-friendly sequential access
-
-### Parallel Processing (Phase 2)
-- **Rayon parallelization** — Edge extraction in Phase 2 uses `rayon` to process HeapDumpSegment records in parallel across all available CPU cores, dramatically reducing wall-clock time for large files
-
-### Memory Management
-- **Arc-wrapped AnalysisState** — Cloning state references for concurrent access is a single atomic increment
-- **String interning** — Class names use `Arc<str>` shared across all instances of the same class
-- **Explicit drops** — Intermediate data structures (string table, class field info) are explicitly dropped after their last use
-
-## Tips for Large Files
-
-### Before Analysis
-
-1. **Close unnecessary applications** to free RAM
-2. **Ensure sufficient disk space** — Memory mapping may use swap if RAM is low
-3. **Use SSD storage** for the HPROF file
-
-### During Analysis
-
-Monitor the `hprof-server` process:
+Use the PID displayed/logged for the selected dump, not a broad pgrep/pkill of all servers.
 
 ```bash
-# macOS
-top -pid $(pgrep hprof-server)
-
-# Linux
-htop -p $(pgrep hprof-server)
+top -pid 12345
 ```
 
-Expected behavior:
-- CPU usage: multiple cores active during Phase 2 edge extraction (rayon parallelism), single core during Phase 1 and dominator computation
-- Memory usage: climbs to 2-3x file size, then stabilizes at 1-2x
+On Linux use `top -p 12345`; on Windows inspect that PID in Task Manager. Replace the number with the actual process. CPU/RSS patterns vary by backend/phase and do not prove completion.
 
-### If Analysis Fails
+## Slow versus dead
 
-- **SIGKILL (exit code 137)** — Out of memory. Close other applications or analyze on a machine with more RAM.
-- **Timeout in VS Code** — The extension has a 30-second default timeout for RPC requests, but `analyze_heap` uses an async notification pattern that is not subject to this timeout. If the webview shows an error, check the Output channel for the actual error.
-- **Corrupt file errors** — The HPROF file may be truncated. Re-capture the heap dump.
+Continue Waiting if the process is working and resources permit; Cancel if needed. Retry replaces an exited server, not the operating system's memory capacity. SIGKILL/137 alone does not prove OOM; correlate OS evidence. Avoid repeated retries under unchanged severe memory pressure.
 
-## Benchmarks
+## Measurements
 
-Approximate analysis times on a MacBook Pro (M1, 16 GB RAM) with rayon parallelization:
+[Previously recorded figures](./recorded-measurements.md) retain the original numbers and identify unresolved provenance. They are not fresh benchmarks, universal RAM ratios, or a latency SLA. A useful new benchmark records source/version/backend, JVM layout, fixture hash/shape, hardware/RAM/storage, cold/warm cache, phases, peak RSS, failures, and repeated trials.
 
-| File | Size | Objects | Edges | Phase 1 (Nodes) | Phase 2 (Edges + Dominators) | Total |
-|------|------|---------|-------|------------------|------------------------------|-------|
-| Small service | 26 MB | 400K | 1.2M | < 0.2s | ~0.3s | ~0.5s |
-| Medium app | 212 MB | 3.1M | 12M | ~0.3s | ~0.8s | ~1.1s |
-| Large app | 1.5 GB | ~12M | ~50M | ~0.4s | ~0.5s | ~0.9s |
-| Large monolith | 2 GB | ~16M | ~65M | ~0.5s | ~0.7s | ~1.2s |
-| Very large | 14 GB | ~100M | ~400M | ~2s | ~8.5s | ~10.5s |
-
-These timings include all phases: file mapping, node extraction (Phase 1), parallel edge extraction, CSR construction, dominator computation, leak detection, histogram, and waste analysis.
+See [Rust architecture](../architecture/rust-backend.md) and [recovery](./troubleshooting.md).

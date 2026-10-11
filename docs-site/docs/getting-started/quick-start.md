@@ -1,100 +1,43 @@
 ---
 sidebar_position: 2
-title: Quick Start
+title: Your first investigation
 ---
 
-# Quick Start
+Use a small authorized dump first. Keep the completed capture immutable during analysis and open your source project for navigation.
 
-This guide takes you from zero to analyzing your first heap dump in under five minutes.
+## Follow the memory
 
-## Step 1: Open a Heap Dump
+1. In **Overview**, read the size model, total versus reachable heap, and counts. Heap bytes are modeled object sizes, not file length or analyzer RAM.
+2. In **Histogram**, sort by shallow size to find storage-heavy classes, or retained size to investigate ownership.
+3. In **Dominator Tree**, expand a large owner. Child rows load on demand; nested retained totals overlap and must not be added.
+4. Use **Why alive?**, **Inspect**, and **Show referrers** to check roots, fields, and incoming references.
+5. Use **Source** to investigate the matching class. An owner is not necessarily the code needing repair.
 
-After launching the Extension Development Host (F5), open any `.hprof` file:
+A large object or a suspect is a lead, not proof of a leak. Validate lifecycle intent and comparable snapshots.
 
-- **Drag and drop** a `.hprof` file into VS Code, or
-- Use **Command Palette** (`Cmd+Shift+P`) and type `HeapLens: Analyze HPROF File`, then select a file
+## Run a query
 
-HeapLens registers as a custom editor for `.hprof` files — opening one automatically triggers analysis.
+In Query, run:
 
-## Step 2: Wait for Analysis
-
-A progress notification appears while the Rust backend processes your file:
-
-```
-Step 1/3: Loading HPROF file...
-Step 2/3: Building heap graph...
-Step 3/3: Calculating dominators and retained sizes...
-```
-
-Analysis time depends on file size:
-
-| Heap Dump Size | Approximate Time |
-|---------------|-----------------|
-| &lt; 50 MB | &lt; 1 second |
-| 50 MB - 500 MB | &lt; 1 second |
-| 500 MB - 2 GB | ~1-2 seconds |
-| 2 - 14 GB | ~3-11 seconds |
-
-Throughput: 1,300-1,700 MB/s on Apple M2 Max.
-
-## Step 3: Explore the Results
-
-Once analysis completes, a tabbed interface appears with seven tabs:
-
-1. **Overview** — High-level stats and a pie chart of top memory consumers
-2. **Histogram** — Every class ranked by memory consumption
-3. **Dominator Tree** — Drill into the retention hierarchy to see *what holds what*
-4. **Leak Suspects** — Automatically detected objects retaining disproportionate memory
-5. **Waste** — Duplicate strings and empty collections that waste memory
-6. **Source** — Map classes to your project source code
-7. **AI Chat** — Ask questions about the heap in natural language
-
-## Step 4: Interpret Results
-
-Here is a typical workflow for diagnosing a memory issue:
-
-### Start with Leak Suspects
-
-Open the **Leak Suspects** tab. Each card shows a class that retains a large percentage of the heap. For example:
-
-> **[HIGH] com.example.cache.SessionCache** — retains 42.1% of heap (512.00 MB)
-> *Single SessionCache instance retains 42.1% of reachable heap*
-
-This tells you a single `SessionCache` object is keeping 512 MB alive.
-
-### Drill into the Dominator Tree
-
-Switch to the **Dominator Tree** tab and expand `SessionCache`. You might see:
-
-```
-SessionCache             — 512 MB retained
-  └─ HashMap             — 508 MB retained
-      ├─ HashMap$Node[]  — 500 MB retained
-      │   ├─ UserSession — 12 MB retained
-      │   ├─ UserSession — 11 MB retained
-      │   └─ ...         (2,400 more entries)
-      └─ ...
+```heapql
+SELECT object_id, class_name, shallow_size, retained_size
+FROM instances
+ORDER BY retained_size DESC
+LIMIT 20
 ```
 
-This reveals the cache holds 2,400+ `UserSession` objects through a `HashMap`.
+Compare a result with the inspector. IDs belong to this dump, not stable cross-capture identity. See the [HeapQL reference](../api-reference/heapql.md).
 
-### Check Waste
+## All eleven views
 
-The **Waste** tab might show:
+The current UI has [Overview](../tabs-guide/overview-tab.md), [Histogram](../tabs-guide/histogram-tab.md), [Dominator Tree](../tabs-guide/dominator-tree-tab.md), [Leak Suspects](../tabs-guide/leak-suspects-tab.md), [Waste](../tabs-guide/waste-tab.md), [Source](../tabs-guide/source-tab.md), [Query](../tabs-guide/query-tab.md), [Compare](../tabs-guide/compare-tab.md), [Timeline](../tabs-guide/timeline-tab.md), [Monitor](../tabs-guide/monitor-tab.md), and [AI Chat](../tabs-guide/ai-chat-tab.md). [Object Inspector](../tabs-guide/object-inspector.md) is a panel, not a twelfth tab.
 
-> **Duplicate Strings:** 45.2 MB (8.8% of heap)
-> - `"ACTIVE"` x12,400 — wastes 1.2 MB
-> - `"application/json"` x8,200 — wastes 0.8 MB
+[Host capabilities](./choose-host.md) differ in source lookup, settings, exports, and approval. Shared bytes are not a guarantee of full UI parity.
 
-These are identical String instances that could be deduplicated with `String.intern()` or a constant.
+## AI, reports, recovery
 
-## Step 5: Export or Report
+Read [AI privacy](../ai-integration/privacy.md) before configuring a provider or approving source. Model responses and fixes need review and testing.
 
-- **Export JSON**: Command Palette → `HeapLens: Export Analysis as JSON`
-- **Incident Report**: Click the report button in the webview to copy a markdown summary to your clipboard
+**Copy Incident Report** is local but can include paths and previews; scrub it before sharing. Exports do not upload automatically.
 
-## What's Next
-
-- Read [Heap Dump Fundamentals](../concepts/heap-dump-fundamentals) to understand the theory
-- Explore each tab in detail in the [Tabs Guide](../tabs-guide/overview-tab)
-- Set up [MCP integration](../mcp/introduction) to analyze heaps from Claude Desktop
+If a server exits, use Retry for that dump. A slow analysis is not an exited process: choose Continue Waiting or Cancel when offered. See [recovery](../runbook/troubleshooting.md).

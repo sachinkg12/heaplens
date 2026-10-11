@@ -265,7 +265,18 @@ HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing
 
 ## Telemetry
 
-HeapLens collects anonymous usage telemetry (feature adoption, analysis performance, and aggregate geographic region) via Azure Application Insights to help improve the extension. **Heap file contents never leave your machine. No PII, file paths, code content, or API keys are collected.** Telemetry respects VS Code's `telemetry.telemetryLevel` setting — set it to `off` to disable all telemetry.
+VS Code and standalone CLI/browser telemetry default to usage and errors (`all`), subject to the applicable host controls. **IntelliJ telemetry is off until explicit approval:** the first HeapLens editor asks whether to enable Errors Only or Usage and Errors. No telemetry is collected or sent beforehand. Cancel, dismissal or No Telemetry keeps it off; the choice persists locally. Earlier prototype On settings require fresh approval. Development/CI reporting and `DO_NOT_TRACK=1` remain disabled.
+
+| Host | How to turn it off |
+| --- | --- |
+| VS Code and compatible editors | Run **HeapLens: Configure Telemetry → Off**, or set `"heaplens.telemetry.level": "off"` in **User** settings. VS Code's own telemetry-off setting also stops HeapLens telemetry. |
+| IntelliJ | Decline the initial permission dialog, or click **Telemetry → Off** later. Off clears local telemetry records and pending delivery. The application preference persists across restarts and is not stored in the project or synced. |
+| CLI | Add `--telemetry off` to each command, for example `heaplens analyze app.hprof --telemetry off`. Use `DO_NOT_TRACK=1` for an environment-wide override. |
+| CLI browser | Launch with `heaplens open app.hprof --telemetry off` to disable it before analysis. The browser **Telemetry → Disable telemetry** action stops delivery for the current running host; use the flag again on future launches. |
+
+Errors-only collection is available with `error` instead of `all`. For a first run without reporting on any host, set `DO_NOT_TRACK=1` before starting the IDE or CLI. IntelliJ already starts off pending permission. On other hosts set Off before opening a dump; disabling later cannot recall events already transmitted.
+
+Telemetry sends allowlisted codes, actions, coarse platform/version information and rounded counts, sizes or timings to HeapLens Azure Application Insights. It does not send paths, raw error messages/stacks, dump values, class names, source, queries, credentials or stable user/session IDs. Recent filtered diagnostics can be reviewed locally; reviewing does not upload the report, but routine delivery continues unless turned off. Network services can process IP addresses; this is data minimization, not a guarantee of anonymity. AI submissions and user-selected exports have separate sharing rules. See [telemetry fields, controls and limitations](docs-site/docs/runbook/telemetry.md).
 
 ---
 

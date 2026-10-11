@@ -1,19 +1,28 @@
-name: Deploy Docs
+name: Check and deploy docs
 
 on:
+  pull_request:
+    paths:
+      - 'docs-site/**'
+      - '.github/workflows/docs.yml'
+      - 'hprof-analyzer/src/**'
+      - 'src/llmClient.ts'
+      - 'src/webview/template.ts'
   push:
     branches: [main]
     paths:
       - 'docs-site/**'
+      - '.github/workflows/docs.yml'
+      - 'hprof-analyzer/src/**'
+      - 'src/llmClient.ts'
+      - 'src/webview/template.ts'
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,29 +30,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: docs-site/package-lock.json
-
-      - name: Install dependencies
+      - name: Install documentation dependencies
         working-directory: docs-site
         run: npm ci
-
-      - name: Build Docusaurus
+      - name: Check documentation contracts and checkers
         working-directory: docs-site
-        run: npm run build
-
-      - name: Upload artifact
+        run: |
+          npm run check:contracts
+          npm run test:checks
+          npm run typecheck
+      - name: Build native server for executable examples
+        run: cargo build --locked --release --manifest-path hprof-analyzer/Cargo.toml --bin hprof-server
+      - name: Validate examples against the native server
+        working-directory: docs-site
+        run: npm run check:examples -- --server ../hprof-analyzer/target/release/hprof-server
+      - name: Build and validate all local routes
+        working-directory: docs-site
+        run: |
+          npm run build
+          npm run check:links
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs-site/build
-
   deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

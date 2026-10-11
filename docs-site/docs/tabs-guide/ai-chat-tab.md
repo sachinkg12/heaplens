@@ -1,106 +1,26 @@
 ---
-sidebar_position: 7
-title: AI Chat Tab
+sidebar_position: 11
+title: AI Chat
 ---
 
-# AI Chat Tab
+Configure a provider, choose a model ID, then ask a question. Stop cancels the active stream; Clear clears the visible chat according to host controls. Approval/configuration and history lifetime differ by host.
 
-The AI Chat tab provides an interactive natural-language interface to your heap analysis. Ask questions about the heap dump and receive answers grounded in the actual analysis data.
+## Useful questions
 
-## What You See
+- Which large objects should I inspect, and which assumptions remain unknown?
+- Give a bounded HeapQL query to find the largest instances.
+- Explain the difference between storage type and retaining owner.
 
-A chat interface with a message input at the bottom and a scrollable message history above it:
+Minimized prompts include summary/counts/sizes, class/field names, descriptions, and reference metadata, **not raw duplicate-string previews or primitive contents**. User-entered text/history is not redacted. Top-N context is incomplete.
 
-```
-┌──────────────────────────────────────────────────────┐
-│  🤖 Based on the heap analysis, the primary memory   │
-│     consumer is com.example.cache.DataCache at        │
-│     512 MB (31.4% of heap). This single HashMap-      │
-│     backed cache retains nearly a third of all         │
-│     reachable memory...                                │
-│                                                        │
-│  👤 What are the top 3 things I should fix first?     │
-│                                                        │
-│  🤖 Here are the top 3 recommendations:               │
-│     1. **DataCache** (512 MB) — Add LRU eviction...   │
-│     2. **Duplicate strings** (35 MB) — Enable JVM...  │
-│     3. **Empty collections** (9.6 MB) — Lazy init...  │
-├──────────────────────────────────────────────────────┤
-│  [Type your question here...]            [Send]       │
-└──────────────────────────────────────────────────────┘
-```
+## Verify the response
 
-## How It Works
+Inline Run Query actions, where offered, populate/run a proposed query through the host; review syntax and bounds first. Queries are read-only but can be costly. AI can propose unsupported syntax, double-count retained totals, or confuse resource closure with releasing buffers.
 
-### Context Injection
+Same dump does not imply same answer: model, prompt/context, history, and provider settings can differ. Current VS Code follow-up context can omit its initial heap injection; verify against actual UI/query evidence instead of promising every turn is grounded.
 
-On the first message, HeapLens prepends a structured summary of the heap analysis as context for the LLM. This includes:
+## Session and sharing
 
-- **Heap Summary** — Total size, object counts, GC root count
-- **Top 15 Objects** — Class name, type, shallow size, retained size
-- **All Leak Suspects** — Severity, class, percentage, description, dependency info
-- **Top 20 Classes** — From the class histogram
-- **Waste Analysis** — Total waste, top 5 duplicate strings
+IntelliJ/browser session approval is distinct from full-source confirmation. VS Code source submission asks per Fix request. History storage/export is host-specific, not a universal durable memory feature. Credentials use SecretStorage/password-safe/session memory respectively.
 
-This context is formatted as markdown tables (~2-3K tokens) and included as a system message, so the LLM can answer questions accurately about your specific heap dump.
-
-### Streaming Responses
-
-Responses are streamed token-by-token for fast feedback — you see the answer being written in real time rather than waiting for the complete response.
-
-### Conversation History
-
-The chat maintains a per-editor conversation history (up to 20 exchanges). Follow-up questions reference the context of previous answers.
-
-## Configuration
-
-The AI Chat requires an API key unless you use Ollama. Select the provider in VS Code settings, then run **HeapLens: Set LLM API Key** from the Command Palette. HeapLens stores the key in encrypted VS Code SecretStorage.
-
-| Setting | Description | Example |
-|---------|-------------|---------|
-| `heaplens.llm.provider` | LLM provider | `"anthropic"` or `"openai"` |
-| `heaplens.llm.baseUrl` | Custom API endpoint (optional) | `"https://my-proxy.example.com"` |
-| `heaplens.llm.model` | Model override (optional) | `"claude-sonnet-4-20250514"` |
-
-Without an API key, the chat tab shows a configuration prompt.
-
-## Example Questions
-
-Here are effective questions to ask about your heap dump:
-
-### Diagnostic Questions
-
-- *"What is the biggest memory consumer and why?"*
-- *"Is there a memory leak? What evidence supports that?"*
-- *"Why is byte[] the largest class by shallow size?"*
-- *"Are there any suspicious retention patterns?"*
-
-### Actionable Questions
-
-- *"What are the top 3 things I should fix to reduce memory usage?"*
-- *"How can I reduce the 35 MB of duplicate strings?"*
-- *"What code change would have the most impact on heap size?"*
-- *"Should I add a cache eviction policy? What size limit would you recommend?"*
-
-### Investigative Questions
-
-- *"Explain the relationship between DataCache and the HashMap retaining 510 MB"*
-- *"Are the 45,000 UserSession objects expected for a service with 100 concurrent users?"*
-- *"What are the empty collections and are they worth fixing?"*
-- *"Compare the leak suspects — which is the root cause vs. a symptom?"*
-
-## Copilot Chat Integration
-
-HeapLens also registers as a **VS Code Chat Participant**. If you have GitHub Copilot Chat installed, you can use the `@heaplens` mention in the Copilot Chat panel:
-
-```
-@heaplens What's causing the high memory usage?
-```
-
-This uses the same analysis context injection but integrates with the Copilot Chat UI rather than HeapLens's built-in chat tab.
-
-## Limitations
-
-- The LLM sees selected analysis metadata, not the raw dump file. Automatic duplicate-string contents and primitive field values are omitted. Class/field names, typed messages, and conversation history are not anonymized. See [AI Data Sharing & Privacy](../ai-integration/privacy), including the separate source-consent and MCP boundaries.
-- For deep investigation (e.g., "what is object #1234567 retaining?"), use the Dominator Tree tab directly.
-- Responses are generated by the LLM and may occasionally be inaccurate. Always verify recommendations against the actual data in other tabs.
+Do not type secrets. Local endpoints may forward remotely. See [provider setup](../ai-integration/api-key-setup.md), [privacy](../ai-integration/privacy.md), and [Source](./source-tab.md) before Fix with AI.

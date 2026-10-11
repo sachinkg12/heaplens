@@ -1,87 +1,30 @@
 ---
 sidebar_position: 1
-title: "Overview"
+title: Choose an AI route
 ---
 
-# AI Integration
+import FlowDiagram from '@site/src/components/FlowDiagram';
 
-Before using AI, read [AI Data Sharing & Privacy](./privacy). Editor prompts omit automatic string previews and primitive values; Fix with AI requires per-request consent for full source. Metadata and typed messages can still be sensitive. MCP has a separate sharing boundary.
+AI is optional. Parsing, HeapQL, root paths, and exports work without a model or API key. Choose a route based on the host and **what leaves your machine**, not only the provider name.
 
-HeapLens provides three distinct ways to bring AI-powered analysis to your heap dumps. Each approach serves a different workflow — choose the one that fits how you work, or combine them.
+<FlowDiagram kind="ai" />
 
-## The Three Approaches
+| Route | Model configuration | Data boundary |
+| --- | --- | --- |
+| Built-in AI Chat / Explain / Fix | Ten direct-provider presets, editable model ID and compatible endpoint | Host constructs minimized metadata prompts; approved source is sent in full |
+| VS Code chat participant | Editor language-model API; current code prefers GPT-4o then first available fallback | Separate editor/model entitlement and disclosure |
+| MCP client / coding agent | Client selects and runs the model | Tool data is returned to the client; editor prompt filtering does not apply |
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│  ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐  │
-│  │  MCP Server      │   │  API Key         │   │  @heaplens      │  │
-│  │  (Layer 1)       │   │  (Layer 2)       │   │  (Layer 3)      │  │
-│  │                  │   │                  │   │                  │  │
-│  │  Claude Desktop  │   │  Built-in Chat   │   │  Copilot Chat   │  │
-│  │  Cline           │   │  Explain Button  │   │  Cline Chat     │  │
-│  │  Any MCP Client  │   │  Leak Explain    │   │  Claude Dev     │  │
-│  │                  │   │                  │   │                  │  │
-│  │  hprof-server    │   │  Anthropic /     │   │  VS Code LM API │  │
-│  │  --mcp           │   │  OpenAI API      │   │  (auto)         │  │
-│  └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘  │
-│           │                      │                       │           │
-│           └──────────────┬───────┴───────────────────────┘           │
-│                          │                                           │
-│                   ┌──────┴──────┐                                    │
-│                   │ Rust Engine │                                    │
-│                   │  (lib.rs)   │                                    │
-│                   └─────────────┘                                    │
-└─────────────────────────────────────────────────────────────────────┘
-```
+The ten presets are Anthropic, OpenAI, Gemini, DeepSeek, Mistral, Groq, xAI, Together AI, OpenRouter, and Ollama. The chat participant is a separate integration, not an eleventh direct-provider preset. Local Ollama is keyless by default; other presets require configured credentials.
 
-All three approaches share the same Rust analysis engine and the same prompt templates. The difference is **where the LLM runs** and **how you interact with it**.
+## Shared analysis, separate AI behavior
 
-## Quick Comparison
+Direct-AI adapters exist for VS Code, IntelliJ, and the standalone browser. Their public/candidate availability differs; see [hosts](../getting-started/choose-host.md). Credential storage, history, approvals, and proposal controls are host-specific. MCP does not reuse editor prompt templates: the client decides how raw tool results enter prompts.
 
-| | MCP Server | API Key (Direct) | Chat Participant (@heaplens) |
-|---|---|---|---|
-| **Setup** | Configure `claude_desktop_config.json` | Store API key with the HeapLens Command Palette command | Install Copilot/Cline/Claude Dev |
-| **Requires API key** | No | Yes (Anthropic or OpenAI) | No (uses host extension's auth) |
-| **Works outside VS Code** | Yes | No | No |
-| **Streaming responses** | No (synchronous) | Yes | Yes |
-| **Interactive drill-down** | Yes (via tool calls) | Limited (top objects only) | Limited (top objects only) |
-| **Conversation history** | Managed by client | 20 exchanges per editor | Managed by host extension |
-| **Best for** | Automation, CI/CD, desktop AI | IDE-integrated analysis | Seamless Copilot/Cline workflow |
+## What AI can help with
 
-## Which Should I Use?
+Ask for an interpretation of a suspect, propose a bounded HeapQL investigation, or request a project-source proposal. The model sees only the supplied context, not automatically every object or every source file. It can hallucinate queries, misinterpret ownership, or suggest unsafe Java changes.
 
-**"I use Claude Desktop / Cline / Cursor"** → [MCP Server](../mcp/introduction)
-Your AI client calls HeapLens tools directly. No API key needed — the client handles the LLM. Best for conversational, multi-step investigations.
+Verify queries, retaining paths, lifecycle assumptions, and tests. A larger model can answer differently from a smaller one; identical heap bytes do not establish identical prompts or responses.
 
-**"I want analysis inside the HeapLens editor"** → [API Key (Direct)](./api-key-setup)
-The AI Chat tab and Explain buttons live inside the HeapLens custom editor. You need your own Anthropic or OpenAI API key. Best for quick, contextual explanations while browsing the heap.
-
-**"I already have GitHub Copilot"** → [Chat Participant (@heaplens)](./chat-participant)
-Type `@heaplens` in the Copilot Chat panel. No extra setup — works automatically if Copilot is installed. Best for teams already using Copilot.
-
-## Features by Approach
-
-### AI Chat (all approaches)
-
-Ask natural-language questions about your heap dump:
-- *"What is the biggest memory consumer?"*
-- *"Is there a memory leak? What evidence supports that?"*
-- *"What are the top 3 things I should fix?"*
-
-### Explain Object (API Key only)
-
-Click "Explain this object" in the Object Inspector panel to get:
-- What the object is and its purpose
-- Why it's a memory concern
-- Retention chain analysis
-- Before/after Java code fix example
-- Severity classification
-
-### Explain Leak Suspect (API Key only)
-
-Click "Explain" on any leak suspect card to get an inline AI explanation with fix recommendations.
-
-### Tool-Based Drill-Down (MCP only)
-
-MCP clients can call individual tools (`drill_down`, `get_class_histogram`, etc.) for targeted investigation. This enables multi-step conversations where the AI explores the heap interactively.
+Start with [configuration](./api-key-setup.md), read [privacy](./privacy.md), then use [AI Chat](../tabs-guide/ai-chat-tab.md), [Explain](../tabs-guide/object-inspector.md), or [Source](../tabs-guide/source-tab.md).

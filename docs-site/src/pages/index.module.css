@@ -1,163 +1,33 @@
-/**
- * CSS modules for the HeapLens homepage.
- */
-
-/* ── Hero ────────────────────────────────────────────────────────────── */
-.heroBanner {
-  padding: 6rem 2rem;
-  text-align: center;
-  position: relative;
-  overflow: hidden;
-}
-
-.heroTitle {
-  background: linear-gradient(90deg, #ffffff 0%, #bfdbfe 50%, #c4b5fd 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-size: 3.5rem;
-  font-weight: 800;
-}
-
-.heroSubtitle {
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 1.35rem;
-  max-width: 640px;
-  margin: 0.5rem auto 1.5rem;
-}
-
-.buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-}
-
-/* ── Stats Section ───────────────────────────────────────────────────── */
-.statsSection {
-  display: flex;
-  justify-content: center;
-  gap: 3rem;
-  padding: 3rem 2rem;
-  flex-wrap: wrap;
-}
-
-.statItem {
-  text-align: center;
-  min-width: 140px;
-}
-
-.statNumber {
-  font-size: 2.5rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, #2563eb, #7c3aed);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  line-height: 1.2;
-}
-
-.statLabel {
-  font-size: 0.95rem;
-  opacity: 0.7;
-  margin-top: 0.25rem;
-}
-
-/* ── Features Section ────────────────────────────────────────────────── */
-.featuresSection {
-  padding: 4rem 2rem;
-  background: var(--ifm-background-surface-color);
-}
-
-.featureGrid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1.5rem;
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.featureCard {
-  padding: 2rem;
-  border: 1px solid var(--ifm-color-emphasis-200);
-  border-radius: 12px;
-  background: var(--ifm-background-color);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
-  position: relative;
-  overflow: hidden;
-}
-
-.featureCard::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(90deg, #2563eb, #7c3aed);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.featureCard:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.15);
-}
-
-.featureCard:hover::before {
-  opacity: 1;
-}
-
-.featureEmoji {
-  font-size: 3rem;
-  margin-bottom: 0.75rem;
-  display: block;
-}
-
-.featureCard h3 {
-  margin-bottom: 0.5rem;
-}
-
-.featureCard p {
-  margin: 0;
-  opacity: 0.85;
-  line-height: 1.6;
-}
-
-.sectionTitle {
-  text-align: center;
-  font-size: 2rem;
-  margin-bottom: 2.5rem;
-  font-weight: 700;
-}
-
-/* ── Responsive ──────────────────────────────────────────────────────── */
-@media screen and (max-width: 768px) {
-  .heroBanner {
-    padding: 3rem 1.5rem;
-  }
-
-  .heroTitle {
-    font-size: 2.2rem;
-  }
-
-  .heroSubtitle {
-    font-size: 1.1rem;
-  }
-
-  .statsSection {
-    gap: 1.5rem;
-  }
-
-  .statNumber {
-    font-size: 2rem;
-  }
-
-  .featureGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .featuresSection {
-    padding: 2rem 1rem;
-  }
-}
+.main {max-width:1240px;margin:auto;padding:0 2rem;}
+.hero {padding:5.5rem 0 1.5rem;max-width:850px;}
+.eyebrow {font-size:.73rem;font-weight:650;letter-spacing:.12em;display:flex;align-items:center;gap:.6rem;color:var(--ifm-color-emphasis-700);}
+.eyebrow span {width:8px;height:8px;background:#2d896f;border-radius:50%;}
+.hero h1 {font-size:clamp(2.8rem,6.4vw,5.4rem);line-height:1.07;letter-spacing:-.055em;font-weight:700;margin:1.5rem 0;}
+.hero h1 span {color:var(--ifm-color-primary);}
+.intro {max-width:57ch;font-size:1.15rem;line-height:1.7;color:var(--ifm-color-emphasis-800);}
+.actions {display:flex;flex-wrap:wrap;gap:.8rem;margin:1.8rem 0 1rem;}
+.release {font-size:.79rem;color:var(--ifm-color-emphasis-700);line-height:1.7;}
+.flow {margin:0 0 2rem;}
+.strip {display:grid;grid-template-columns:repeat(4,1fr);gap:1.5rem;border-top:1px solid var(--ifm-color-emphasis-200);border-bottom:1px solid var(--ifm-color-emphasis-200);padding:1.6rem 0;}
+.strip div {display:flex;flex-direction:column;gap:.4rem;}
+.strip strong {font-size:1.5rem;letter-spacing:-.03em;}
+.strip span {font-size:.8rem;color:var(--ifm-color-emphasis-700);}
+.section {padding:4.5rem 0;}
+.sectionHead h2,.boundaries h2,.bottom h2 {font-size:clamp(1.9rem,4vw,2.7rem);letter-spacing:-.035em;line-height:1.2;}
+.sectionHead h2 {margin:1rem 0 2rem;}
+.grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;}
+.card {position:relative;padding:1.6rem;border:1px solid var(--ifm-color-emphasis-200);border-radius:16px;background:var(--ifm-background-surface-color);color:var(--ifm-font-color-base);transition:border-color .18s,box-shadow .18s;}
+.card:hover {text-decoration:none;color:inherit;border-color:var(--ifm-color-primary);box-shadow:0 8px 24px #26344a0c;}
+.cardLabel {font-size:.73rem;color:var(--ifm-color-primary);font-weight:650;}
+.card h3 {font-size:1.15rem;line-height:1.35;margin:1.3rem 0 .8rem;}
+.card p {font-size:.87rem;line-height:1.7;margin-bottom:1.8rem;color:var(--ifm-color-emphasis-800);}
+.cardArrow {position:absolute;right:1.5rem;bottom:1rem;font-size:1.3rem;color:var(--ifm-color-primary);}
+.boundaries {display:grid;grid-template-columns:1.4fr 1fr;align-items:center;gap:4rem;padding:3rem;border:1px solid var(--ifm-color-emphasis-200);border-radius:20px;background:linear-gradient(130deg,var(--ifm-background-surface-color),color-mix(in srgb,var(--ifm-color-primary) 6%,var(--ifm-background-color)));}
+.boundaries h2 {margin:1rem 0;}
+.boundaries p,.bottom p {font-size:.95rem;line-height:1.8;max-width:65ch;color:var(--ifm-color-emphasis-800);}
+.links {display:flex;flex-direction:column;gap:1.2rem;font-size:.95rem;}
+.links a {border-bottom:1px solid var(--ifm-color-emphasis-200);padding-bottom:1rem;}
+.bottom {padding:4.5rem 0;}
+@media(max-width:996px) {.grid {grid-template-columns:repeat(2,1fr);}.boundaries {gap:2rem;padding:2rem;}}
+@media(max-width:600px) {.main {padding:0 1.2rem;}.hero {padding:3rem 0 1rem;}.intro {font-size:1rem;}.strip {grid-template-columns:repeat(2,1fr);}.grid,.boundaries {grid-template-columns:1fr;}.boundaries {padding:1.5rem;}.section {padding:3rem 0;}.actions a {font-size:.9rem;}.bottom {padding:3rem 0;}}
+@media(prefers-reduced-motion:reduce) {.card {transition:none;}}

@@ -36,8 +36,14 @@ Each long-running host retains at most 20 recent filtered records for local revi
 
 ## Privacy limits and cloud checks
 
+This page describes the current source contract reviewed on **11 October 2026**, not a claim about every historical release. The purpose is product reliability and feature-use diagnostics, not advertising or tracking individual developers. Preferences are host-specific; enabling AI is not enabling telemetry, and disabling telemetry does not disable a requested AI call.
+
 No raw exceptions, paths, source/query text, heap strings/primitive values, class names, credentials, custom endpoint URLs or stable identity tags enter this telemetry contract. AI providers and local report/export contents have separate boundaries; enabled telemetry does not approve source submission or support upload.
 
 Removing names and identifiers does not guarantee anonymity. Timing, platform/version and workload combinations can still be identifying, and networks/Azure can process IP addresses. This implementation does not certify legal compliance. Cross-session unique-user and retention metrics are deliberately unavailable rather than reconstructed with a fingerprint.
 
 Azure receipt, historical fields, actual retention, IP/geolocation handling, access and export settings require a separate read-only resource review before release acceptance. They have not been changed by this implementation. An HTTP success alone does not prove a record is visible in Logs; see [Microsoft's ingestion troubleshooting guidance](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-monitor/app-insights/telemetry/investigate-missing-telemetry). No historical deletion or cloud configuration change is automatic.
+
+**Cloud retention has not been verified in this documentation review.** The local queue limits above are not an Azure retention period. Maintainers must publish the verified retention/access policy after the resource review; do not infer that events disappear when the local queue clears. If that uncertainty is unacceptable for your environment, turn reporting off before use.
+
+For a privacy concern or diagnostic question, use the [support guide](./support.md). Do not attach a dump, source file, credentials, or raw private logs to a public issue. A reviewed local diagnostic report is optional and never automatically uploaded.
