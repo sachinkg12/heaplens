@@ -5,6 +5,8 @@ title: AI data sharing and privacy
 
 Policy scope: current editor/browser implementation, reviewed October 11, 2026. Analysis is local; **AI requests are optional but can send data to a model service**. Telemetry has a [separate policy](../runbook/telemetry.md).
 
+For IntelliJ IDEA version 0.1.15, see the [HeapLens IntelliJ Privacy Policy](../runbook/intellij-privacy-policy.md), including local storage, Azure retention, IP handling, and the privacy contact.
+
 ## What can be sent?
 
 | Action | Supplied information | Important limit |

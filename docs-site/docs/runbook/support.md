@@ -14,8 +14,12 @@ Use [GitHub issues](https://github.com/sachinkg12/heaplens/issues) with product 
 
 Do not attach real dumps, full source, API keys, private session URLs, raw string previews, or unredacted logs. A synthetic small fixture is preferable. Feature usage/telemetry is not proof a generated repair succeeded.
 
+## Privacy requests
+
+Email [sachinkg12@gmail.com](mailto:sachinkg12@gmail.com) with privacy questions or requests. The [HeapLens IntelliJ Privacy Policy](./intellij-privacy-policy.md) covers IntelliJ version 0.1.15, including optional AI sharing, local storage, and configured Azure retention. Do not send dumps, credentials, or confidential source unless a suitable private sharing arrangement has been agreed.
+
 ## Security reports
 
-Do not disclose an exploitable vulnerability or sensitive data in a public issue. Use the repository's [Security page](https://github.com/sachinkg12/heaplens/security) to check whether private reporting is enabled. This guide does not assert an unverified private email/contact or response SLA. If no private route is offered, request a private contact without posting exploit details.
+Do not disclose an exploitable vulnerability or sensitive data in a public issue. Use the repository's [Security page](https://github.com/sachinkg12/heaplens/security) to check whether private reporting is enabled. This guide does not assert that private GitHub reporting is enabled or promise a response SLA. If no private route is offered, request a private contact without posting exploit details.
 
 [AI privacy](../ai-integration/privacy.md) and [telemetry](./telemetry.md) explain distinct boundaries. Provider/cloud policies are not certified by this site.

@@ -7,7 +7,7 @@ const sidebars:SidebarsConfig={docsSidebar:[
   {type:'category',label:'Views and actions',items:[
     'tabs-guide/overview-tab','tabs-guide/histogram-tab','tabs-guide/dominator-tree-tab','tabs-guide/leak-suspects-tab','tabs-guide/waste-tab','tabs-guide/source-tab','tabs-guide/query-tab','tabs-guide/compare-tab','tabs-guide/timeline-tab','tabs-guide/monitor-tab','tabs-guide/ai-chat-tab','tabs-guide/object-inspector']},
   {type:'category',label:'AI and privacy',items:[
-    'ai-integration/overview','ai-integration/api-key-setup','ai-integration/chat-participant','ai-integration/privacy']},
+    'ai-integration/overview','ai-integration/api-key-setup','ai-integration/chat-participant','ai-integration/privacy','runbook/intellij-privacy-policy']},
   {type:'category',label:'MCP integration',items:['mcp/introduction','mcp/setup','mcp/tools-reference']},
   {type:'category',label:'Reference',items:['api-reference/heapql','api-reference/rpc-methods','api-reference/data-structures']},
   {type:'category',label:'Architecture and contributing',items:['architecture/system-overview','architecture/rust-backend','architecture/typescript-frontend','architecture/data-flow','architecture/contributing']},

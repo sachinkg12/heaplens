@@ -21,7 +21,7 @@ const config:Config={
     footer:{style:'dark',links:[
       {title:'Start',items:[{label:'Install VS Code',to:'/docs/getting-started/installation'},{label:'Choose a host',to:'/docs/getting-started/choose-host'},{label:'Quick start',to:'/docs/getting-started/quick-start'}]},
       {title:'Investigate',items:[{label:'Views guide',to:'/docs/tabs-guide/overview-tab'},{label:'HeapQL reference',to:'/docs/api-reference/heapql'},{label:'MCP tools',to:'/docs/mcp/tools-reference'}]},
-      {title:'Boundaries',items:[{label:'AI privacy',to:'/docs/ai-integration/privacy'},{label:'Telemetry controls',to:'/docs/runbook/telemetry'},{label:'Support',to:'/docs/runbook/support'}]},
+      {title:'Boundaries',items:[{label:'AI privacy',to:'/docs/ai-integration/privacy'},{label:'IntelliJ privacy policy',to:'/docs/runbook/intellij-privacy-policy'},{label:'Telemetry controls',to:'/docs/runbook/telemetry'},{label:'Support',to:'/docs/runbook/support'}]},
       {title:'Build',items:[{label:'Architecture',to:'/docs/architecture/system-overview'},{label:'Contributing',to:'/docs/architecture/contributing'},{label:'GitHub',href:'https://github.com/sachinkg12/heaplens'}]},
     ],copyright:`Copyright © ${new Date().getFullYear()} HeapLens Contributors. Apache 2.0.`},
     prism:{theme:prismThemes.github,darkTheme:prismThemes.dracula,additionalLanguages:['rust','bash','json','toml','java','sql']},

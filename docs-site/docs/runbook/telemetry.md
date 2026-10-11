@@ -4,6 +4,8 @@ title: Telemetry and local diagnostics
 
 VS Code and standalone CLI/browser telemetry default to usage and errors (`all`), subject to their host controls. **IntelliJ telemetry stays off until explicit approval**, as required by the [JetBrains Marketplace approval guidelines](https://plugins.jetbrains.com/docs/marketplace/jetbrains-marketplace-approval-guidelines.html). Permitted telemetry helps distinguish failed operations, analysis phases and feature usage without uploading heap dumps or arbitrary diagnostic text. All hosts use the versioned allowlist in `telemetry/contract.json`; host-specific adapters own preferences, permission and delivery. The Rust analysis library and standalone JSON-RPC/MCP server do not send telemetry.
 
+The [HeapLens IntelliJ Privacy Policy](./intellij-privacy-policy.md) combines IntelliJ telemetry, AI sharing, local storage, and the privacy contact in one policy.
+
 ## Controls
 
 | Host | Enable or disable | Local review |
@@ -42,8 +44,21 @@ No raw exceptions, paths, source/query text, heap strings/primitive values, clas
 
 Removing names and identifiers does not guarantee anonymity. Timing, platform/version and workload combinations can still be identifying, and networks/Azure can process IP addresses. This implementation does not certify legal compliance. Cross-session unique-user and retention metrics are deliberately unavailable rather than reconstructed with a fingerprint.
 
-Azure receipt, historical fields, actual retention, IP/geolocation handling, access and export settings require a separate read-only resource review before release acceptance. They have not been changed by this implementation. An HTTP success alone does not prove a record is visible in Logs; see [Microsoft's ingestion troubleshooting guidance](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-monitor/app-insights/telemetry/investigate-missing-telemetry). No historical deletion or cloud configuration change is automatic.
+## Azure configuration
 
-**Cloud retention has not been verified in this documentation review.** The local queue limits above are not an Azure retention period. Maintainers must publish the verified retention/access policy after the resource review; do not infer that events disappear when the local queue clears. If that uncertainty is unacceptable for your environment, turn reporting off before use.
+The maintainer supplied successful read-only Azure configuration queries on **October 11, 2026**. They report the following settings for the shared telemetry resource; this documentation update does not change them.
 
-For a privacy concern or diagnostic question, use the [support guide](./support.md). Do not attach a dump, source file, credentials, or raw private logs to a public issue. A reviewed local diagnostic report is optional and never automatically uploaded.
+| Setting | Reported configuration and scope |
+| --- | --- |
+| Region | Application Insights and its Log Analytics workspace: **East US 2, United States**. |
+| AppEvents retention | **730 days analytics and 730 days total**, with **0 additional archive days**. The table explicitly overrides workspace retention; the component's legacy 90-day value is not the effective AppEvents retention. |
+| IP masking | `DisableIpMasking` is unset, consistent with Azure's default: temporarily process IP for geolocation, then store client IP as `0.0.0.0`. Derived location fields may remain. |
+| Workspace replication | No secondary-region replication configuration reported. This is not a guarantee about all Microsoft processing or copies. |
+| Automatic workspace exports | No data-export rules configured. This does not exclude manual downloads or other export mechanisms. |
+| Reviewed access | One inherited Owner role for the maintainer's Azure account; no other assignments reported for the resource or workspace in the supplied review. This does not exclude Microsoft service operations. |
+
+[Microsoft's retention documentation](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-retention-configure) explains table overrides; [Microsoft's IP-handling documentation](https://learn.microsoft.com/en-us/azure/azure-monitor/app/ip-collection) explains temporary processing and derived geolocation. Configured table retention is separate from local queue limits. Turning reporting off does not delete information already received by Azure, and this update does not purge historical records.
+
+These configuration reads do not establish the contents of historical events or prove that a particular installed release's events reached Logs. Check those separately before release acceptance. An HTTP success alone does not prove portal visibility; see [Microsoft's ingestion troubleshooting guidance](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-monitor/app-insights/telemetry/investigate-missing-telemetry).
+
+For privacy questions, email [sachinkg12@gmail.com](mailto:sachinkg12@gmail.com). For non-confidential diagnostic questions, use the [support guide](./support.md). Do not attach a dump, source file, credentials, or raw private logs to a public issue. A reviewed local diagnostic report is optional and never automatically uploaded.
