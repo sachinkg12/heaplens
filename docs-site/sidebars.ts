@@ -85,6 +85,7 @@ const sidebars: SidebarsConfig = {
       label: '\uD83D\uDCCB Runbook',
       items: [
         'runbook/troubleshooting',
+        'runbook/telemetry',
         'runbook/debugging-webview',
         'runbook/performance-tuning',
       ],

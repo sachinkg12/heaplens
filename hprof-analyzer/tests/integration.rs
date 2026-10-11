@@ -5,6 +5,56 @@ use hprof_analyzer::test_helpers::{build_test_state, build_second_test_state};
 use hprof_analyzer::compare_heaps;
 use serde_json;
 
+fn comparison_snapshot(state: &dyn hprof_analyzer::indexed::types::HeapAnalysis) -> hprof_analyzer::comparison::ComparisonSnapshot {
+    hprof_analyzer::comparison::ComparisonSnapshot {
+        summary: state.get_summary().into(), class_histogram: state.get_class_histogram().to_vec(),
+        leak_suspects: state.get_leak_suspects().to_vec(), waste_analysis: state.get_waste_analysis().into(),
+    }
+}
+
+#[test]
+fn compact_snapshots_match_existing_comparison_in_both_directions() {
+    let a=build_test_state();let b=build_second_test_state();
+    for (before,after) in [(&a,&b),(&b,&a),(&a,&a)] {
+        let existing=compare_heaps(before,after,"before","after");
+        let compact=hprof_analyzer::comparison::compare_snapshots(&comparison_snapshot(before),&comparison_snapshot(after),"before","after");
+        fn normalized(value: impl serde::Serialize)->serde_json::Value {
+            let mut v=serde_json::to_value(value).unwrap();
+            for key in ["histogram_delta","leak_suspect_changes"] {
+                v[key].as_array_mut().unwrap().sort_by_key(|row|row["class_name"].as_str().unwrap().to_string());
+            } v
+        }
+        assert_eq!(normalized(existing),normalized(compact));
+    }
+}
+
+#[test]
+fn snapshot_protocol_roundtrip_keeps_signed_deltas_and_rejects_bad_numbers() {
+    let params=serde_json::json!({"baseline":comparison_snapshot(&build_second_test_state()),
+        "current":comparison_snapshot(&build_test_state()),"baseline_label":"before","current_label":"after"});
+    let result=hprof_analyzer::comparison::compare_snapshot_request(params.clone()).unwrap();
+    assert_eq!(result.summary_delta.total_heap_size_delta,-8192);
+    let mut invalid=params.clone();invalid["baseline"]["summary"]["total_heap_size"]=serde_json::json!(u64::MAX);
+    assert!(hprof_analyzer::comparison::compare_snapshot_request(invalid).is_err());
+    let mut invalid=params.clone();invalid["current"]["leak_suspects"][0]["retained_percentage"]=serde_json::json!(-1);
+    assert!(hprof_analyzer::comparison::compare_snapshot_request(invalid).is_err());
+    assert!(hprof_analyzer::comparison::compare_snapshot_request(serde_json::Value::Null).is_err());
+}
+
+#[test]
+fn snapshot_protocol_accepts_full_width_identifiers_but_keeps_delta_range_guards() {
+    let mut params=serde_json::json!({"baseline":comparison_snapshot(&build_second_test_state()),
+        "current":comparison_snapshot(&build_test_state()),"baseline_label":"before","current_label":"after"});
+    for side in ["baseline", "current"] {
+        for suspect in params[side]["leak_suspects"].as_array_mut().unwrap() {
+            suspect["object_id"]=serde_json::json!(u64::MAX);
+        }
+    }
+    assert!(hprof_analyzer::comparison::compare_snapshot_request(params.clone()).is_ok());
+    params["baseline"]["summary"]["total_heap_size"]=serde_json::json!(u64::MAX);
+    assert!(hprof_analyzer::comparison::compare_snapshot_request(params).is_err());
+}
+
 // ============================================================================
 // JOIN tests
 // ============================================================================

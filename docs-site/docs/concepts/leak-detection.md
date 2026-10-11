@@ -5,7 +5,7 @@ title: Leak Detection Algorithm
 
 # Leak Detection Algorithm
 
-HeapLens uses a multi-phase heuristic algorithm to automatically identify memory leak suspects. The approach is modeled after Eclipse MAT's leak suspect report, adapted with classloader-aware analysis and accumulation point detection.
+HeapLens uses a multi-phase heuristic algorithm to automatically identify memory leak suspects. The approach adapts established heap-analysis heuristics with classloader-aware analysis and accumulation point detection.
 
 ## Design Philosophy
 
@@ -103,7 +103,7 @@ All percentages are computed against the **reachable heap size**, not the total 
 reachable_heap_size = total_heap_size - unreachable_shallow_size
 ```
 
-This matches Eclipse MAT's behavior and produces percentages consistent with MAT's leak suspect report.
+When comparing percentages with an independent reference analyzer, verify that both analyses use the same reachable-heap definition and denominator.
 
 ## Worked Example
 

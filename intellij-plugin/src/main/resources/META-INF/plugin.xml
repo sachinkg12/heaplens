@@ -1,0 +1,24 @@
+<idea-plugin>
+    <id>com.heaplens.analyzer</id>
+    <name>HeapLens Prototype</name>
+    <vendor url="https://github.com/sachinkg12/heaplens">HeapLens</vendor>
+    <description><![CDATA[Local development preview for macOS Apple Silicon and IntelliJ IDEA 2026.1–2026.2: shared HeapLens Rust analysis and web UI.
+    Eleven tabs: Overview, Histogram, Dominator Tree, Leak Suspects, Waste, Source, Query, Compare, Timeline, Monitor and opt-in AI Chat.
+    Compare and Timeline reuse analyzed dumps open in this project. Monitor connects only with approval to a separately running HeapLens JVM agent.
+    Object inspection and retention paths, local exports, attached dependency sources and IDE decompilation.
+    AI source proposals require explicit approval and open in a temporary native merge preview. Reviewed application uses Undo/Redo and rejects stale source. Completed chat is stored locally and can be cleared.
+    Telemetry is off until you explicitly enable Errors Only or Usage and Errors. No telemetry is collected or sent before approval; Cancel or No Telemetry keeps it off. Choose Telemetry > Off to withdraw permission. The choice persists locally and is unsynced. Earlier prototype On settings require fresh approval. Local diagnostic review does not upload the report. No dump, source, query text or stable identifiers are sent by telemetry; network services may process IP addresses.
+    Not a published or full-parity plugin. AI requires user configuration; Chat approval is session-scoped, while Explain and source submission require approval per request. No MCP.]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <dependencies>
+        <plugin id="com.intellij.modules.os.mac"/>
+        <plugin id="com.intellij.modules.arch.arm64"/>
+    </dependencies>
+    <!-- JCEF is in core on 261; on 262 it has a separate plugin classloader. -->
+    <depends optional="true" config-file="heaplens-jcef.xml">com.intellij.modules.jcef</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType name="HeapLens HPROF" implementationClass="com.heaplens.intellij.HprofFileType"
+                  fieldName="INSTANCE" extensions="hprof"/>
+        <fileEditorProvider implementation="com.heaplens.intellij.HeapEditorProvider"/>
+    </extensions>
+</idea-plugin>

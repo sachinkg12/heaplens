@@ -9,6 +9,8 @@ yarn-error.log*
 # Rust
 target/
 Cargo.lock
+# The analyzer ships binaries, so its lockfile is tracked for reproducible builds.
+!/hprof-analyzer/Cargo.lock
 **/*.rs.bk
 
 # Build artifacts

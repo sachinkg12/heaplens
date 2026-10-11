@@ -1,4 +1,4 @@
-# Shallow-size model (P0-7)
+# Shallow-size model
 
 HeapLens reports **estimated JVM object sizes**, not HPROF payload lengths.
 The default model is `conventional-jvm-v1`. It is shared by the indexed and
@@ -8,9 +8,10 @@ incident reports and shallow-size inputs to waste estimates.
 ## Model and boundaries
 
 `object_layout.rs` owns arithmetic; `hprof_sizing.rs` adapts HPROF metadata and
-infers a layout. Graph builders consume that boundary. There is no MAT source
-code in this implementation. MAT is an external comparison tool. Expected
-fixture sizes come from Java Instrumentation, independently of both analyzers.
+infers a layout. Graph builders consume that boundary. The model is derived from
+HotSpot's documented object-layout rules and validated against sizes the JVM
+itself reports through `Instrumentation.getObjectSize`. Comparisons with other
+analyzers are recorded as secondary evidence; they are not the source of the model.
 
 - An ordinary instance is the estimated object header plus primitive-field
   bytes and reference slots across its complete superclass chain, rounded to
@@ -27,13 +28,13 @@ fixture sizes come from Java Instrumentation, independently of both analyzers.
   size. Hidden VM fields, class-mirror/native metadata, special field padding
   (including `@Contended`) and compact object headers are not reconstructed.
   Total heap is therefore an estimate over represented instances and arrays,
-  not complete JVM process memory or a guarantee of MAT total-heap equality.
+  not complete JVM process memory or a guarantee of cross-tool total-heap equality.
 - If class metadata is incomplete, the fallback is header plus serialized
   instance bytes, aligned. That fallback can overestimate compressed references.
   Cyclic superclass metadata returns a structured error.
 - Android HPROF 1.0.3 retains the previous `legacy-payload-v0` estimate. Android
   sizing is deliberately parked; conventional HotSpot headers are not imposed
-  on ART. P0-5 remains separate.
+  on ART. It is tracked separately.
 
 ## Inference, assumptions and explicit layouts
 
@@ -104,17 +105,9 @@ It also emits complete waste details so existing backend reporting differences
 can be distinguished from object-size disagreements. The separate lightweight
 `scan_records` payload-counting utility is not a full graph/layout analysis.
 
-For MAT, run this OQL on the same oracle fixture:
-
-```sql
-SELECT s.expectedSize AS JVM,
-       s.value.@usedHeapSize AS MAT,
-       classof(s.value).@name AS Class
-FROM "ShallowSizeCounterexample[$]Sample" s
-```
-
-MAT and the JVM can disagree, particularly when reference and class-pointer
-compression differ or subclass fields reuse padding. Preserve those differences
-in evidence instead of forcing HeapLens to reproduce them. Detailed measured
-results and release gates live in `testing_enhancements/P0-7-shallow-size-model.md`
-in the project evidence directory.
+Other analyzers can be checked against the same fixture, since each `Sample`
+carries the JVM-reported size beside the object. Analyzers and the JVM can
+disagree, particularly when reference and class-pointer compression differ or
+subclass fields reuse padding. Preserve those differences as evidence rather
+than forcing HeapLens to reproduce them. Detailed measured results and release
+gates are kept in the project's evidence records.

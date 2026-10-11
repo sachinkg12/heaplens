@@ -51,10 +51,6 @@
       "description": "GitHub Stars"
     }
   ],
-  "telemetryConnectionString": "InstrumentationKey=963d68d0-40ec-4dcb-ad11-48c8abacd67c;IngestionEndpoint=https://eastus2-3.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus2.livediagnostics.monitor.azure.com/;ApplicationId=909bbca7-a6fe-4ba4-aa0c-3e04c73c8a5a",
-  "telemetry": {
-    "telemetryLevel": "all"
-  },
   "activationEvents": [
     "onCustomEditor:heaplens.hprofEditor",
     "onCommand:heaplens.analyzeFile",
@@ -69,6 +65,14 @@
       {
         "command": "heaplens.analyzeFile",
         "title": "HeapLens: Analyze HPROF File"
+      },
+      {
+        "command": "heaplens.configureTelemetry",
+        "title": "HeapLens: Configure Telemetry"
+      },
+      {
+        "command": "heaplens.reviewDiagnostics",
+        "title": "HeapLens: Review Local Diagnostics"
       },
       {
         "command": "heaplens.exportJson",
@@ -129,6 +133,13 @@
     "configuration": {
       "title": "HeapLens",
       "properties": {
+        "heaplens.telemetry.level": {
+          "type": "string",
+          "enum": ["off", "error", "all"],
+          "default": "all",
+          "scope": "application",
+          "description": "Azure telemetry is enabled by default (all: usage and errors). To disable it, choose Off in HeapLens: Configure Telemetry or set this to off. error sends bounded failure codes only. No dump/source/query text or stable identifiers. Network services may process IP addresses. The editor's telemetry permission also applies."
+        },
         "heaplens.llm.provider": {
           "type": "string",
           "enum": [
@@ -228,9 +239,10 @@
     "vscode:prepublish": "bash scripts/package-binary.sh && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js",
+    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
     "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
     "test:histogram:matrix": "npm run compile && node --test ./out/test/histogramPercentage.integration.test.js",
     "test:privacy:matrix": "npm run compile && node --test ./out/test/llmPrivacy.integration.test.js"
@@ -241,9 +253,8 @@
     "@typescript-eslint/eslint-plugin": "^5.45.0",
     "@typescript-eslint/parser": "^5.45.0",
     "eslint": "^8.28.0",
+    "js-yaml": "4.1.1",
     "typescript": "^4.9.4"
   },
-  "dependencies": {
-    "@vscode/extension-telemetry": "^1.5.1"
-  }
+  "dependencies": {}
 }

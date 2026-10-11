@@ -1,0 +1,94 @@
+name: Standalone CLI candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/distribution/**'
+      - 'scripts/ci/distribution.test.cjs'
+      - '.github/workflows/cli-package.yml'
+      - 'browser-ui/**'
+      - 'telemetry/**'
+      - 'hprof-analyzer/**'
+      - 'src/webview/**'
+      - 'src/promptTemplates.ts'
+      - 'src/hprofEditorProvider.ts'
+      - 'intellij-plugin/scripts/build-*.cjs'
+      - 'intellij-plugin/src/main/webview/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  apple-silicon-candidate:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      DO_NOT_TRACK: '1'
+      CI: '1'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require the native Apple Silicon runner
+        run: node -e "if(process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Apple Silicon runner required')"
+      - run: npm ci
+      - run: node --test scripts/distribution/distribution.test.cjs
+      - name: Build unchanged native CLI and server
+        run: cargo build --locked --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
+      - name: Build shared browser assets
+        run: node browser-ui/build.cjs
+      - name: Fetch the locked dependency graph so packaging can read it offline
+        run: cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
+      - id: candidate
+        name: Assemble standalone npm archive and Homebrew formula
+        run: |
+          CANDIDATE_DIR=$(mktemp -d "$RUNNER_TEMP/heaplens-cli-candidate.XXXXXX")
+          node scripts/distribution/build.cjs --out "$CANDIDATE_DIR"
+          echo "directory=$CANDIDATE_DIR" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heaplens-cli-darwin-arm64-candidate
+          path: ${{ steps.candidate.outputs.directory }}
+          retention-days: 14
+
+  installed-package-test:
+    needs: apple-silicon-candidate
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    env:
+      DO_NOT_TRACK: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Require the native Apple Silicon runner
+        run: node -e "if(process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Apple Silicon runner required')"
+      - uses: actions/download-artifact@v4
+        with:
+          name: heaplens-cli-darwin-arm64-candidate
+          path: ${{ runner.temp }}/heaplens-cli-candidate
+      - name: Install the npm archive on Node ${{ matrix.node }} and run the installed smoke suite
+        run: node scripts/distribution/smoke.cjs "$RUNNER_TEMP/heaplens-cli-candidate"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heaplens-cli-smoke-report-node${{ matrix.node }}
+          path: ${{ runner.temp }}/heaplens-cli-candidate/smoke-report.json
+          retention-days: 14

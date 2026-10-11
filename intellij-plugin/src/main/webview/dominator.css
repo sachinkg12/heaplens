@@ -1,0 +1,12 @@
+/* Only implemented capabilities are exposed; the shared renderer is unchanged. */
+#tab-domtree {
+    --vscode-progressBar-background: #6baaff;
+    --vscode-textLink-foreground: #6baaff;
+    --vscode-badge-background: #343539;
+    --vscode-badge-foreground: #ededed;
+}
+#tab-domtree .tree-row { min-width: 520px; }
+#tab-domtree .tree-name { min-width: 100px; }
+#domtree-header { position: sticky; top: 0; z-index: 2; background: var(--vscode-editorWidget-background); }
+.dominator-hint { opacity: .75; font-size: 12px; }
+#dominator-status { margin-bottom: 8px; color: var(--vscode-editorError-foreground); }
