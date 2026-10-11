@@ -158,6 +158,8 @@ jobs:
       - name: Build the shared analysis server
         working-directory: hprof-analyzer
         run: cargo build --release --bin hprof-server
+      - name: Fetch the locked dependency graph so the notices task can read it offline
+        run: cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
       - name: Require Apple Silicon runner
         run: node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Apple Silicon runner required')"
       - name: Build and test the exact Apple Silicon package

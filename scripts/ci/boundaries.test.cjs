@@ -58,6 +58,10 @@ test('IntelliJ CI tests the real engine using a generated, non-private fixture',
   assert.match(job.if, /needs\.changes\.outputs\.intellij == 'true'/);
   assert.match(runs(job), /ClassRetainedCounterexample/);
   assert.match(runs(job), /cargo build --release --bin hprof-server/);
+  const stepRuns = job.steps.map(step => step.run || "");
+  const fetchIndex = stepRuns.findIndex(run => /cargo fetch --locked --target aarch64-apple-darwin/.test(run));
+  assert.ok(fetchIndex > stepRuns.findIndex(run => /cargo build --release --bin hprof-server/.test(run)), "fetch the locked graph after the server build");
+  assert.ok(fetchIndex < stepRuns.findIndex(run => /buildPlugin/.test(run)), "fetch the locked graph before the notices task reads it offline");
   assert.match(runs(job), /heaplens\.test\.ci=true/);
   assert.match(runs(job), /heaplens\.test\.server=/);
   assert.match(runs(job), /heaplens\.test\.dump=/);
