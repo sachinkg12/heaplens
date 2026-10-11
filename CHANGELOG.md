@@ -4,7 +4,9 @@ All notable changes to HeapLens are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.33] - 2026-10-10
+
+This section covers the changes released as 1.0.31, 1.0.32 and 1.0.33.
 
 ### Changed
 
