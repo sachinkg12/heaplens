@@ -1,0 +1,22 @@
+HeapLens IntelliJ package: third-party attribution
+
+Gson 2.13.1
+Copyright (C) 2008 Google Inc.
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/google/gson/tree/gson-parent-2.13.1
+
+Error Prone annotations 2.38.0
+Copyright 2015 The Error Prone Authors.
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/google/error-prone/tree/v2.38.0
+
+The complete Apache License, Version 2.0 is included as LICENSE at the
+root of the installed plugin. These components are distributed unchanged.
+
+D3 7.9.0
+Copyright 2010-2023 Mike Bostock.
+The ISC license is included in licenses/d3-LICENSE.txt.
+
+Rust dependency attribution and original license texts are recorded in
+THIRD_PARTY_NOTICES.json and licenses/rust/ at the root of the installed plugin.
+These third-party terms do not change the license of HeapLens itself.

@@ -16,6 +16,60 @@ async function send(page,data){await page.evaluate(data=>window.dispatchEvent(ne
 async function latest(page){return page.evaluate(()=>window.sentMessages.at(-1));}
 async function run(body){const page=await browser.newPage({viewport:{width:1100,height:650}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
   try{await page.setContent(html);await send(page,analysis);await body(page);assert.deepEqual(errors,[]);}finally{await page.close();}}
+function contrast(foreground,background){
+  const luminance=color=>{const values=color.match(/\d+/g).slice(0,3).map(v=>{const n=Number(v)/255;return n<=.04045?n/12.92:((n+.055)/1.055)**2.4;});
+    return .2126*values[0]+.7152*values[1]+.0722*values[2];};
+  const a=luminance(foreground),b=luminance(background);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+}
+const contrastPalette=dark=>({
+  '--vscode-editor-background':dark?'#202124':'#ffffff','--vscode-foreground':dark?'#ededed':'#202124',
+  '--vscode-editor-foreground':dark?'#ededed':'#202124',
+  '--vscode-editorGroupHeader-tabsBackground':dark?'#202124':'#f4f5f7',
+  '--vscode-editorWidget-background':dark?'#28292c':'#f4f5f7','--vscode-list-hoverBackground':dark?'#343539':'#e5edfa',
+  '--vscode-panel-border':dark?'#505050':'#c4c7cc','--vscode-input-background':dark?'#303134':'#ffffff',
+  '--vscode-input-foreground':dark?'#ededed':'#202124','--vscode-input-border':dark?'#707070':'#a4a8ae',
+  '--vscode-button-background':dark?'#176ac5':'#1264bc','--vscode-button-foreground':'#ffffff',
+  '--vscode-button-hoverBackground':dark?'#1258a8':'#0c529f',
+  '--vscode-focusBorder':dark?'#6baaff':'#1264bc','--vscode-editorError-foreground':dark?'#ff7777':'#b42318',
+  '--vscode-editorWarning-foreground':dark?'#f2c55c':'#946200','--hl-scrollbar-thumb':dark?'#969aa3':'#747b85',
+  '--vscode-inputValidation-errorBackground':dark?'#4b2020':'#fff0f0',
+  '--vscode-inputValidation-errorForeground':dark?'#ffb4ab':'#b42318'
+});
+test('Fix and Configure controls retain readable hover, focus and pressed colours across live theme changes',()=>run(async page=>{
+  for(const dark of [false,true,false]){
+    await send(page,{command:'hostAppearance',dark,colors:contrastPalette(dark)});
+    for(const tab of ['source','chat']){
+      await page.locator('#tabBtn-'+tab).click();
+      const button=tab==='source'?page.locator('#source-table .source-fix-btn').first():page.locator('#ai-configure');
+      await button.hover();await button.focus();
+      const assertPaint=async()=>{const paint=await button.evaluate(el=>({foreground:getComputedStyle(el).color,background:getComputedStyle(el).backgroundColor}));
+        assert.equal(paint.background,dark?'rgb(18, 88, 168)':'rgb(12, 82, 159)');
+        assert.ok(contrast(paint.foreground,paint.background)>=4.5,JSON.stringify(paint));};
+      await assertPaint();await page.mouse.down();await assertPaint();await page.mouse.move(0,0);await page.mouse.up();
+    }
+  }
+  assert.equal(await page.evaluate(()=>window.sentMessages.some(m=>m.command==='fixWithAi' || m.command==='aiConfigure')),false);
+  const configure=page.locator('#ai-configure');await configure.click();assert.equal((await latest(page)).command,'aiConfigure');
+  assert.equal(await configure.isEnabled(),false);
+  assert.equal(await configure.evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(12, 82, 159)');
+  await send(page,{command:'aiConfiguration',message:'Configuration closed.'});assert.equal(await configure.isEnabled(),true);
+}));
+test('actual chat credential failure stays readable after light/dark transitions',()=>run(async page=>{
+  await page.locator('#tabBtn-chat').click();await page.locator('#chat-input').fill('Explain this suspect');await page.locator('#chat-send').click();
+  const request=await latest(page);
+  const message='AI configuration or secure credential access failed. Use Configure AI and check the key for this endpoint.';
+  await send(page,{command:'aiError',requestId:request.requestId,message});
+  const bubble=page.locator('#chat-messages .chat-bubble.error');assert.equal(await bubble.textContent(),message);
+  for(const dark of [false,true,false]){
+    await send(page,{command:'hostAppearance',dark,colors:contrastPalette(dark)});
+    const paint=await bubble.evaluate(el=>({foreground:getComputedStyle(el).color,background:getComputedStyle(el).backgroundColor}));
+    assert.equal(paint.background,dark?'rgb(75, 32, 32)':'rgb(255, 240, 240)');
+    assert.equal(paint.foreground,dark?'rgb(255, 180, 171)':'rgb(180, 35, 24)');
+    assert.ok(contrast(paint.foreground,paint.background)>=4.5,JSON.stringify(paint));
+    assert.equal(await page.locator('#chat-send').isEnabled(),true);
+    if(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR)await page.screenshot({path:path.join(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR,dark?'contrast-error-dark.png':'contrast-error-light.png')});
+  }
+}));
 test('appearance changes update existing surfaces safely without analysis or state reset',()=>run(async page=>{
   await page.locator('#tabBtn-source').click();await page.locator('#source-search').fill('Owner');
   const requestsBefore=await page.evaluate(()=>window.sentMessages.length);

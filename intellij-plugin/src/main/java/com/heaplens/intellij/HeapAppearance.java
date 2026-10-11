@@ -32,6 +32,9 @@ final class HeapAppearance {
         put(colors, "--vscode-input-border", "Component.borderColor", dark ? 0x707070 : 0xa4a8ae);
         colors.addProperty("--vscode-button-background", dark ? "#176ac5" : "#1264bc");
         colors.addProperty("--vscode-button-foreground", "#ffffff");
+        colors.addProperty("--vscode-button-hoverBackground", dark ? "#1258a8" : "#0c529f");
+        colors.addProperty("--vscode-inputValidation-errorBackground", dark ? "#4b2020" : "#fff0f0");
+        colors.addProperty("--vscode-inputValidation-errorForeground", dark ? "#ffb4ab" : "#b42318");
         colors.addProperty("--vscode-focusBorder", dark ? "#6baaff" : "#1264bc");
         colors.addProperty("--vscode-editorError-foreground", dark ? "#ff7777" : "#b42318");
         // Amber on light surfaces retains contrast; bright yellow works on dark surfaces.

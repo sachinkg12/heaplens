@@ -74,6 +74,16 @@ test('native appearance initializes before load and subscribes with browser-owne
   assert.match(css,/::-webkit-scrollbar-thumb/);
   assert.match(lastRule('.tab-content.active, .query-results, .inspector-panel'),/scrollbar-gutter:\s*stable/);
 });
+test('initial and live IntelliJ palettes supply hover and paired error colours',()=>{
+  const native=fs.readFileSync('src/main/java/com/heaplens/intellij/HeapAppearance.java','utf8');
+  const adapter=fs.readFileSync('src/main/webview/appearance-adapter.js','utf8');
+  for(const token of ['--vscode-button-hoverBackground','--vscode-inputValidation-errorBackground','--vscode-inputValidation-errorForeground']){
+    assert.ok(css.includes(token+':'), 'initial fallback: '+token);
+    assert.ok(native.includes('"'+token+'"'), 'native palette: '+token);
+    assert.ok(adapter.includes("'"+token+"'"), 'live update allowlist: '+token);
+  }
+  assert.match(lastRule('#tab-chat .chat-bubble.error'),/color:\s*var\(--vscode-inputValidation-errorForeground\)/);
+});
 
 // DOM contract harness, not a claim of native JCEF layout/accessibility coverage.
 function harness() {

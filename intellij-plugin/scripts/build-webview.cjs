@@ -153,7 +153,7 @@ const hostTemplate = template.replace('<div id="timeline-file-list"',
   '<div id="dominator-status" role="status" aria-live="polite"></div>' + treeMarker);
 const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-__NONCE__'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
-<title>HeapLens IntelliJ prototype</title><style>
+<title>HeapLens</title><style>
 :root {
  --vscode-editor-background:#202124; --vscode-foreground:#ededed;
  /* JCEF must supply the opaque surfaces normally injected by VS Code. */
@@ -163,6 +163,8 @@ const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8">
  --vscode-input-background:#303134; --vscode-input-foreground:#ededed;
  --vscode-input-border:#707070; --vscode-button-background:#176ac5;
  --vscode-button-foreground:white; --vscode-focusBorder:#6baaff;
+ --vscode-button-hoverBackground:#1258a8;
+ --vscode-inputValidation-errorBackground:#4b2020; --vscode-inputValidation-errorForeground:#ffb4ab;
  --vscode-editorError-foreground:#ff7777; --vscode-editorWarning-foreground:#f2c55c; --vscode-font-family:system-ui;
  --vscode-editor-font-family:monospace; --vscode-font-size:13px;
 }

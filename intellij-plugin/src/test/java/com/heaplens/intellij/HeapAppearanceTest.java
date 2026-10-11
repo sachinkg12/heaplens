@@ -10,7 +10,11 @@ class HeapAppearanceTest {
         var appearance=HeapAppearance.current();
         assertEquals("hostAppearance",appearance.get("command").getAsString());
         assertTrue(appearance.get("dark").getAsJsonPrimitive().isBoolean());
-        var colors=appearance.getAsJsonObject("colors");assertEquals(16,colors.size());
+        var colors=appearance.getAsJsonObject("colors");assertEquals(19,colors.size());
+        for (String token : new String[]{"--vscode-button-hoverBackground", "--vscode-inputValidation-errorBackground", "--vscode-inputValidation-errorForeground"}) {
+            assertTrue(colors.has(token), token);
+            assertTrue(HeapAppearance.initialCss().contains(token + ":"), token);
+        }
         assertNotEquals(colors.get("--vscode-editorError-foreground"),colors.get("--vscode-editorWarning-foreground"));
         assertTrue(HeapAppearance.initialCss().contains("--vscode-editorWarning-foreground:"));
         colors.entrySet().forEach(entry->assertTrue(entry.getValue().getAsString().matches("#[0-9a-f]{6}")));

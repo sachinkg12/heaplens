@@ -5,6 +5,7 @@ onMessage('hostAppearance', function(message) {
         '--vscode-editorGroupHeader-tabsBackground','--vscode-editorWidget-background','--vscode-list-hoverBackground',
         '--vscode-panel-border','--vscode-input-background','--vscode-input-foreground','--vscode-input-border',
         '--vscode-button-background','--vscode-button-foreground','--vscode-focusBorder','--vscode-editorError-foreground',
+        '--vscode-button-hoverBackground','--vscode-inputValidation-errorBackground','--vscode-inputValidation-errorForeground',
         '--vscode-editorWarning-foreground','--hl-scrollbar-thumb']);
     Object.entries(message.colors).forEach(function(pair) {
         if (allowed.has(pair[0]) && /^#[0-9a-f]{6}$/i.test(pair[1]))

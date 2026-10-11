@@ -1,14 +1,30 @@
 <idea-plugin>
     <id>com.heaplens.analyzer</id>
-    <name>HeapLens Prototype</name>
+    <name>HeapLens</name>
     <vendor url="https://github.com/sachinkg12/heaplens">HeapLens</vendor>
-    <description><![CDATA[Local development preview for macOS Apple Silicon and IntelliJ IDEA 2026.1–2026.2: shared HeapLens Rust analysis and web UI.
-    Eleven tabs: Overview, Histogram, Dominator Tree, Leak Suspects, Waste, Source, Query, Compare, Timeline, Monitor and opt-in AI Chat.
-    Compare and Timeline reuse analyzed dumps open in this project. Monitor connects only with approval to a separately running HeapLens JVM agent.
-    Object inspection and retention paths, local exports, attached dependency sources and IDE decompilation.
-    AI source proposals require explicit approval and open in a temporary native merge preview. Reviewed application uses Undo/Redo and rejects stale source. Completed chat is stored locally and can be cleared.
-    Telemetry is off until you explicitly enable Errors Only or Usage and Errors. No telemetry is collected or sent before approval; Cancel or No Telemetry keeps it off. Choose Telemetry > Off to withdraw permission. The choice persists locally and is unsynced. Earlier prototype On settings require fresh approval. Local diagnostic review does not upload the report. No dump, source, query text or stable identifiers are sent by telemetry; network services may process IP addresses.
-    Not a published or full-parity plugin. AI requires user configuration; Chat approval is session-scoped, while Explain and source submission require approval per request. No MCP.]]></description>
+    <description><![CDATA[
+    <p>Analyze Java heap dumps inside IntelliJ IDEA with HeapLens, an open-source tool with a bundled local Rust analysis server.</p>
+    <p><b>Supported platform:</b> macOS Apple Silicon (ARM64), IntelliJ IDEA 2026.1–2026.2 using its bundled JetBrains Runtime with JCEF. No separate Rust, Node.js or server installation is required.</p>
+    <ul>
+      <li>Eleven views: Overview, Histogram, Dominator Tree, Leak Suspects, Waste, Source, Query, Compare, Timeline, Monitor and AI Chat.</li>
+      <li>Inspect objects and fields, follow referrers and GC-root paths, run HeapQL, and export reports locally.</li>
+      <li>Open matching project Java files, attached dependency sources or IDE-decompiled library classes. Inner classes open their containing file, not an exact declaration.</li>
+      <li>Compare and Timeline use analyzed dumps currently open in the project. Timeline ordering uses file modification time, not guaranteed capture time.</li>
+      <li>Monitor requires a separately running HeapLens JVM agent and approval. Its protocol is plaintext and unauthenticated: use localhost or a trusted tunnel, never a publicly exposed endpoint.</li>
+    </ul>
+    <p><b>Optional AI:</b> configure your own provider and credentials. Chat approval is session-scoped; Explain and Fix with AI ask separately. Fix sends the entire approved project source file to the configured service and opens a temporary merge preview with guarded application and Undo/Redo. Proposals may be incorrect; review and test them. Completed chat is stored locally and can be cleared.</p>
+    <p><b>Telemetry:</b> off until you explicitly enable Errors Only or Usage and Errors. No telemetry is collected or sent before approval. Cancel or No Telemetry keeps it off; choose Telemetry &gt; Off to withdraw permission. Preferences persist locally and are unsynced. Local diagnostic review does not upload the report. Telemetry excludes dump contents, source, query text and stable identifiers; network services may process IP addresses.</p>
+    <p>This release does not claim complete VS Code feature parity. Windows, Linux and Intel Mac packages are not included. MCP is not implemented in this plugin.</p>
+    <p><a href="https://sachinkg12.github.io/heaplens/">Documentation</a> · <a href="https://sachinkg12.github.io/heaplens/docs/ai-integration/privacy/">AI data sharing</a> · <a href="https://sachinkg12.github.io/heaplens/docs/runbook/telemetry/">Telemetry policy</a> · <a href="https://github.com/sachinkg12/heaplens/issues">Support</a></p>
+    ]]></description>
+    <change-notes><![CDATA[
+    <p>Light-theme contrast correction for macOS Apple Silicon and IntelliJ IDEA 2026.1–2026.2.</p>
+    <ul>
+      <li>Keep Fix with AI, Configure AI and other shared buttons readable while hovered, focused or pressed.</li>
+      <li>Use paired foreground/background colours for AI Chat errors in both light and dark appearances, including live theme changes.</li>
+      <li>Retain the same analysis server, consent rules, telemetry policy and reviewed proposal/Undo flow.</li>
+    </ul>
+    ]]></change-notes>
     <depends>com.intellij.modules.platform</depends>
     <dependencies>
         <plugin id="com.intellij.modules.os.mac"/>

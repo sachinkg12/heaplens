@@ -5,3 +5,4 @@
 #tab-chat .chat-bubble { overflow-wrap: anywhere; }
 #tab-chat .md-code-block { white-space: pre-wrap; }
 #tab-chat button:disabled { opacity: .45; cursor: default; }
+#tab-chat .chat-bubble.error { color: var(--vscode-inputValidation-errorForeground); }

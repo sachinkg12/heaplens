@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "com.heaplens"
-version = "0.1.14-prototype"
+version = "0.1.16"
 
 repositories {
     mavenCentral()
@@ -32,7 +32,7 @@ java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
 intellijPlatform {
     pluginConfiguration {
-        name = "HeapLens Prototype"
+        name = "HeapLens"
         ideaVersion { sinceBuild = "261"; untilBuild = "262.*" }
     }
     buildSearchableOptions = false
@@ -81,6 +81,17 @@ val serverSource = providers.gradleProperty("heaplensServerBinary")
     .orElse(providers.systemProperty("heaplens.test.server"))
     .orElse("../hprof-analyzer/target/release/" + if (nativeOs == "win32") "hprof-server.exe" else "hprof-server")
 val stagedServer = layout.buildDirectory.dir(serverTarget.map { "generated/native/$it" })
+val stagedNotices = layout.buildDirectory.dir("generated/notices")
+val stageNotices by tasks.registering(Exec::class) {
+    inputs.files("scripts/stage-notices.cjs", "../scripts/distribution/licenses.cjs",
+        "../scripts/distribution/files.cjs", "../scripts/distribution/d3-LICENSE.txt", "../LICENSE",
+        "../hprof-analyzer/Cargo.lock", "../hprof-analyzer/Cargo.toml")
+    inputs.file("../hprof-analyzer/crates/jvm-hprof/Cargo.toml")
+    inputs.file("../hprof-analyzer/crates/jvm-hprof/LICENSE.txt")
+    inputs.property("pluginVersion", project.version.toString())
+    outputs.dir(stagedNotices)
+    commandLine("node", "scripts/stage-notices.cjs", stagedNotices.get().asFile.absolutePath, project.version.toString())
+}
 val stageServer by tasks.registering(Exec::class) {
     inputs.file(serverSource.map { file(it) })
     inputs.file("scripts/stage-server.cjs")
@@ -90,7 +101,8 @@ val stageServer by tasks.registering(Exec::class) {
         stagedServer.get().asFile.absolutePath, serverTarget.get())
 }
 tasks.withType<PrepareSandboxTask>().configureEach {
-    dependsOn(stageServer)
+    dependsOn(stageServer, stageNotices)
+    from(stagedNotices) { into(pluginName.map { it }) }
     from(stagedServer) {
         into(pluginName.map { "$it/native/${serverTarget.get()}" })
         filePermissions { unix("755") }

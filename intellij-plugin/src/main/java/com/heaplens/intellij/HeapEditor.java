@@ -25,7 +25,7 @@ import org.jetbrains.annotations.*;
 public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private final VirtualFile file;
     private final JPanel panel = new JPanel(new BorderLayout());
-    private final JLabel status = new JLabel("Prototype: initializing the analysis interface.");
+    private final JLabel status = new JLabel("HeapLens: initializing the analysis interface.");
     private final JButton choose = new JButton("Select analysis server");
     private final JButton retry = new JButton("Retry");
     private final HeapSession session;
@@ -144,7 +144,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private void showUnavailable() {
         choose.setEnabled(false);
         retry.setEnabled(false);
-        status.setText("Prototype | UI unavailable | analysis not started");
+        status.setText("HeapLens | UI unavailable | analysis not started");
         panel.add(new JLabel("<html><h2>HeapLens could not start its analysis interface.</h2>"
             + "The embedded browser (JCEF) is unavailable or failed to initialize.<br>"
             + "Install the latest HeapLens package and restart IntelliJ using its bundled JetBrains Runtime.<br>"
@@ -164,7 +164,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
             boolean terminal = state == HeapSession.State.FAILED || state == HeapSession.State.CANCELLED;
             choose.setEnabled(state == HeapSession.State.NEW || terminal);
             retry.setEnabled(terminal);
-            status.setText("Prototype | " + state + " | server PID " + session.pid());
+            status.setText("HeapLens | " + state + " | server PID " + session.pid());
             if (browser != null && ready) browser.send(event);
         });
         // Queue completion before asynchronous history restoration; otherwise a fast
