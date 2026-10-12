@@ -24,4 +24,4 @@ Total estimated waste combines duplicate, empty, over-allocation, and boxed cate
 
 Exports/downloads include names and can include paths. Review before sharing. Host adapters can compare compact snapshots across isolated processes; native compare requires analyzed states, while the CLI releases the baseline graph before loading current.
 
-See [API result fields](../api-reference/data-structures.md) and [Timeline](./timeline-tab.md) for trend investigation. Full manual parity for deferred tabs/platforms is not implied.
+See [API result fields](../api-reference/data-structures.md) and [Timeline](./timeline-tab.md) for trend investigation. Comparison controls and export destinations differ by host.

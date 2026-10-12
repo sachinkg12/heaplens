@@ -8,6 +8,17 @@ function sandbox(fn){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'heaplens-d
   fn(path.join(temp,'site'),path.join(temp,'repo'),temp);
 }finally{fs.rmSync(temp,{recursive:true,force:true});}}
 test('contract check accepts the complete corpus',()=>sandbox((s,r)=>check(s,r)));
+for(const [label,content] of [
+  ['host comparison notes','Internal parity testing instructions.'],
+  ['learning records','See our LEARNING_LOG.md.'],
+  ['enhancement records','See the enhancement tracker.'],
+  ['internal issue IDs','Implementation is tracked as CAP-16 and P1-02.'],
+  ['private source paths','Open /Users/example/private/dump.hprof.'],
+  ['local testing directories','See testing_enhancements/fixtures.'],
+]) test('internal engineering content is rejected: '+label,()=>sandbox((s,r)=>{
+  fs.appendFileSync(path.join(s,'docs/getting-started/browser.md'),'\n'+content+'\n');
+  assert.throws(()=>check(s,r),/Public documentation content policy/);
+}));
 test('invalid JSON example fails the check',()=>sandbox((s,r)=>{fs.appendFileSync(path.join(s,'docs/api-reference/rpc-methods.md'),'\n```json\n{bad}\n```\n');assert.throws(()=>check(s,r));}));
 test('invalid table fails the check',()=>sandbox((s,r)=>{fs.appendFileSync(path.join(s,'docs/api-reference/heapql.md'),'\n```heapql\nSELECT * FROM objects\n```\n');assert.throws(()=>check(s,r),/Invalid HeapQL/);}));
 test('type drift fails the check',()=>sandbox((s,r)=>{const file=path.join(s,'docs/api-reference/data-structures.md');fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('ref_summary?: RefSummary','ref_summary_wrong?: RefSummary'));assert.throws(()=>check(s,r),/Schema drift/);}));

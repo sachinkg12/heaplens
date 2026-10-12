@@ -5,7 +5,7 @@ title: AI data sharing and privacy
 
 Policy scope: current editor/browser implementation, reviewed October 11, 2026. Analysis is local; **AI requests are optional but can send data to a model service**. Telemetry has a [separate policy](../runbook/telemetry.md).
 
-For IntelliJ IDEA version 0.1.15, see the [HeapLens IntelliJ Privacy Policy](../runbook/intellij-privacy-policy.md), including local storage, Azure retention, IP handling, and the privacy contact.
+For IntelliJ IDEA, see the [HeapLens IntelliJ Privacy Policy](../runbook/intellij-privacy-policy.md), including local storage, Azure retention, IP handling, and the privacy contact.
 
 ## What can be sent?
 
@@ -23,8 +23,8 @@ Counts and names can still be identifying. Local Waste/Inspector data, copied in
 | Host | Credentials | Approval / history |
 | --- | --- | --- |
 | VS Code | SecretStorage, not ordinary settings/sync | Fresh source approval per Fix request; editor-specific chat history/state |
-| IntelliJ candidate | Password-safe adapter | Chat session approval is separate from full-source confirmation; local persisted preferences/history follow the adapter |
-| Standalone browser candidate | In-memory running-host session | Session controls plus explicit full-source confirmation; no persistent OS credential vault |
+| IntelliJ | Password-safe adapter | Chat session approval is separate from full-source confirmation; local persisted preferences/history follow the adapter |
+| Standalone browser | In-memory running-host session | Session controls plus explicit full-source confirmation; no persistent OS credential vault |
 | Participant | Editor language-model API | Current code prefers GPT-4o/fallback-first, not guaranteed editor-selected model |
 | MCP | Configured client | Client owns model/tool permissions, prompting, retention, and upload policy |
 

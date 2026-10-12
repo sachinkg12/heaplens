@@ -6,7 +6,7 @@ The adapter is implemented, but a repository merge is not Marketplace approval. 
 
 ## Install from disk
 
-1. Verify candidate version, architecture, source commit, and compatible IDE build range. Apple Silicon packaging targets IntelliJ 2026.1+; do not assume an earlier prototype's range applies.
+1. Check the package's macOS Apple Silicon target and compatible IDE range. The current package supports IntelliJ IDEA 2026.1–2026.2.
 2. In **Settings → Plugins**, use **Install Plugin from Disk** in the gear menu and select the ZIP.
 3. Restart if requested, open the source project, and open a completed `.hprof`.
 4. Verify Overview, a HeapQL query, and a project-source action before a large dump.
@@ -21,6 +21,6 @@ Fix with AI can resolve **project source independently**, without View Source fi
 
 Configure AI through **Configure AI**; credentials use the password-safe adapter. [Telemetry](../runbook/telemetry.md) requires separate approval and starts off.
 
-## Candidate acceptance
+## Using the plugin
 
-Test independent dump tabs, closing one, Cancel/Retry, a killed per-tab server and recovery, theme switching, queries/errors, source tiers, AI proposal apply/Undo, exports, and telemetry withdrawal. Use the same backend/version/dump for byte comparisons. Cross-platform testing and Marketplace publication remain separate steps.
+Each open dump has its own analysis session. Closing one leaves the others open. If analysis fails or its server exits, use Retry for that dump; Cancel requests cancellation of an active analysis. Exports use local clipboard or save controls. Review sensitive data before sharing a report, and read [troubleshooting](../runbook/troubleshooting.md) for recovery guidance.

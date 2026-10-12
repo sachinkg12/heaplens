@@ -32,4 +32,4 @@ Connect to the agent address/port using Monitor controls. Check connection statu
 
 Where capture is offered, the output path belongs to the target/agent machine. Capture may pause the JVM, require disk space and permissions, and contain secrets. Confirm path ownership before opening the resulting dump.
 
-Disconnect when done and stop the sidecar. Idle timeout is not an access-control mechanism. Monitor implementations are host-specific; verify the candidate's actions before claiming parity. See [safe capture](../getting-started/generating-heap-dumps.md).
+Disconnect when done and stop the sidecar. Idle timeout is not an access-control mechanism. Monitor controls differ by host; use the connection and capture actions available in your installation. See [safe capture](../getting-started/generating-heap-dumps.md).

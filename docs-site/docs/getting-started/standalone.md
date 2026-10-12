@@ -16,7 +16,7 @@ heaplens --version
 heaplens --help
 ```
 
-The npm launcher requires Node 22+ even for terminal commands. A portable native binary can run terminal analysis without Node; browser mode still needs Node. Installed-package tests cover Node 22/24. Intel Node under Rosetta and other OS packages are not covered by this ARM64 candidate. No install downloader/beacon is included.
+The npm launcher requires Node 22+ even for terminal commands. A portable native binary can run terminal analysis without Node; browser mode still needs Node. Use native ARM64 Node on Apple Silicon, not an Intel Node installation running under Rosetta. This package is not an installer for other operating systems or CPU architectures.
 
 ## Terminal only
 
@@ -44,7 +44,7 @@ heaplens open "/absolute/path/app.hprof" \
 
 Keep the terminal running. The host binds **loopback only**; its private URL grants session access—do not share it. Ctrl+C stops owned processes. `--no-browser` prints the URL without opening a desktop browser. `--port 0` picks a free port. Up to eight supplied dumps can have independent tabs.
 
-The browser offers views, HeapQL, downloads, local source viewing, and optional AI. Source stays within supplied roots; no IDE decompiler/dependency-JAR lookup. AI credentials last for the running host session. Source sends require approval; proposals do not silently overwrite originals. Monitor needs a separately configured agent.
+The browser offers views, HeapQL, downloads, local source viewing, and optional AI. Source stays within supplied roots; no IDE decompiler/dependency-JAR lookup. AI credentials last for the running host session. Source sends require approval; proposals do not silently overwrite originals. Monitor needs a separately configured agent. See [browser actions and controls](./browser.md) and the [CLI command reference](../api-reference/cli.md).
 
 ## Checkout versus package
 

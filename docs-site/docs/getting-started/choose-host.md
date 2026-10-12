@@ -23,7 +23,7 @@ A source merge does not publish a package. npm is cross-platform but an ARM64-on
 | Responsibility | Boundary |
 | --- | --- |
 | Parsing, references, dominators, histogram, suspects, waste, HeapQL | Shared Rust engine; compare the same version/backend/options |
-| Eleven views | Reused renderers with host bridges; manual host/platform parity still needs testing |
+| Eleven views | Common analysis views; source, AI, exports and other controls differ by host |
 | Source | VS Code workspace/dependency resolution; IntelliJ project/attached sources/decompiler; browser explicit roots |
 | Fix with AI | Independent project-source resolution, full-file approval, proposal review; apply/Undo differs by host |
 | Credentials, model calls, history | Host-specific storage and lifetime |

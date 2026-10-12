@@ -1,5 +1,6 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const internalContent=/\bparity\b|learning[\s_-]*log|enhancement[\s_-]*track|tracker_tasks|testing_enhancements|\b(?:P[01]|CAP|QLT|PERF)-\d+\b|\/Users\/|[A-Za-z]:\\Users\\/i;
 function walk(dir){return fs.readdirSync(dir,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(path.join(dir,e.name)):[path.join(dir,e.name)]);}
 function blocks(raw){return [...raw.matchAll(/^```(\w*)\n([\s\S]*?)^```/gm)].map(m=>({language:m[1],text:m[2].trim()}));}
 function check(site=path.resolve(__dirname,'..'),repo=path.resolve(site,'..')){
@@ -9,6 +10,7 @@ function check(site=path.resolve(__dirname,'..'),repo=path.resolve(site,'..')){
     assert.ok(sidebar.includes("'"+id+"'"),'Missing sidebar route: '+id);
     assert.match(raw,/^---\n[\s\S]*?^title:/m,'Missing title: '+id);
     assert.ok(!/\bMAT\b|\bEclipse\b/i.test(raw),'Documentation naming policy: '+id);
+    assert.ok(!internalContent.test(raw),'Public documentation content policy: '+id);
     for(const block of blocks(raw)){
       if(block.language==='json'){JSON.parse(block.text);json++;}
       if(['sql','heapql'].includes(block.language)){assert.ok(!/\bFROM\s+objects\b/i.test(block.text),'Invalid HeapQL table: '+id);queries++;}

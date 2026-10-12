@@ -32,7 +32,7 @@ Compare a result with the inspector. IDs belong to this dump, not stable cross-c
 
 The current UI has [Overview](../tabs-guide/overview-tab.md), [Histogram](../tabs-guide/histogram-tab.md), [Dominator Tree](../tabs-guide/dominator-tree-tab.md), [Leak Suspects](../tabs-guide/leak-suspects-tab.md), [Waste](../tabs-guide/waste-tab.md), [Source](../tabs-guide/source-tab.md), [Query](../tabs-guide/query-tab.md), [Compare](../tabs-guide/compare-tab.md), [Timeline](../tabs-guide/timeline-tab.md), [Monitor](../tabs-guide/monitor-tab.md), and [AI Chat](../tabs-guide/ai-chat-tab.md). [Object Inspector](../tabs-guide/object-inspector.md) is a panel, not a twelfth tab.
 
-[Host capabilities](./choose-host.md) differ in source lookup, settings, exports, and approval. Shared bytes are not a guarantee of full UI parity.
+[Host capabilities](./choose-host.md) differ in source lookup, settings, exports and approval. Use the guide for your chosen host.
 
 ## AI, reports, recovery
 
