@@ -4,7 +4,7 @@ title: HeapLens IntelliJ Privacy Policy
 
 Last updated: **October 11, 2026**
 
-Applies to: **HeapLens for IntelliJ IDEA, version 0.1.15**
+Applies to: **HeapLens for IntelliJ IDEA**
 
 HeapLens is an open-source heap-analysis tool maintained by Sachin Gupta. This policy explains local processing, optional telemetry, and optional AI data sharing in the IntelliJ plugin. Other HeapLens distributions have different controls; see the [cross-host telemetry guide](./telemetry.md) and [AI data-sharing guide](../ai-integration/privacy.md).
 
