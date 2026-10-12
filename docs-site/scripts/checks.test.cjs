@@ -4,7 +4,7 @@ const {check}=require('./check-contracts.cjs'),{check:links}=require('./check-li
 const site=path.resolve(__dirname,'..'),repo=path.resolve(process.env.DOCS_REPO||path.join(site,'..'));
 function sandbox(fn){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'heaplens-doc-checker-'));try{
   for(const file of ['sidebars.ts','docs'])fs.cpSync(path.join(site,file),path.join(temp,'site',file),{recursive:true});
-  for(const file of ['hprof-analyzer/src/main.rs','hprof-analyzer/src/lib.rs','hprof-analyzer/src/waste.rs','hprof-analyzer/src/heapql.rs','src/llmClient.ts','src/webview/template.ts']){const target=path.join(temp,'repo',file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(repo,file),target);}
+  for(const file of ['LICENSE','docs/CONTRIBUTING.md','hprof-analyzer/docs/CLI.md','hprof-analyzer/src/main.rs','hprof-analyzer/src/lib.rs','hprof-analyzer/src/waste.rs','hprof-analyzer/src/heapql.rs','src/llmClient.ts','src/webview/template.ts']){const target=path.join(temp,'repo',file);fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(path.join(repo,file),target);}
   fn(path.join(temp,'site'),path.join(temp,'repo'),temp);
 }finally{fs.rmSync(temp,{recursive:true,force:true});}}
 test('contract check accepts the complete corpus',()=>sandbox((s,r)=>check(s,r)));
@@ -15,8 +15,23 @@ for(const [label,content] of [
   ['internal issue IDs','Implementation is tracked as CAP-16 and P1-02.'],
   ['private source paths','Open /Users/example/private/dump.hprof.'],
   ['local testing directories','See testing_enhancements/fixtures.'],
+  ['schedule-specific checklist links','See the weekend-checklist for CLI testing.'],
+  ['unfinished authoring notes','TODO: replace this draft before publication.'],
 ]) test('internal engineering content is rejected: '+label,()=>sandbox((s,r)=>{
   fs.appendFileSync(path.join(s,'docs/getting-started/browser.md'),'\n'+content+'\n');
+  assert.throws(()=>check(s,r),/Public documentation content policy/);
+}));
+test('raw repository license links are rejected on the website',()=>sandbox((s,r)=>{
+  fs.appendFileSync(path.join(s,'docs/architecture/contributing.md'),'\n[Apache 2.0 License](LICENSE)\n');
+  assert.throws(()=>check(s,r),/Repository license link/);
+}));
+test('moved contributor guide must link to the repository license',()=>sandbox((s,r)=>{
+  const file=path.join(r,'docs/CONTRIBUTING.md');
+  fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace('](../LICENSE)','](LICENSE)'));
+  assert.throws(()=>check(s,r),/Contributor license link/);
+}));
+test('CLI entry guide cannot link to an internal scheduled checklist',()=>sandbox((s,r)=>{
+  fs.appendFileSync(path.join(r,'hprof-analyzer/docs/CLI.md'),'\n[weekend checklist](CLI_WEEKEND_TESTING.md)\n');
   assert.throws(()=>check(s,r),/Public documentation content policy/);
 }));
 test('invalid JSON example fails the check',()=>sandbox((s,r)=>{fs.appendFileSync(path.join(s,'docs/api-reference/rpc-methods.md'),'\n```json\n{bad}\n```\n');assert.throws(()=>check(s,r));}));

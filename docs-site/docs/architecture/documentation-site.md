@@ -45,11 +45,11 @@ npm run check:examples -- --server ../hprof-analyzer/target/release/hprof-server
 
 ## Publishing
 
-The documentation workflow validates pull requests without publishing. A successful eligible push to `main`, or an explicit main-branch workflow dispatch, builds and deploys the static site to GitHub Pages. Do not run a separate guessed deployment command. Product package publication is independent.
+The documentation workflow validates pull requests without publishing. A successful eligible push to `main`, or an explicit main-branch workflow dispatch, builds and deploys the static site to GitHub Pages. Use this workflow for deployment. Product package publication is independent.
 
 ## Content and visual components
 
-Keep guides focused on installation, actions, reference information, privacy and useful limitations. Preserve the conditions and dates attached to recorded measurements. Do not turn a screenshot or illustrative example into a measured performance claim.
+Use professional language and descriptive titles. Keep guides focused on installation, actions, reference information, privacy and useful limitations. Preserve the conditions and dates attached to recorded measurements. Do not turn a screenshot or illustrative example into a measured performance claim.
 
 `FlowDiagram` provides diagrams with arrows, Play/Pause and reduced-motion support; it does not execute heap analysis. `ReferenceExample` illustrates reference connections separately from domination. Use these existing components rather than adding a second diagram runtime. The site uses local search and does not need remote fonts, an external visual CDN or a hosted search provider. Regenerate the social-preview PNG after changing its SVG source.
 

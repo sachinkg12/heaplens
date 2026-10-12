@@ -117,7 +117,7 @@ interface QueryResult {
 }
 ```
 
-Native IDs/counts/bytes are u64 JSON numbers. JavaScript Number loses integer precision beyond 2^53−1; use precision-preserving parsing rather than rounding identifiers. This page does **not** invent a string-ID wire migration. CLI query integer-cell encoding is a separate decimal-string envelope.
+Native IDs/counts/bytes are u64 JSON numbers. JavaScript Number loses integer precision beyond 2^53−1; use precision-preserving parsing rather than rounding identifiers. Native JSON-RPC uses numeric IDs; CLI query integer-cell encoding uses a separate decimal-string envelope.
 
 ## Comparison
 

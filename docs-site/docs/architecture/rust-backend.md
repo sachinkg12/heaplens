@@ -28,7 +28,7 @@ Packed object IDs map to node indexes. CSR stores edge offsets/targets contiguou
 
 ## Memory and lazy loading
 
-Mapping avoids a full eager user-buffer copy, but resident pages, object indexes, edges, dominator arrays, and scratch allocations consume RAM. “Indexed” here does not mean persistent on-disk indices. Low-memory/disk-backed graph analysis is planned, not shipped by this documentation change.
+Mapping avoids a full eager user-buffer copy, but resident pages, object indexes, edges, dominator arrays, and scratch allocations consume RAM. “Indexed” here does not mean persistent on-disk indices. Disk-backed graph analysis and a configurable analysis-memory budget are not currently available.
 
 Lazy tree/table loading limits UI output; it does not defer all initial graph/dominator construction. A --rows/LIMIT flag does not impose an analysis RAM budget.
 

@@ -2,7 +2,7 @@
 title: Build and contribute
 ---
 
-Ordinary users should [install a package](../getting-started/installation.md). Contributors need a reviewed checkout, Rust/Cargo, a supported Node runtime (22 or 24 recommended for this site's checks), and the relevant host toolchain.
+To use HeapLens, [install a package](../getting-started/installation.md). Contributors need a source checkout, Rust/Cargo, a supported Node runtime (22 or 24 recommended for this site's checks), and the relevant host toolchain.
 
 ## Extension and native binaries
 
@@ -41,6 +41,10 @@ These commands are source-development steps, not universal installation prerequi
 
 Website prerequisites, local preview, build checks and deployment are described in [documentation site development](./documentation-site.md).
 
-Keep technical claims close to their limits. Update capability/contracts when code changes. Use coherent illustrative arithmetic or versioned measured evidence; do not modify historical benchmark numbers to make a claim look consistent. No public report should contain raw dumps, credentials, private paths, or full source.
+Update documented capabilities and API contracts when code changes. Label illustrative examples separately from measurements, and preserve benchmark values with their original capture conditions. Do not include raw dumps, credentials, private paths, or confidential source in public reports.
 
 See [support](../runbook/support.md) for reporting and [architecture](./system-overview.md) for the shared/host boundary.
+
+## License
+
+HeapLens is released under the [Apache 2.0 License](https://github.com/sachinkg12/heaplens/blob/main/LICENSE). Contributions are licensed under the same terms. Packages include applicable third-party licenses and notices.

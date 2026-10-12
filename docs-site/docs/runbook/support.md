@@ -6,7 +6,7 @@ title: Releases, support, and security
 
 Use [GitHub releases](https://github.com/sachinkg12/heaplens/releases) and the repository [changelog](https://github.com/sachinkg12/heaplens/blob/main/CHANGELOG.md) for versioned changes. Check [host availability](../getting-started/choose-host.md) before assuming a merged adapter has a public installer.
 
-Known documentation-adjacent product limitations include tree-percentage denominator differences, VS Code follow-up AI context, approximate waste/layout coverage, participant model selection, and Monitor agent security/target validation. These are not fixed by changing prose.
+Known limitations include differences in tree-percentage denominators, incomplete heap context in VS Code AI follow-up messages, approximate layout and waste estimates, participant model selection, and Monitor security and target-validation constraints. Review the relevant view guides and privacy controls before interpreting results.
 
 ## Report a bug safely
 
@@ -16,7 +16,7 @@ Do not attach real dumps, full source, API keys, private session URLs, raw strin
 
 ## Privacy requests
 
-Email [sachinkg12@gmail.com](mailto:sachinkg12@gmail.com) with privacy questions or requests. The [HeapLens IntelliJ Privacy Policy](./intellij-privacy-policy.md) covers IntelliJ version 0.1.15, including optional AI sharing, local storage, and configured Azure retention. Do not send dumps, credentials, or confidential source unless a suitable private sharing arrangement has been agreed.
+Email [sachinkg12@gmail.com](mailto:sachinkg12@gmail.com) with privacy questions or requests. The [HeapLens IntelliJ Privacy Policy](./intellij-privacy-policy.md) covers the plugin's optional AI sharing, local storage, and configured Azure retention. Do not send dumps, credentials, or confidential source unless a suitable private sharing arrangement has been agreed.
 
 ## Security reports
 
