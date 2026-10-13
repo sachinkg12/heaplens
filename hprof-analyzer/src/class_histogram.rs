@@ -85,7 +85,7 @@ impl NonOverlappingClassAccumulator {
                 retained_size: totals.retained_size,
             })
             .collect();
-        entries.sort_by(|a, b| b.retained_size.cmp(&a.retained_size));
+        entries.sort_by(|a, b| b.retained_size.cmp(&a.retained_size).then(a.class_name.cmp(&b.class_name)));
         entries
     }
 }

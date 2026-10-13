@@ -3,7 +3,7 @@
 //! Consequently this policy is an estimate, even when all widths are known.
 use anyhow::{ensure, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectLayout {
     pub(crate) word_bytes: u64,
     pub(crate) reference_bytes: u64,
@@ -20,6 +20,18 @@ pub struct SizeModel {
     pub layout: ObjectLayout,
     pub layout_source: &'static str,
     pub incomplete_classes: usize,
+}
+
+impl<'de> serde::Deserialize<'de> for SizeModel {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Owned { name: String, estimated: bool, layout: ObjectLayout, layout_source: String, incomplete_classes: usize }
+        let value = <Owned as serde::Deserialize>::deserialize(input)?;
+        let name = match value.name.as_str() { "legacy-payload-v0" => "legacy-payload-v0", "conventional-jvm-v1" => "conventional-jvm-v1", _ => return Err(serde::de::Error::custom("Unknown size model")) };
+        let layout_source = match value.layout_source.as_str() { "legacy-payload" => "legacy-payload", "explicit" => "explicit", "address-inference-with-defaults" => "address-inference-with-defaults", _ => return Err(serde::de::Error::custom("Unknown layout source")) };
+        let layout = ObjectLayout::new(value.layout.word_bytes, value.layout.reference_bytes, value.layout.class_pointer_bytes, value.layout.alignment).map_err(serde::de::Error::custom)?;
+        Ok(Self { name, estimated: value.estimated, layout, layout_source, incomplete_classes: value.incomplete_classes })
+    }
 }
 
 impl ObjectLayout {

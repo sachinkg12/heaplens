@@ -1,5 +1,10 @@
 export function getHtmlTemplate(): string {
     return `
+    <div class="analysis-mode-bar">
+        <button class="btn" id="quick-scan-btn">Quick Scan</button>
+        <button class="btn" id="analyze-retained-btn" disabled>Analyze Retained</button>
+        <span id="analysis-mode-status" role="status" aria-live="polite">Full analysis is the default; Quick Scan is available after Cancel or completion.</span>
+    </div>
     <div class="tab-bar" role="tablist" aria-label="Analysis tabs">
         <button class="tab-btn active" data-tab="overview" role="tab" aria-selected="true" aria-controls="tab-overview" id="tabBtn-overview" tabindex="0">Overview</button>
         <button class="tab-btn" data-tab="histogram" role="tab" aria-selected="false" aria-controls="tab-histogram" id="tabBtn-histogram" tabindex="-1">Histogram</button>
@@ -37,6 +42,7 @@ export function getHtmlTemplate(): string {
     <div id="tab-histogram" class="tab-content" role="tabpanel" aria-labelledby="tabBtn-histogram">
         <input type="text" class="search-box" id="histogram-search" placeholder="Filter by class name...">
         <div id="histogram-table"></div>
+        <div id="shallow-histogram"></div>
         <div id="histogram-instances-panel"></div>
     </div>
 

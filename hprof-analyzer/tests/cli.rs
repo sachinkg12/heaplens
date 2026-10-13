@@ -63,6 +63,71 @@ fn success(output: Output) -> Value {
 }
 
 #[test]
+fn disk_analyze_and_query_reuse_indices_and_match_memory_without_an_ide() {
+    let dir=TempDir::new().unwrap(); let heap=write(&dir,"disk-fixture.hprof",&[(512,9,8),(768,3,11)]); let cache=dir.path().join("private-cache");
+    let memory=success(run(&["analyze",path(&heap),"--quiet","--format","json","--storage","memory"]));
+    for status in ["built","reused"] {
+        let disk=success(run(&["analyze",path(&heap),"--quiet","--format","json","--storage","disk","--cache-dir",path(&cache),"--edge-buffer-mib","1"]));
+        assert_eq!(disk["data"]["storage"]["cache_status"],status);
+        for field in ["summary","class_histogram","top_objects","waste_status","waste_totals"] { assert_eq!(disk["data"][field],memory["data"][field]); }
+    }
+    let query=success(run(&["query",path(&heap),"SELECT object_id FROM instances ORDER BY object_id","--storage","disk","--cache-dir",path(&cache),"--quiet","--format","json"]));
+    assert_eq!(query["data"]["storage"]["cache_status"],"reused"); assert_eq!(query["data"]["result"]["rows"].as_array().unwrap().len(),2);
+    let waste=success(run(&["analyze",path(&heap),"--storage","disk","--cache-dir",path(&cache),"--with-waste","--quiet","--format","json"]));
+    assert_eq!(waste["data"]["waste_status"],"ready");
+    assert_eq!(run(&["analyze",path(&heap),"--storage","disk","--backend","legacy"]).status.code(),Some(2));
+    assert_eq!(run(&["analyze",path(&heap),"--edge-buffer-mib","0"]).status.code(),Some(2));
+}
+
+#[test]
+fn scan_reports_shallow_results_without_inventing_retained_values() {
+    let dir = TempDir::new().unwrap();
+    let heap = write(&dir, "private-scan-canary.hprof", &[(512, 9, 8), (768, 3, 11)]);
+    let result = success(run(&["scan", path(&heap), "--quiet", "--format", "json", "--rows", "1"]));
+    assert_eq!(result["command"], "scan");
+    assert_eq!(result["backend"], "shallow_scan");
+    assert_eq!(result["data"]["analysis_scope"], "shallow");
+    // Default 64-bit estimate: byte[9] = 40 B, long[3] = 48 B.
+    assert_eq!(result["data"]["summary"]["total_heap_size"], 88);
+    assert_eq!(result["data"]["summary"]["total_arrays"], 2);
+    assert_eq!(result["data"]["summary"]["total_instances"], 0);
+    assert!(result["data"]["summary"]["reachable_heap_size"].is_null());
+    for feature in ["retained", "reachability", "references", "waste"] {
+        assert_eq!(result["data"]["readiness"][feature], "not_calculated");
+    }
+    let row = &result["data"]["class_histogram"][0];
+    assert_eq!(row["class_name"], "long[]");
+    assert_eq!(row["shallow_size"], 48);
+    assert!(row.get("retained_size").is_none());
+    assert_eq!(result["data"]["selection"]["class_histogram_total"], 2);
+    assert_eq!(result["data"]["truncated"], true);
+    for field in ["top_objects", "leak_suspects", "waste_totals"] {
+        assert!(result["data"].get(field).is_none());
+    }
+    assert!(!result.to_string().contains("private-scan-canary"));
+}
+
+#[test]
+fn scan_is_read_only_has_protected_exports_and_rejects_wrong_backends() {
+    let dir = TempDir::new().unwrap();
+    let heap = write(&dir, "scan.hprof", &[(512, 9, 8)]);
+    let original = fs::read(&heap).unwrap();
+    let report = dir.path().join("scan.json");
+    assert!(run(&["scan", path(&heap), "--quiet", "--format", "json", "--output", path(&report)]).status.success());
+    let saved = fs::read(&report).unwrap();
+    assert_eq!(run(&["scan", path(&heap), "--output", path(&report)]).status.code(), Some(6));
+    assert_eq!(run(&["scan", path(&heap), "--output", path(&heap)]).status.code(), Some(6));
+    assert_eq!(fs::read(&report).unwrap(), saved);
+    assert_eq!(fs::read(&heap).unwrap(), original);
+    assert_eq!(run(&["scan", path(&heap), "--backend", "legacy"]).status.code(), Some(2));
+    assert_eq!(run(&["scan", "missing-private-canary.hprof"]).status.code(), Some(3));
+    fs::write(&heap, b"malformed private heap contents").unwrap();
+    let invalid = run(&["scan", path(&heap), "--quiet", "--format", "json"]);
+    assert_eq!(invalid.status.code(), Some(4));
+    assert!(!String::from_utf8_lossy(&invalid.stderr).contains("private heap contents"));
+}
+
+#[test]
 fn telemetry_choices_and_local_diagnostics_are_explicit_filtered_and_create_new() {
     let dir=TempDir::new().unwrap();
     let heap=write(&dir,"private-canary.hprof",&[(512,9,8)]);
@@ -163,6 +228,19 @@ fn json_stdout_is_one_document_and_quiet_only_suppresses_progress() {
     let out = run(&["analyze", path(&p), "--format", "json", "--quiet"]);
     assert!(out.stderr.is_empty());
     success(out);
+}
+
+#[test]
+fn indexed_analyze_defers_waste_unless_requested() {
+    let dir=TempDir::new().unwrap();
+    let p=write(&dir,"payload.hprof",&[(0x200,1024,8)]);
+    let plain=success(run(&["analyze",path(&p),"--quiet","--format","json","--telemetry","off"]));
+    assert_eq!(plain["data"]["waste_status"],"not_calculated");
+    assert!(plain["data"]["waste_totals"].is_null());
+    let complete=success(run(&["analyze",path(&p),"--with-waste","--quiet","--format","json","--telemetry","off"]));
+    assert_eq!(complete["data"]["waste_status"],"ready");
+    assert_eq!(complete["data"]["waste_totals"]["total_wasted_bytes"],0);
+    assert_eq!(plain["data"]["summary"],complete["data"]["summary"]);
 }
 
 #[test]

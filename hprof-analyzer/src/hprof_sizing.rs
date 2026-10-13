@@ -103,6 +103,16 @@ pub(crate) struct HprofSizing {
 }
 impl HprofSizing {
     pub fn read(data: &[u8], explicit: Option<ObjectLayout>) -> Result<Self> {
+        Self::read_cancellable(data, explicit, &|| false)
+    }
+    pub fn read_cancellable(
+        data: &[u8],
+        explicit: Option<ObjectLayout>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self> {
+        if cancelled() {
+            bail!("Sizing cancelled");
+        }
         let hprof =
             parse_hprof(data).map_err(|e| anyhow::anyhow!("Invalid sizing header: {e:?}"))?;
         let id_bytes = if matches!(hprof.header().id_size(), IdSize::U32) {
@@ -118,12 +128,18 @@ impl HprofSizing {
             hprof.header().label().ok() == Some("JAVA PROFILE 1.0.3") && explicit.is_none();
         let mut declared_sizes = HashMap::new();
         for record in hprof.records_iter() {
+            if cancelled() {
+                bail!("Sizing cancelled");
+            }
             let record = record.map_err(|e| anyhow::anyhow!("Invalid sizing record: {e:?}"))?;
             if let Some(heap) = record.as_heap_dump_segment() {
                 for sub in heap
                     .map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?
                     .sub_records()
                 {
+                    if cancelled() {
+                        bail!("Sizing cancelled");
+                    }
                     match sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))? {
                         SubRecord::Class(class) => {
                             if payload_only {
@@ -172,7 +188,7 @@ impl HprofSizing {
         let class_sizes = if payload_only {
             declared_sizes
         } else {
-            resolve_classes(&classes, layout)?
+            resolve_classes_cancellable(&classes, layout, cancelled)?
         };
         if payload_only {
             log::info!("Shallow sizes: legacy Android payload-only estimate; headers and alignment excluded.");
@@ -234,12 +250,23 @@ impl HprofSizing {
     }
 }
 
+#[cfg(test)]
 fn resolve_classes(
     classes: &HashMap<u64, ClassShape>,
     layout: ObjectLayout,
 ) -> Result<HashMap<u64, u64>> {
+    resolve_classes_cancellable(classes, layout, &|| false)
+}
+fn resolve_classes_cancellable(
+    classes: &HashMap<u64, ClassShape>,
+    layout: ObjectLayout,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<HashMap<u64, u64>> {
     let mut extents: HashMap<u64, Option<u64>> = HashMap::new();
     for &start in classes.keys() {
+        if cancelled() {
+            bail!("Sizing cancelled");
+        }
         if extents.contains_key(&start) {
             continue;
         }
@@ -248,6 +275,9 @@ fn resolve_classes(
         let mut current = Some(start);
         let mut extent = Some(layout.object_header());
         while let Some(id) = current {
+            if cancelled() {
+                bail!("Sizing cancelled");
+            }
             if let Some(cached) = extents.get(&id) {
                 extent = *cached;
                 break;

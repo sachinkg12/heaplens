@@ -11,16 +11,17 @@ use jvm_hprof::heap_dump::FieldType;
 use crate::reference_strength::{classify_instance_field, ReferenceStrength};
 
 /// Descriptor for a single instance field within a class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldDescriptor {
     /// The field name (interned).
     pub name: Arc<str>,
     /// The HPROF field type.
+    #[serde(with = "field_type_codec")]
     pub field_type: FieldType,
 }
 
 /// Metadata for a single class, collected from a ClassDump sub-record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassInfo {
     /// The human-readable class name (e.g. "java.lang.String").
     pub class_name: Arc<str>,
@@ -36,17 +37,33 @@ pub struct ClassInfo {
 ///
 /// After all ClassDump records are inserted, call [`resolve_field_layouts`]
 /// to walk inheritance chains and produce complete field layouts for each class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassIndex {
     inner: HashMap<u64, ClassInfo>,
     /// Resolved full field layouts (own + inherited), keyed by class object ID.
     /// Populated by `resolve_field_layouts()`.
+    #[serde(skip)]
     layouts: HashMap<u64, Vec<(Arc<str>, FieldType)>>,
     /// Reference strength for each entry in `layouts`, indexed in parallel.
+    #[serde(skip)]
     field_strengths: HashMap<u64, Vec<ReferenceStrength>>,
 }
 
+mod field_type_codec {
+    use super::FieldType;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &FieldType, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_u8(match value { FieldType::ObjectId => 2, FieldType::Boolean => 4, FieldType::Char => 5, FieldType::Float => 6, FieldType::Double => 7, FieldType::Byte => 8, FieldType::Short => 9, FieldType::Int => 10, FieldType::Long => 11 })
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<FieldType, D::Error> {
+        Ok(match u8::deserialize(input)? { 2 => FieldType::ObjectId, 4 => FieldType::Boolean, 5 => FieldType::Char, 6 => FieldType::Float, 7 => FieldType::Double, 8 => FieldType::Byte, 9 => FieldType::Short, 10 => FieldType::Int, 11 => FieldType::Long, _ => return Err(serde::de::Error::custom("Invalid field type")) })
+    }
+}
+
 impl ClassIndex {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&u64, &ClassInfo)> + Clone {
+        self.inner.iter()
+    }
     /// Creates an empty `ClassIndex`.
     pub fn new() -> Self {
         Self {

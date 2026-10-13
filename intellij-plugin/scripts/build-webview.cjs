@@ -204,6 +204,7 @@ ${waste}
 ${compare}
 ${timeline}
 ${monitor}
+${exported('js/progressive','getProgressiveJs')}
 ${queryLifecycle}
 onMessage('analysisProgress', function(msg) {
   if (msg.stage !== 'loading') return;

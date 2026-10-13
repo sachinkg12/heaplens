@@ -37,6 +37,7 @@ public final class AiAssistance implements AutoCloseable {
         this.host=host;this.source=source;this.analysis=analysis;this.transport=transport;this.ready=ready;this.output=output;
     }
     public synchronized void analysis(JsonObject data){if(closed)return;invalidate();context=ChatContext.from(data);heapData=data;}
+    public synchronized void waste(JsonElement value){if(!closed){context=ChatContext.withWaste(context,value);if(heapData!=null)heapData.add("wasteAnalysis",value);}}
     public synchronized void invalidate(){generation++;if(current!=null && current.call!=null) current.call.cancel();current=null;}
     private synchronized boolean active(Turn turn){return !closed && current==turn && generation==turn.generation && ready.getAsBoolean();}
     private synchronized Turn begin(JsonObject message,boolean fix){

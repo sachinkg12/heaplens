@@ -1,5 +1,13 @@
 export function getStyles(): string {
     return `
+        .analysis-mode-bar { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 12px; flex-shrink:0; border-bottom:1px solid var(--vscode-panel-border); }
+        #analysis-mode-status, .scan-note { font-size:12px; line-height:1.5; }
+        #shallow-histogram { display:none; }
+        .shallow-analysis #shallow-histogram { display:block; }
+        .shallow-analysis #histogram-table, .shallow-analysis #histogram-instances-panel,
+        .shallow-analysis #tab-overview .section-title, .shallow-analysis #report-actions,
+        .shallow-analysis #top-objects-table, .shallow-analysis #diagnosis-section,
+        .shallow-analysis #pie-chart, .shallow-analysis #bar-chart { display:none !important; }
         /* Spacing scale */
         :root {
             --hl-space-xs: 4px;

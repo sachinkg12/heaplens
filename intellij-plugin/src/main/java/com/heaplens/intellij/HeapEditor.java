@@ -39,6 +39,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private HeapView browser;
     private volatile Path binary;
     private volatile boolean ready, disposed;
+    private volatile String storageStatus="";
 
     public HeapEditor(Project project, VirtualFile file, Path pluginRoot) {
         // Resolve browser classes inside the guarded factory call, not while loading the editor.
@@ -53,6 +54,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
         final IntellijTelemetry telemetry=telemetryService;
         // Explicit launch configuration, never an executable path supplied by a workspace.
         String configured = System.getProperty("heaplens.server.path");
+        StoragePreference storagePreference=new StoragePreference();
         session = new HeapSession(() -> {
             // Resolution and checksum I/O run on the session worker, never the UI thread.
             Path server = binary;
@@ -61,7 +63,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
                 if (pluginRoot == null) throw new IllegalStateException("HeapLens installation is unavailable");
                 server = NativeServer.bundled(pluginRoot, System.getProperty("os.name"), System.getProperty("os.arch"));
             }
-            return new JsonLineRpcClient(server);
+            return new JsonLineRpcClient(storagePreference.command(server));
         }, Path.of(file.getPath()), this::event,telemetry==null?com.heaplens.telemetry.DiagnosticSink.NONE:telemetry);
         ProjectSourceNavigator navigator=new ProjectSourceNavigator(project,this);
         source = new SourceNavigation(navigator,
@@ -78,6 +80,9 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
         monitor=new MonitorActions(new MonitorApproval(project),this::event);
         JPanel toolbar = new JPanel();
         toolbar.add(choose); toolbar.add(retry); toolbar.add(status);
+        JCheckBox quickScanFirst=QuickScanPreference.control();
+        toolbar.add(quickScanFirst);
+        toolbar.add(storagePreference.control);
         JButton telemetryControl=new JButton("Telemetry");toolbar.add(telemetryControl);
         telemetryControl.setEnabled(telemetry!=null);
         telemetryControl.addActionListener(e->telemetry.configure(project));
@@ -96,7 +101,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
         try {
             CommandRouter router = CommandRouter.forSession(session, () -> {
                 ready = true;
-                session.start();
+                session.start(quickScanFirst.isSelected()?AnalysisMode.SHALLOW:AnalysisMode.FULL);
             }).with("histogramInstances", new HistogramQueries(session::query, this::event)::instances)
               .with("dominatorChildren", new DominatorQueries(session::read, this::event)::children)
               .with("openProjectSource", source::open)
@@ -108,11 +113,13 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
               .with("explainLeakSuspect",assistance::explainLeak)
               .with("fixWithAi",assistance::fix);
             router=router.with("cancelAiAssistance",ignored->assistance.stop());
+            router=ProgressiveActions.register(router,session);
+            router=new WasteActions(session::read,this::event).register(router);
             router=router.with("aiRunQuery",new ChatQueries(session::query,this::event)::run);
             router=new ObjectActions(session::read,this::event).register(router);
             router=snapshots.register(router);
             router=monitor.register(router);
-            router=new LocalExports(project,()->!disposed && session.state()==HeapSession.State.READY,this::event).register(router);
+            router=new LocalExports(project,()->!disposed && (session.state()==HeapSession.State.READY || session.state()==HeapSession.State.SHALLOW_READY),this::event).register(router);
             router=router.observed(command->com.heaplens.telemetry.DiagnosticActions.requested(
                 telemetry==null?com.heaplens.telemetry.DiagnosticSink.NONE:telemetry,command));
             browser = views.create(router::dispatch);
@@ -154,17 +161,23 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private void event(JsonObject event) {
         if (disposed) return;
         String command = event.get("command").getAsString();
-        if (command.equals("serverCrashed") || command.equals("analysisCancelled") ||
+        if(command.equals("analysisStarting")||command.equals("serverCrashed")||command.equals("analysisCancelled"))storageStatus="";
+        if(command.equals("analysisComplete"))storageStatus=StoragePreference.label(event);
+        if (command.equals("analysisStarting") || command.equals("serverCrashed") || command.equals("analysisCancelled") ||
             (command.equals("analysisProgress") && event.has("stage") && event.get("stage").getAsString().equals("loading")))
             { source.invalidate(); chat.unavailable(); assistance.invalidate(); catalog.remove(snapshotId); }
         if (command.equals("analysisComplete")) event.addProperty("displayName",file.getName());
+        if (command.equals("wasteResult") && event.has("wasteAnalysis") && event.get("wasteAnalysis").isJsonObject()) {
+            JsonObject waste=event.getAsJsonObject("wasteAnalysis");
+            catalog.updateWaste(snapshotId,waste);chat.waste(waste);assistance.waste(waste);
+        }
         ApplicationManager.getApplication().invokeLater(() -> {
             if (disposed) return;
             HeapSession.State state = session.state();
             boolean terminal = state == HeapSession.State.FAILED || state == HeapSession.State.CANCELLED;
             choose.setEnabled(state == HeapSession.State.NEW || terminal);
             retry.setEnabled(terminal);
-            status.setText("HeapLens | " + state + " | server PID " + session.pid());
+            status.setText("HeapLens | " + state + " | server PID " + session.pid()+storageStatus);
             if (browser != null && ready) browser.send(event);
         });
         // Queue completion before asynchronous history restoration; otherwise a fast

@@ -3,6 +3,7 @@
 //! Provides compact, cache-friendly edge storage with O(1) neighbor lookups.
 //! Edges are first collected via `EdgeBuilder`, then sorted, deduplicated,
 //! and compressed into the final `EdgeStore`.
+use super::column::Column;
 
 /// Edge label constants (compact u8 representation).
 pub mod label {
@@ -56,7 +57,7 @@ impl EdgeBuilder {
     pub fn build(mut self, node_count: usize) -> EdgeStore {
         // Use rayon parallel sort for large edge lists
         use rayon::slice::ParallelSliceMut;
-        self.edges.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        self.edges.par_sort_unstable();
 
         // Deduplicate by (source, target), keeping the first label
         self.edges.dedup_by(|b, a| a.0 == b.0 && a.1 == b.1);
@@ -97,11 +98,11 @@ impl EdgeBuilder {
         }
 
         EdgeStore {
-            offsets,
-            targets,
-            labels,
-            reverse_offsets,
-            reverse_targets,
+            offsets: offsets.into(),
+            targets: targets.into(),
+            labels: labels.into(),
+            reverse_offsets: reverse_offsets.into(),
+            reverse_targets: reverse_targets.into(),
         }
     }
 }
@@ -116,18 +117,37 @@ impl Default for EdgeBuilder {
 #[derive(Debug, Clone)]
 pub struct EdgeStore {
     /// Forward offsets: `offsets[i]..offsets[i+1]` indexes into `targets` / `labels`.
-    offsets: Vec<u32>,
+    offsets: Column<u32>,
     /// Forward edge targets, packed.
-    targets: Vec<u32>,
+    targets: Column<u32>,
     /// Forward edge labels, parallel to `targets`.
-    labels: Vec<u8>,
+    labels: Column<u8>,
     /// Reverse offsets: `reverse_offsets[i]..reverse_offsets[i+1]` indexes into `reverse_targets`.
-    reverse_offsets: Vec<u32>,
+    reverse_offsets: Column<u32>,
     /// Reverse edge sources, packed (for backward traversal).
-    reverse_targets: Vec<u32>,
+    reverse_targets: Column<u32>,
 }
 
 impl EdgeStore {
+    pub(crate) fn map(directory: &std::path::Path, nodes: usize) -> anyhow::Result<Self> {
+        let store = Self {
+            offsets: Column::map(&directory.join("forward.offsets"))?,
+            targets: Column::map(&directory.join("forward.targets"))?,
+            labels: Column::map(&directory.join("forward.labels"))?,
+            reverse_offsets: Column::map(&directory.join("reverse.offsets"))?,
+            reverse_targets: Column::map(&directory.join("reverse.targets"))?,
+        };
+        anyhow::ensure!(store.offsets.len() == nodes + 1 && store.reverse_offsets.len() == nodes + 1, "Invalid CSR dimensions");
+        anyhow::ensure!(store.targets.len() == store.labels.len() && store.targets.len() == store.reverse_targets.len(), "Invalid CSR edge counts");
+        for offsets in [&*store.offsets, &*store.reverse_offsets] {
+            anyhow::ensure!(offsets.first() == Some(&0) && offsets.last().copied() == Some(u32::try_from(store.targets.len())?), "Invalid CSR endpoints");
+            anyhow::ensure!(offsets.windows(2).all(|w| w[0] <= w[1]), "Invalid CSR offsets");
+        }
+        anyhow::ensure!(store.targets.iter().chain(store.reverse_targets.iter()).all(|&i| (i as usize) < nodes), "Invalid CSR target");
+        anyhow::ensure!(store.labels.iter().all(|&i| i <= label::UNKNOWN), "Invalid edge label");
+        Ok(store)
+    }
+
     /// Returns the target indices of all outgoing edges from `node_idx`.
     pub fn neighbors(&self, node_idx: u32) -> &[u32] {
         let start = self.offsets[node_idx as usize] as usize;

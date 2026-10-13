@@ -25,7 +25,8 @@ function context(analysis) {
         summary: pick(analysis.summary || {}, ['total_heap_size', 'reachable_heap_size', 'total_instances', 'total_classes', 'total_arrays', 'total_gc_roots']),
         classes: (analysis.class_histogram || []).slice(0, 20).map(x => pick(x, ['class_name', 'instance_count', 'shallow_size', 'retained_size'])),
         suspects: (analysis.leak_suspects || []).slice(0, 10).map(x => pick(x, ['class_name', 'object_id', 'retained_size', 'retained_percentage'])),
-        waste: pick(analysis.waste_analysis || {}, ['total_wasted_bytes', 'duplicate_string_wasted_bytes', 'empty_collection_wasted_bytes'])
+        waste: analysis.waste_analysis ? pick(analysis.waste_analysis, ['total_wasted_bytes', 'duplicate_string_wasted_bytes', 'empty_collection_wasted_bytes']) : null,
+        waste_status: analysis.waste_analysis ? 'ready' : 'not_calculated'
     };
 }
 function objectMetadata(fields) { return fields.map(x => ({ ...pick(x, ['name', 'field_type', 'ref_object_id']), ...(x.ref_summary ? { ref_summary: pick(x.ref_summary, ['class_name', 'retained_size']) } : {}) })); }

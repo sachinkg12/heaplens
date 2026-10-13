@@ -5,6 +5,7 @@ export function getProgressJs(): string {
         // cancel button, and crash/cancel recovery UI.
 
         var _progressPhaseLabels = {
+            quick_scan: 'Scanning shallow allocations',
             loading: 'Loading file',
             graph_building: 'Building graph',
             graph_built: 'Graph built',
@@ -127,6 +128,10 @@ export function getProgressJs(): string {
             if (retryBtn) retryBtn.addEventListener('click', function() { vscode.postMessage({ command: 'retryAnalysis' }); });
         });
 
+        onMessage('shallowScanComplete', function() {
+            _progressActive = false;
+            document.getElementById('progress-bar').style.display = 'none';
+        });
         onMessage('analysisComplete', function() {
             _progressActive = false;
             var bar = document.getElementById('progress-bar');

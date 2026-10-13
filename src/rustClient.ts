@@ -67,10 +67,10 @@ export class RustClient {
      * 
      * @param binaryPath - Path to the Rust binary (hprof-server)
      */
-    constructor(binaryPath: string) {
+    constructor(binaryPath: string, launchArguments: readonly string[] = []) {
         console.log(`[RustClient] Spawning: ${binaryPath}`);
         // Spawn the Rust process
-        this.process = spawn(binaryPath, [], {
+        this.process = spawn(binaryPath, [...launchArguments], {
             stdio: ['pipe', 'pipe', 'pipe']
         });
 
@@ -84,7 +84,8 @@ export class RustClient {
 
         // Handle each line from stdout
         this.rl.on('line', (line: string) => {
-            console.log(`[RustClient] Received line (${line.length} chars): ${line.substring(0, 200)}...`);
+            // On-demand replies can contain local string previews or field values.
+            console.log(`[RustClient] Received line (${line.length} chars)`);
             this.handleMessage(line);
         });
 
@@ -166,8 +167,8 @@ export class RustClient {
             } else {
                 pending.resolve(response.result);
             }
-        } catch (error) {
-            console.error(`Failed to parse JSON message: ${line}`, error);
+        } catch {
+            console.error(`[RustClient] Ignoring malformed server JSON (${line.length} chars)`);
         }
     }
 

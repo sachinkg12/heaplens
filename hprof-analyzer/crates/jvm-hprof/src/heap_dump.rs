@@ -699,6 +699,9 @@ pub struct ObjectArray<'a> {
 }
 
 impl<'a> ObjectArray<'a> {
+    /// Encoded ID payload borrowed from the original capture.
+    pub fn raw_contents(&self) -> &'a [u8] { self.contents }
+
     /// Returns the number of elements in this object array, read directly
     /// from the HPROF record header (O(1), no iteration required).
     pub fn num_elements(&self) -> u32 {

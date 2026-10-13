@@ -3,7 +3,7 @@ import type { RustClient } from '../rustClient';
 import type { HprofEditorProvider } from '../hprofEditorProvider';
 
 /** Loads the real provider/handlers against a minimal editor host, without telemetry. */
-export function editorHarness(clientFactory: () => unknown) {
+export function editorHarness(clientFactory: (args?: readonly string[]) => unknown, initialMode = 'full', storageMode = 'memory') {
     // CommonJS interception is scoped to synchronous module loading and restored immediately.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const modules = require('module') as any;
@@ -14,7 +14,8 @@ export function editorHarness(clientFactory: () => unknown) {
     const vscode = {
         Uri: { joinPath: () => ({ fsPath: '/media' }) },
         ProgressLocation: { Notification: 15 },
-        workspace: { getConfiguration: () => ({ get: () => 0 }) },
+        workspace: { getConfiguration: () => ({ get: (key: string) => key === 'analysis.initialMode' ? initialMode : 0,
+            inspect: (key: string) => ({ globalValue: key === 'analysis.storage' ? storageMode : undefined }) }) },
         window: {
             showErrorMessage: (message: string) => { errors.push(message); },
             showWarningMessage: async () => 'Continue Waiting',
@@ -30,7 +31,7 @@ export function editorHarness(clientFactory: () => unknown) {
     const providerPath = require.resolve('../hprofEditorProvider');
     const dataPath = require.resolve('../handlers/dataHandlers');
     const treePath = require.resolve('../handlers/treeHandlers');
-    for (const file of [providerPath, dataPath, treePath]) { delete require.cache[file]; }
+    for (const file of [providerPath, dataPath, treePath, require.resolve('../vscodeAnalysisStorage')]) { delete require.cache[file]; }
     modules._load = function(request: string, parent: any, isMain: boolean) {
         if (request === 'vscode') { return vscode; }
         if (request.endsWith('/telemetry')) {
@@ -38,11 +39,13 @@ export function editorHarness(clientFactory: () => unknown) {
         }
         if (parent?.filename === providerPath) {
             switch (request) {
-                case './rustClient': return { RustClient: function() { return clientFactory(); } };
+                case './rustClient': return { RustClient: function(_binary: string, args?: readonly string[]) { return clientFactory(args); } };
                 case './webviewProvider': return { getWebviewContent: () => '<html></html>' };
                 case './messageHandlers': return { allHandlers: [
                     ...originalLoad(dataPath, parent, false).dataHandlers,
-                    ...originalLoad(treePath, parent, false).treeHandlers
+                    ...originalLoad(treePath, parent, false).treeHandlers,
+                    ...originalLoad(require.resolve('../handlers/progressiveHandlers'), parent, false).progressiveHandlers,
+                    ...originalLoad(require.resolve('../handlers/wasteHandlers'), parent, false).wasteHandlers
                 ] };
                 case './monitorHandlers': return { monitorHandlers: [] };
                 case './monitorService': return {};
@@ -96,17 +99,19 @@ export class FakeServer {
     public handlers = new Map<string, (params: any) => void>();
     public autoComplete = true;
     private requestId = 0;
+    public operation = 'analyze_heap';
 
     public async sendRequest(method: string, params?: any): Promise<any> {
         if (this.isDisposed) { throw new Error('Client is shutdown'); }
         this.requests.push({ method, params });
-        if (method === 'analyze_heap') {
+        if (method === 'analyze_heap' || method === 'scan_heap') {
+            this.operation = method;
             const id = ++this.requestId;
             if (this.autoComplete) { queueMicrotask(() => this.complete(id)); }
             return { status: 'processing', request_id: id };
         }
         if (method === 'cancel_analysis') {
-            queueMicrotask(() => this.handlers.get('heap_analysis_complete')?.({
+            queueMicrotask(() => this.handlers.get(this.operation === 'scan_heap' ? 'heap_scan_complete' : 'heap_analysis_complete')?.({
                 request_id: params.analysis_request_id, status: 'cancelled'
             }));
             return { cancelled: true };
@@ -114,7 +119,7 @@ export class FakeServer {
         return { rows: [{ object_id: 512 }], client: this };
     }
     public complete(id = this.requestId): void {
-        this.handlers.get('heap_analysis_complete')?.({
+        this.handlers.get(this.operation === 'scan_heap' ? 'heap_scan_complete' : 'heap_analysis_complete')?.({
             request_id: id, status: 'completed', summary: { total_instances: 2 },
             top_objects: [], class_histogram: [], leak_suspects: []
         });

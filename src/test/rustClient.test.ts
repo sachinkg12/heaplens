@@ -4,7 +4,8 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import type { RustClient } from '../rustClient';
 
-function transport() {
+function transport(argumentsForLaunch: readonly string[] = []) {
+    let spawnArguments: unknown[] = [];
     const child = Object.assign(new EventEmitter(), {
         pid: 123, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
         killed: false, kill: () => { child.killed = true; child.emit('exit', null, 'SIGTERM'); return true; }
@@ -15,13 +16,38 @@ function transport() {
     const filename = require.resolve('../rustClient');
     delete require.cache[filename];
     modules._load = function(request: string, parent: any, main: boolean) {
-        return request === 'child_process' ? { spawn: () => child } : load.call(this, request, parent, main);
+        return request === 'child_process' ? { spawn: (...args: unknown[]) => { spawnArguments = args; return child; } } : load.call(this, request, parent, main);
     };
     try {
         const Client: typeof RustClient = load(filename, module, false).RustClient;
-        return { client: new Client('test-only'), child };
+        return { client: new Client('test-only', argumentsForLaunch), child, spawnArguments };
     } finally { modules._load = load; }
 }
+
+test('storage launch arguments are passed as argv, not a shell command', () => {
+    const args = ['--storage', 'disk', '--edge-buffer-mib', '64'];
+    const { client, spawnArguments } = transport(args);
+    try {
+        assert.equal(spawnArguments[0], 'test-only');
+        assert.deepEqual(spawnArguments[1], args);
+        assert.notEqual(spawnArguments[1], args);
+        assert.deepEqual(spawnArguments[2], { stdio: ['pipe', 'pipe', 'pipe'] });
+    } finally { client.dispose(); }
+});
+
+test('Waste previews and malformed payloads never enter transport debug logs', async () => {
+    const logs:string[]=[],log=console.log,error=console.error;
+    console.log=(...args:unknown[])=>{logs.push(args.join(' '));};
+    console.error=(...args:unknown[])=>{logs.push(args.join(' '));};
+    const {client,child}=transport();
+    try {
+        const pending=client.sendRequest('get_waste_analysis',{path:'/tmp/fixture.hprof'});
+        child.stdout.write('PRIVATE-MALFORMED-PAYLOAD\n');
+        child.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:{duplicate_strings:[{preview:'PRIVATE-WASTE-PREVIEW'}]}})+'\n');
+        assert.equal((await pending).duplicate_strings[0].preview,'PRIVATE-WASTE-PREVIEW');
+        assert.doesNotMatch(logs.join('\n'),/PRIVATE-/);
+    } finally {client.dispose();console.log=log;console.error=error;}
+});
 
 test('unexpected exit marks the client dead before notifying and rejects pending requests', async () => {
     const { client, child } = transport();

@@ -14,6 +14,7 @@ pub(crate) mod classloader_leaks;
 pub(crate) mod reference_strength;
 pub(crate) mod gc_roots;
 pub mod object_layout;
+pub mod quick_scan;
 mod hprof_sizing;
 #[cfg(test)]
 mod gc_root_regression;
@@ -1211,6 +1212,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
         .map(|(id, name, ps)| (*id, (*name, *ps))).collect();
 
     let mut waste_data = WasteRawData {
+        lazy_contents: None,
         reference_bytes: sizing.layout.reference_bytes(),
         string_instances: Vec::new(),
         backing_arrays: HashMap::new(),
@@ -1694,7 +1696,7 @@ pub use comparison::{compare_heaps, HeapComparisonResult, HeapSummaryDelta, Clas
 pub use dominator::{calculate_dominators, calculate_dominators_with_state};
 
 /// Summary statistics for the entire heap dump.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeapSummary {
     /// Provenance for byte estimates; absent for old/synthetic analysis states.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2843,8 +2845,9 @@ mod tests {
         assert_eq!(c_leak.change_type, "new");
 
         // Waste delta
-        assert_eq!(result.waste_delta.total_wasted_delta, 300);
-        assert_eq!(result.waste_delta.duplicate_string_wasted_delta, 300);
-        assert_eq!(result.waste_delta.empty_collection_wasted_delta, 0);
+        let waste = result.waste_delta.as_ref().unwrap();
+        assert_eq!(waste.total_wasted_delta, 300);
+        assert_eq!(waste.duplicate_string_wasted_delta, 300);
+        assert_eq!(waste.empty_collection_wasted_delta, 0);
     }
 }

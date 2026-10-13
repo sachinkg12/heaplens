@@ -17,7 +17,7 @@ class FakeClient implements AnalysisRpcClient {
 
     public async sendRequest(method: string, params?: any, timeoutMs?: number): Promise<any> {
         this.requests.push({ method, params, timeoutMs });
-        if (method === 'analyze_heap') {
+        if (method === 'analyze_heap' || method === 'scan_heap') {
             return { status: 'processing', request_id: 42 };
         }
         if (method === 'cancel_analysis') {
@@ -123,6 +123,34 @@ async function drainMicrotasks(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
 }
+
+test('shallow session uses isolated correlated events; full and ID-less notifications cannot complete it', async () => {
+    const client = new FakeClient();
+    const session = new AnalysisSession(client, '/tmp/scan.hprof', {longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const pending=session.run(); await drainMicrotasks();
+    assert.equal(client.requests[0].method,'scan_heap');
+    assert.equal(client.hasHandler('heap_analysis_complete'),false);
+    client.emit('heap_analysis_complete',{request_id:42,status:'completed'});
+    client.emit('heap_scan_complete',{status:'completed'});
+    client.emit('heap_scan_complete',{request_id:41,status:'completed'});
+    assert.equal(client.hasHandler('heap_scan_complete'),true);
+    client.emit('heap_scan_complete',{request_id:42,status:'completed',summary:{reachable_heap_size:null}});
+    assert.equal((await pending).status,'completed');
+    assert.equal(client.hasHandler('heap_scan_complete'),false);
+});
+
+test('shallow Cancel waits for its terminal event and a new session can retry the same mode', async () => {
+    const client=new FakeClient();
+    const session=new AnalysisSession(client,'/tmp/scan.hprof',{longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const pending=session.run(); await drainMicrotasks(); await session.cancel();
+    assert.equal(client.requests.at(-1)?.params.analysis_request_id,42);
+    client.emit('heap_scan_complete',{request_id:42,status:'cancelled'});
+    assert.equal((await pending).status,'cancelled');
+    const retry=new AnalysisSession(client,'/tmp/scan.hprof',{longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const restarted=retry.run(); await drainMicrotasks(); client.emit('heap_scan_complete',{request_id:42,status:'completed'});
+    assert.equal((await restarted).status,'completed');
+    assert.equal(client.requests.filter(r=>r.method==='analyze_heap').length,0);
+});
 
 test('buffers cancellation until the webview is ready and delivers it once', () => {
     const state = { webviewReady: false, pendingWebviewMessage: null as any };

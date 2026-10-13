@@ -8,6 +8,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class SnapshotActionsTest {
+    @Test void unavailableWasteIsNullAndAnExplicitUpdateRetiresTheOldSnapshotWithoutRawContents() {
+        var catalog=new SnapshotCatalog();var data=data(10);data.add("wasteAnalysis",JsonNull.INSTANCE);
+        catalog.publish("a","first",1,data);var before=catalog.get("a");
+        assertTrue(before.data().get("waste_analysis").isJsonNull());
+        catalog.updateWaste("a",JsonParser.parseString("{\"total_wasted_bytes\":5,\"duplicate_strings\":[{\"preview\":\"PRIVATE\"}]}").getAsJsonObject());
+        assertFalse(catalog.contains(before));
+        assertEquals(5,catalog.get("a").data().getAsJsonObject("waste_analysis").get("total_wasted_bytes").getAsInt());
+        assertFalse(catalog.get("a").data().toString().contains("PRIVATE"));
+    }
     static JsonObject data(int bytes){
         return JsonParser.parseString("{\"summary\":{\"total_heap_size\":"+bytes+"},\"classHistogram\":[{\"class_name\":\"example.A\",\"retained_size\":"+bytes+"}],\"leakSuspects\":[],\"wasteAnalysis\":{\"total_wasted_bytes\":5,\"duplicate_strings\":[{\"preview\":\"PRIVATE\"}]}}").getAsJsonObject();
     }

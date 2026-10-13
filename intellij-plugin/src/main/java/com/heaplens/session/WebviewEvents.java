@@ -18,6 +18,7 @@ public final class WebviewEvents {
             "class_histogram", "classHistogram", "leak_suspects", "leakSuspects",
             "object_leak_suspects", "objectLeakSuspects", "waste_analysis", "wasteAnalysis")
             .forEach((from, to) -> { if (result.has(from)) value.add(to, result.get(from)); });
+        if(result.has("storage") && result.get("storage").isJsonObject())value.add("storage",result.get("storage"));
         return value;
     }
     public static JsonObject progress(JsonObject params) {
@@ -25,6 +26,12 @@ public final class WebviewEvents {
         Map.of("stage", "stage", "phase", "phase", "total_phases", "totalPhases")
             .forEach((from, to) -> { if (params.has(from)) value.add(to, params.get(from)); });
         if (params.has("summary") && params.get("summary").isJsonObject()) value.add("summary",params.get("summary"));
+        return value;
+    }
+    public static JsonObject scan(JsonObject result) {
+        JsonObject value=event("shallowScanComplete");
+        Map.of("summary","summary","class_histogram","classHistogram","readiness","readiness")
+            .forEach((from,to)->{if(result.has(from))value.add(to,result.get(from));});
         return value;
     }
 }

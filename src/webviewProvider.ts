@@ -18,6 +18,7 @@ import { getFlamegraphJs } from './webview/js/flamegraph';
 import { getTimelineJs } from './webview/js/timeline';
 import { getProgressJs } from './webview/js/progress';
 import { getMonitorJs } from './webview/js/monitor';
+import { getProgressiveJs } from './webview/js/progressive';
 
 function getNonce(): string {
     let text = '';
@@ -85,6 +86,7 @@ ${getCompareJs()}
 ${getTimelineJs()}
 ${getProgressJs()}
 ${getMonitorJs()}
+${getProgressiveJs()}
 
         // Store analysisData for tabs that re-render on filter/sort/reset
         onMessage('analysisComplete', function(msg) {

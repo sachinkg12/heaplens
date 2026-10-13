@@ -7,25 +7,43 @@ use hprof_analyzer::{
 use jvm_hprof::{parse_hprof, RecordTag};
 use std::path::Path;
 
-pub fn load(path: &Path, backend: Backend, quiet: bool) -> Result<Box<dyn HeapAnalysis>, Failure> {
+fn map_input(path: &Path, quiet: bool) -> Result<memmap2::Mmap, Failure> {
     let metadata = std::fs::metadata(path).map_err(|_| Failure::input())?;
     if !metadata.is_file() {
         return Err(Failure::input());
     }
     progress(quiet, "Mapping and validating heap");
-    let mmap = HprofLoader::new(path.into())
+    HprofLoader::new(path.into())
         .map_file()
-        .map_err(|_| Failure::input())?;
+        .map_err(|_| Failure::input())
+}
+
+pub fn scan(path: &Path, quiet: bool) -> Result<hprof_analyzer::quick_scan::ShallowScan, Failure> {
+    let mmap = map_input(path, quiet)?;
+    progress(quiet, "Scanning shallow allocation records; retained analysis is not requested");
+    hprof_analyzer::quick_scan::scan_shallow(&mmap).map_err(|error| {
+        use hprof_analyzer::quick_scan::ScanError;
+        match error {
+            ScanError::MetadataLimit => Failure::new(4, "scan_limit", "Quick-scan metadata limit exceeded. No retained analysis was started."),
+            ScanError::Unsupported => Failure::new(4, "unsupported_scan", "Quick scan supports conventional HPROF 1.0.1 and 1.0.2 captures. Use full analysis for other supported formats."),
+            _ => Failure::analysis(),
+        }
+    })
+}
+
+pub fn load(path: &Path, backend: Backend, quiet: bool, options: &hprof_analyzer::indexed::storage::StorageOptions) -> Result<Box<dyn HeapAnalysis>, Failure> {
+    let mmap = std::sync::Arc::new(map_input(path, quiet)?);
     // Reject header-only/unfinished captures. Record and payload parsing still
     // belongs to the vendored parser and existing analysis implementations.
     validate(&mmap)?;
     progress(quiet, "Parsing references and computing retained sizes");
     match backend {
         Backend::Indexed => {
-            let parsed = hprof_analyzer::indexed::parse::parse_indexed(&mmap)
-                .map_err(|_| Failure::analysis())?;
+            let (phase1, phase2, storage) = hprof_analyzer::indexed::storage::load_structure(mmap.clone(), options, &std::sync::atomic::AtomicBool::new(false))
+                .map_err(|_| if options.mode == hprof_analyzer::indexed::storage::StorageMode::Memory { Failure::analysis() } else { Failure::new(4, "structural_storage", "Structural analysis or private index validation failed. Check free space and cache permissions; a corrupt entry is rejected, not reused. No memory-mode fallback was started.") })?;
+            progress(quiet, &format!("Reference storage: {}; cache {}", storage.mode, storage.cache_status));
             let state =
-                IndexedAnalysisState::from_parse_result(parsed).map_err(|_| Failure::analysis())?;
+                IndexedAnalysisState::from_phases(phase1, phase2).map_err(|_| Failure::analysis())?.with_storage_report(storage);
             Ok(Box::new(state))
         }
         Backend::Legacy => {

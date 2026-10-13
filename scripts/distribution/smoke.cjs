@@ -18,7 +18,7 @@ function fixture(count = 9) {
   return Buffer.concat([Buffer.from('JAVA PROFILE 1.0.2\0'), header, record, heap, end]);
 }
 async function browserSmoke(executable, file, cwd, env) {
-  const child = spawn(executable, ['open', file, '--no-browser', '--telemetry', 'off'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(executable, ['open', file, '--quick-scan', '--no-browser', '--telemetry', 'off'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const closed = once(child, 'close'); let raw = '', errorBytes = 0;
   child.stdout.on('data', bytes => { raw += bytes; if (raw.length > 8192) child.kill('SIGTERM'); });
   child.stderr.on('data', bytes => { errorBytes += bytes.length; });
@@ -39,7 +39,7 @@ async function browserSmoke(executable, file, cwd, env) {
     for (const label of ['Overview', 'Histogram', 'Dominator Tree', 'Leak Suspects', 'Waste', 'Source', 'Query', 'Compare', 'Timeline', 'Monitor', 'AI Chat']) assert.ok(page.includes(label), label);
     assert.equal((await fetch(url.origin + '/api/catalog')).status, 403);
     assert.equal((await request('/api/command', { command: 'ready' })).status, 202);
-    let cursor = 0, complete, query, pid;
+    let cursor = 0, complete, shallow, query, queryError, waste, pid;
     async function eventsUntil(predicate) {
       const end = Date.now() + 20000;
       while (!predicate()) {
@@ -48,14 +48,27 @@ async function browserSmoke(executable, file, cwd, env) {
         assert.equal(response.status, 200); const data = await response.json(); cursor = data.cursor;
         for (const event of data.events) {
           if (event.message.command === 'analysisComplete') complete = event.message;
+          if (event.message.command === 'shallowScanComplete') shallow = event.message;
+          if (event.message.command === 'queryError') queryError = event.message;
           if (event.message.command === 'queryResult') query = event.message;
+          if (event.message.command === 'wasteResult') waste = event.message;
+          if (event.message.command === 'wasteError') throw Error('Packaged Waste action failed.');
           if (event.message.command === 'browserStatus') pid = Number(event.message.message.match(/server PID (\d+)/)?.[1]) || pid;
           if (event.message.command === 'serverCrashed') throw Error('Packaged server crashed.');
         }
         await delay(25);
       }
     }
+    await eventsUntil(() => shallow); assert.equal(shallow.summary.total_arrays, 1);
+    assert.equal(shallow.summary.reachable_heap_size, null); assert.equal(complete, undefined);
+    await request('/api/command', {command:'executeQuery',query:'SELECT object_id FROM instances'});
+    await eventsUntil(() => queryError); assert.equal(query, undefined); assert.equal(complete, undefined);
+    await request('/api/command', {command:'analyzeRetained'});
     await eventsUntil(() => complete); assert.equal(complete.summary.total_arrays, 1);
+    assert.equal(complete.storage.mode,'disk'); assert.equal(complete.storage.cache_status,'reused');
+    assert.equal(complete.wasteAnalysis,null);
+    await request('/api/command', {command:'calculateWaste',requestId:'installed-waste'});
+    await eventsUntil(() => waste);assert.equal(waste.wasteAnalysis.total_wasted_bytes,0);
     await request('/api/command', { command: 'executeQuery', query: 'SELECT object_id FROM instances' });
     await eventsUntil(() => query); assert.equal(query.result.rows.length, 1);
     child.kill('SIGTERM');
@@ -65,7 +78,7 @@ async function browserSmoke(executable, file, cwd, env) {
     await delay(100);
     assert.throws(() => process.kill(pid, 0), /ESRCH/, 'Owned analysis server must stop with launcher');
     await assert.rejects(fetch(url.origin + '/api/catalog', { signal: AbortSignal.timeout(1000) }));
-    return { browser_views: 11, browser_analysis: 'passed', browser_query: 'passed', termination_cleanup: 'passed', stderr_bytes: errorBytes };
+    return { browser_views: 11, browser_disk_reuse:'passed', browser_quick_scan: 'passed', shallow_query_rejected: 'passed', explicit_escalation: 'passed', browser_analysis: 'passed', browser_waste: 'passed', browser_query: 'passed', termination_cleanup: 'passed', stderr_bytes: errorBytes };
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
   }
@@ -73,7 +86,7 @@ async function browserSmoke(executable, file, cwd, env) {
 async function smoke(out) {
   const candidate = JSON.parse(fs.readFileSync(path.join(out, 'candidate.json'), 'utf8'));
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'heaplens-installed-smoke-'));
-  const env = { ...process.env, DO_NOT_TRACK: '1', CI: '1' };
+  const env = { ...process.env, DO_NOT_TRACK: '1', CI: '1', HEAPLENS_STORAGE:'memory' };
   try {
     const prefix = path.join(temp, 'isolated npm prefix'), cache = path.join(temp, 'npm-cache');
     execFileSync('npm', ['install', '--global', '--prefix', prefix, '--cache', cache, '--offline', '--ignore-scripts', '--no-audit', '--no-fund', path.join(out, candidate.npm_archive)], { cwd: temp, env, stdio: 'pipe', timeout: 60000 });
@@ -88,7 +101,17 @@ async function smoke(out) {
     const a = path.join(temp, 'synthetic dump with spaces.hprof'), b = path.join(temp, 'second.hprof');
     fs.writeFileSync(a, fixture()); fs.writeFileSync(b, fixture(19));
     const report = JSON.parse(run(['analyze', a, '--quiet', '--format', 'json']));
+    const scanned=JSON.parse(run(['scan',a,'--quiet','--format','json']));
+    assert.equal(scanned.data.analysis_scope,'shallow'); assert.equal(scanned.data.summary.reachable_heap_size,null);
     assert.equal(report.status, 'completed'); assert.equal(report.data.summary.total_arrays, 1);
+    assert.equal(report.data.waste_status,'not_calculated');assert.equal(report.data.waste_totals,null);
+    const structuralCache=path.join(temp,'private-structural-cache');
+    for(const expected of ['built','reused']) {
+      const disk=JSON.parse(run(['analyze',a,'--storage','disk','--cache-dir',structuralCache,'--edge-buffer-mib','1','--quiet','--format','json']));
+      assert.equal(disk.data.storage.cache_status,expected);assert.deepEqual(disk.data.summary,report.data.summary);
+    }
+    const withWaste=JSON.parse(run(['analyze',a,'--with-waste','--quiet','--format','json']));
+    assert.equal(withWaste.data.waste_status,'ready');assert.equal(withWaste.data.waste_totals.total_wasted_bytes,0);
     assert.equal(JSON.parse(run(['query', a, 'SELECT object_id FROM instances', '--quiet', '--format', 'json'])).data.result.rows.length, 1);
     assert.equal(JSON.parse(run(['compare', a, b, '--quiet', '--format', 'json'])).status, 'completed');
     const exported = path.join(temp, 'new-report.json'); run(['analyze', a, '--quiet', '--format', 'json', '--output', exported]);
@@ -97,9 +120,10 @@ async function smoke(out) {
     assert.throws(() => run(['analyze', path.join(temp, 'missing.hprof'), '--quiet']), error => error.status === 3);
     execFileSync('ruby', ['-c', path.join(out, 'homebrew/heaplens.rb')], { cwd: temp, env, stdio: 'pipe' });
     const result = { version: candidate.version, target: candidate.target, node: process.version, npm_local_install: 'passed', inventory: 'passed',
-      help: 'passed', version_check: 'passed', analyze: 'passed', query: 'passed', compare: 'passed', export: 'passed',
+      help: 'passed', version_check: 'passed', analyze: 'passed', scan: 'passed', query: 'passed', compare: 'passed', export: 'passed',
       overwrite_rejection: 'passed', missing_dump: 'passed', homebrew_formula_syntax: 'passed', homebrew_real_install: 'not_tested',
-      ...await browserSmoke(executable, a, temp, env), external_ai_requests: 'not_tested', telemetry_delivery: 'disabled_for_tests' };
+      disk_build:'passed',disk_reuse:'passed',
+      ...await browserSmoke(executable, a, temp, {...env,HEAPLENS_STORAGE:'disk',HEAPLENS_CACHE_DIR:structuralCache,HEAPLENS_EDGE_BUFFER_MIB:'1'}), external_ai_requests: 'not_tested', telemetry_delivery: 'disabled_for_tests' };
     fs.writeFileSync(path.join(out, 'smoke-report.json'), JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     return result;
   } finally {

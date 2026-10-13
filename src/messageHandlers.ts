@@ -9,12 +9,15 @@ import type { DependencyInfo } from './dependencyResolver';
 import { treeHandlers } from './handlers/treeHandlers';
 import { aiHandlers } from './handlers/aiHandlers';
 import { dataHandlers } from './handlers/dataHandlers';
+import { progressiveHandlers } from './handlers/progressiveHandlers';
+import { wasteHandlers } from './handlers/wasteHandlers';
 
 /** Per-editor state, keyed by hprof file path. */
 export interface EditorState {
     webviewPanel: vscode.WebviewPanel;
     client: RustClient;
     analysisData: AnalysisData | null;
+    analysisMode?: 'full' | 'shallow';
     chatHistory: ChatMessage[];
     pendingWebviewMessage: any;
     webviewReady: boolean;
@@ -36,7 +39,7 @@ export interface HandlerContext {
         clearChatHistory(hprofPath: string): void;
         handleFixWithAi(message: any, hprofPath: string, webviewPanel: vscode.WebviewPanel, llmConfig: LlmConfig): Promise<void>;
         cancelAnalysis(hprofPath: string): Promise<void>;
-        retryAnalysis(hprofPath: string): Promise<void>;
+        retryAnalysis(hprofPath: string, mode?: 'full' | 'shallow'): Promise<void>;
     };
 }
 
@@ -51,4 +54,6 @@ export const allHandlers: MessageHandler[] = [
     ...treeHandlers,
     ...aiHandlers,
     ...dataHandlers,
+    ...progressiveHandlers,
+    ...wasteHandlers,
 ];

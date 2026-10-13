@@ -132,6 +132,9 @@ export function formatAnalysisContext(data: AnalysisData): string {
 
     // Outbound context contains counts/sizes, never raw string contents.
     // Leave the original analysis data intact for local inspection and reports.
+    if (!data.wasteAnalysis) {
+        parts.push('## Waste Analysis\n', '- Not calculated. Missing values are not zero waste.', '');
+    }
     if (data.wasteAnalysis) {
         const w = data.wasteAnalysis;
         parts.push('## Waste Analysis\n');

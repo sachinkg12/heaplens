@@ -8,8 +8,18 @@ use serde_json;
 fn comparison_snapshot(state: &dyn hprof_analyzer::indexed::types::HeapAnalysis) -> hprof_analyzer::comparison::ComparisonSnapshot {
     hprof_analyzer::comparison::ComparisonSnapshot {
         summary: state.get_summary().into(), class_histogram: state.get_class_histogram().to_vec(),
-        leak_suspects: state.get_leak_suspects().to_vec(), waste_analysis: state.get_waste_analysis().into(),
+        leak_suspects: state.get_leak_suspects().to_vec(), waste_analysis: Some(state.get_waste_analysis().into()),
     }
+}
+
+#[test]
+fn missing_waste_is_unavailable_not_a_zero_delta() {
+    let mut a=comparison_snapshot(&build_test_state());
+    let b=comparison_snapshot(&build_second_test_state());
+    a.waste_analysis=None;
+    let result=hprof_analyzer::comparison::compare_snapshots(&a,&b,"before","after");
+    assert_eq!(result.summary_delta.total_heap_size_delta,8192);
+    assert!(serde_json::to_value(result).unwrap()["waste_delta"].is_null());
 }
 
 #[test]

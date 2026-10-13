@@ -95,7 +95,7 @@ function harness() {
     constructor() {
       this.listeners = {}; this.dataset = {}; this.style = {}; this.value = '';
       this.attributes = {}; this.tagName = '';
-      this.innerHTML = ''; this.disabled = false; this.classList = {add(){},remove(){}};
+      this.innerHTML = ''; this.disabled = false; this.classList = {add(){},remove(){},toggle(){}};
     }
     set innerHTML(v) {
       this._html = String(v); this.children = [];
@@ -110,7 +110,7 @@ function harness() {
     get innerHTML() { return this._html; }
     set textContent(v) { this.innerHTML = String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
     get textContent() { return this.innerHTML; }
-    addEventListener(name, fn) { this.listeners[name] = fn; }
+    addEventListener(name, fn) { const prior=this.listeners[name];this.listeners[name]=e=>{prior?.(e);fn(e);}; }
     querySelectorAll(selector) {
       const tag = selector.match(/^[a-z][\w-]*/i)?.[0];
       const classes = [...selector.matchAll(/\.([\w-]+)/g)].map(m => m[1]);
@@ -127,6 +127,7 @@ function harness() {
       if (name === 'class') this.className = value;
     }
     getAttribute(name) { return this.attributes[name]; }
+    removeAttribute(name) { delete this.attributes[name]; }
     focus() {}
     remove() { this.removed = true; }
     click() { this.listeners.click?.({}); }
@@ -141,6 +142,7 @@ function harness() {
   });
   const window = new Element(), messages = [];
   const document = {
+    body: new Element(),
     getElementById(id) {
       return elements.get(id) || [...elements.values()].flatMap(el => el.children).find(el => el.attributes.id === id) || null;
     },

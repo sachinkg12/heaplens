@@ -88,7 +88,7 @@ function dispatchHost(message) {
         if(message.command==='fixWithAi') localStatus('Resolving source. Nothing is sent until you approve Send Source.');
         hostSend(request);return;
     }
-    if(message.command==='exportHistogramCsv' && (!objectReady || typeof message.csv!=='string')) return;
+    if(message.command==='exportHistogramCsv' && ((!objectReady && !shallowExportReady) || typeof message.csv!=='string')) return;
     if(message.command==='queryDependencyInfo') return; // Native source resolver owns these statuses.
     hostSend(message);
 }
@@ -137,6 +137,10 @@ function resetObjectActions() {
 onMessage('analysisProgress',function(m){if(m.stage==='loading') resetObjectActions();});
 onMessage('serverCrashed',resetObjectActions);onMessage('analysisCancelled',resetObjectActions);
 onMessage('analysisComplete',function(){objectReady=true;updateFixAvailability(document);document.getElementById('domtree-view-flame').disabled=false;});
+var shallowExportReady=false;
+onMessage('analysisStarting',function(){shallowExportReady=false;resetObjectActions();});
+onMessage('shallowScanComplete',function(){resetObjectActions();shallowExportReady=true;});
+['analysisCancelled','serverCrashed','analysisFailed'].forEach(function(c){onMessage(c,function(){shallowExportReady=false;});});
 document.addEventListener('click',function(e){
     if(e.target.closest('.inspector-close')) {delete actionPending.inspect;retireExplanation();}
     if(e.target.closest('.gc-path-close')) delete actionPending.overlay;

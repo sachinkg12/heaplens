@@ -164,6 +164,7 @@ export function getCompareJs(): string {
             }
 
             _compareResults.innerHTML = html;
+            if (!wd) _compareResults.innerHTML += '<p class="scan-note">Waste delta: Not calculated. Calculate Waste for both snapshots and compare again.</p>';
 
             if (hd.length > 0) _renderCompareDeltaBars(hd);
 
@@ -314,6 +315,8 @@ export function getCompareJs(): string {
                 lines.push('| Duplicate Strings | ' + fmtDelta(wd.duplicate_string_wasted_delta) + ' |');
                 lines.push('| Empty Collections | ' + fmtDelta(wd.empty_collection_wasted_delta) + ' |');
                 lines.push('');
+            } else {
+                lines.push('## Waste Delta', '', 'Not calculated for both snapshots.', '');
             }
 
             return lines.join('\\n');

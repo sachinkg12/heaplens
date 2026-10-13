@@ -12,21 +12,19 @@ use anyhow::Result;
 use jvm_hprof::{parse_hprof, RecordTag};
 use rayon::prelude::*;
 
-use crate::graph_builder::{
-    convert_jvm_class_name, extract_object_references_fallback,
-    extract_typed_references_named, types_only,
-};
+use crate::graph_builder::{convert_jvm_class_name, types_only};
 use crate::waste::{
-    extract_nth_field_of_type, hash_bytes,
+    extract_nth_field_of_type,
     BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo,
     OverAllocatedCollectionInfo, StringInstanceInfo, WasteRawData,
 };
 use crate::HeapSummary;
 
 use super::class_index::{ClassIndex, ClassInfo, FieldDescriptor};
-use super::edge_store::{label, EdgeBuilder, EdgeStore};
+use super::edge_store::{EdgeBuilder, EdgeStore};
 use super::node_store::{NodeStore, NodeType};
 use super::string_table::StringTable;
+use super::waste::{backing_array, ArrayContentRange, LazyStringContents};
 
 /// Cached instance record for deferred edge extraction.
 pub struct DeferredInstance {
@@ -34,16 +32,37 @@ pub struct DeferredInstance {
     pub node_idx: u32,
     /// Class object ID (for layout lookup).
     pub class_obj_id: u64,
-    /// Raw field bytes (copied from the HPROF data).
-    pub field_bytes: Vec<u8>,
+    /// Borrowed-file ranges for mapped input; owned bytes for borrowed APIs.
+    pub field_bytes: DeferredBytes,
+}
+
+pub enum DeferredBytes {
+    Owned(Vec<u8>),
+    Mapped { offset: usize, length: usize },
+}
+impl DeferredBytes {
+    fn capture(bytes: &[u8], input: &[u8], mapped: bool) -> Result<Self> {
+        if !mapped { return Ok(Self::Owned(bytes.to_vec())); }
+        let offset = (bytes.as_ptr() as usize).checked_sub(input.as_ptr() as usize)
+            .ok_or_else(|| anyhow::anyhow!("Invalid input range"))?;
+        anyhow::ensure!(offset.checked_add(bytes.len()).is_some_and(|end| end <= input.len()), "Invalid input range");
+        Ok(Self::Mapped { offset, length: bytes.len() })
+    }
+    pub(crate) fn bytes<'a>(&'a self, input: Option<&'a [u8]>) -> Result<&'a [u8]> {
+        match self {
+            Self::Owned(bytes) => Ok(bytes),
+            Self::Mapped { offset, length } => input.and_then(|input| offset.checked_add(*length).and_then(|end| input.get(*offset..end)))
+                .ok_or_else(|| anyhow::anyhow!("Mapped input range unavailable")),
+        }
+    }
 }
 
 /// Cached object array element references for deferred edge extraction.
 pub struct DeferredObjectArray {
     /// Index of the array node in the NodeStore.
     pub node_idx: u32,
-    /// Non-zero HPROF IDs of referenced objects.
-    pub element_refs: Vec<u64>,
+    /// Encoded array IDs; nulls are skipped during edge extraction.
+    pub element_refs: DeferredBytes,
 }
 
 /// Cached class structural edges for deferred edge extraction.
@@ -90,6 +109,7 @@ pub struct Phase1Result {
 
 /// Data deferred from Phase 1 that Phase 2 needs for edge extraction.
 pub struct DeferredEdgeData {
+    pub mapping: Option<Arc<memmap2::Mmap>>,
     pub deferred_instances: Vec<DeferredInstance>,
     pub deferred_arrays: Vec<DeferredObjectArray>,
     pub deferred_class_edges: Vec<DeferredClassEdge>,
@@ -103,6 +123,7 @@ pub struct DeferredEdgeData {
 ///
 /// No longer requires a file rescan — all data is collected during Phase 1.
 pub struct Phase2Result {
+    pub object_bodies: Option<super::object_bodies::ObjectBodies>,
     pub edge_store: EdgeStore,
     /// Waste data (backing array content hashing is unavailable without file rescan;
     /// string instance counts, empty collections, and boxed primitives are still present).
@@ -159,6 +180,17 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
 }
 
 pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(data, layout, None)
+}
+
+/// File-backed entry point: preserve the mapping for on-demand content analysis.
+/// As with HprofLoader, the input file must remain immutable while it is mapped.
+pub fn parse_indexed_phase1_mapped(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(&mapping, layout, Some(mapping.clone()))
+}
+
+fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>) -> Result<(Phase1Result, DeferredEdgeData)> {
+    let mut content_ranges = HashMap::new();
     let sizing = crate::hprof_sizing::HprofSizing::read(data, layout)?;
     let hprof = parse_hprof(data)
         .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
@@ -400,7 +432,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
                                 deferred_instances.push(DeferredInstance {
                                     node_idx,
                                     class_obj_id,
-                                    field_bytes: instance.fields().to_vec(),
+                                    field_bytes: DeferredBytes::capture(instance.fields(), data, mapping.is_some())?,
                                 });
                             }
 
@@ -413,15 +445,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
                                 // instead of iterating to count. Still iterate
                                 // for collecting non-null element references.
                                 let element_count = array.num_elements();
-                                let mut element_refs: Vec<u64> = Vec::new();
-                                for el_result in array.elements(id_size) {
-                                    if let Ok(Some(el_id)) = el_result {
-                                        let ref_id = el_id.id();
-                                        if ref_id != 0 {
-                                            element_refs.push(ref_id);
-                                        }
-                                    }
-                                }
+                                let element_refs = DeferredBytes::capture(array.raw_contents(), data, mapping.is_some())?;
 
                                 let size = sizing.object_array(element_count)?;
                                 // Use a placeholder; LoadClass may not be processed yet.
@@ -460,7 +484,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
                                 object_array_class_ids.push((node_idx, array_class_obj_id));
 
                                 // Store element refs for deferred edge extraction in Phase 2
-                                if !element_refs.is_empty() {
+                                if element_count != 0 {
                                     deferred_arrays.push(DeferredObjectArray {
                                         node_idx,
                                         element_refs,
@@ -506,38 +530,27 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
                                 let size = sizing.primitive_array(elem_count, elem_size as u64)?;
                                 array_element_counts.insert(obj_id, elem_count);
 
-                                // Hash byte[] and char[] content for string dedup waste analysis
+                                // A mapped input defers payload reads until Waste is requested.
                                 if matches!(prim_type,
                                     jvm_hprof::heap_dump::PrimitiveArrayType::Byte |
                                     jvm_hprof::heap_dump::PrimitiveArrayType::Char
                                 ) {
                                     let raw_data = array.contents();
                                     if !raw_data.is_empty() {
-                                        let content_hash = hash_bytes(raw_data);
-                                        // Build a short preview (first 120 chars or equivalent)
-                                        let preview = match prim_type {
-                                            jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
-                                                // char[] is big-endian u16 pairs
-                                                let chars: Vec<char> = raw_data.chunks_exact(2)
-                                                    .take(120)
-                                                    .filter_map(|c| {
-                                                        let val = u16::from_be_bytes([c[0], c[1]]);
-                                                        char::from_u32(val as u32)
-                                                    })
-                                                    .collect();
-                                                chars.into_iter().collect::<String>()
-                                            }
-                                            _ => {
-                                                // byte[] — try UTF-8 decode
-                                                let len = raw_data.len().min(120);
-                                                String::from_utf8_lossy(&raw_data[..len]).to_string()
-                                            }
-                                        };
-                                        backing_arrays.insert(obj_id, BackingArrayInfo {
-                                            content_hash,
-                                            size,
-                                            preview,
-                                        });
+                                        let is_char = matches!(prim_type, jvm_hprof::heap_dump::PrimitiveArrayType::Char);
+                                        if mapping.is_some() {
+                                            let offset = (raw_data.as_ptr() as usize).checked_sub(data.as_ptr() as usize)
+                                                .ok_or_else(|| anyhow::anyhow!("Invalid array content range"))?;
+                                            let end = offset.checked_add(raw_data.len())
+                                                .filter(|end| *end <= data.len())
+                                                .ok_or_else(|| anyhow::anyhow!("Invalid array content range"))?;
+                                            content_ranges.insert(obj_id, ArrayContentRange {
+                                                offset, length: end - offset, shallow_size: size, is_char,
+                                            });
+                                        } else {
+                                            // Borrowed-byte callers keep their established eager semantics.
+                                            backing_arrays.insert(obj_id, backing_array(raw_data, size, is_char));
+                                        }
                                     }
                                 }
 
@@ -722,6 +735,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
 
     let mut waste_raw = WasteRawData::new();
     waste_raw.reference_bytes = sizing.layout.reference_bytes();
+    waste_raw.lazy_contents = mapping.as_ref().map(|mapping| Arc::new(LazyStringContents::new(mapping.clone(), content_ranges)));
     // Merge backing array content hashes collected during PrimitiveArray parsing
     waste_raw.backing_arrays = backing_arrays;
     // Collect waste data from deferred instances (in-memory, no file scan needed)
@@ -766,7 +780,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
         waste_raw.array_element_counts = array_element_counts.clone();
 
         for di in &deferred_instances {
-            let fields = &di.field_bytes;
+            let fields = di.field_bytes.bytes(Some(data))?;
             let class_obj_id = di.class_obj_id;
 
             if let Some(field_layout) = class_index.field_layout(class_obj_id) {
@@ -865,6 +879,7 @@ pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::objec
     };
 
     let deferred = DeferredEdgeData {
+        mapping,
         deferred_instances,
         deferred_arrays,
         deferred_class_edges,
@@ -901,117 +916,53 @@ pub fn parse_indexed_phase2(
     phase1: &Phase1Result,
     deferred: DeferredEdgeData,
 ) -> Result<Phase2Result> {
-    let node_store = &phase1.node_store;
-    let class_index = &phase1.class_index;
-    let id_size = deferred.id_size;
+    let mut builder = EdgeBuilder::with_capacity(phase1.node_store.len() * 2);
+    let chunks: Result<Vec<Vec<(u32, u32, u8)>>> = deferred.deferred_instances
+        .par_chunks(10_000).map(|chunk| {
+            let mut edges = Vec::new();
+            for instance in chunk {
+                super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| {
+                    edges.push((src, dst, label)); Ok(())
+                })?;
+            }
+            Ok(edges)
+        }).collect();
+    for edges in chunks? { for (src, dst, label) in edges { builder.add_edge(src, dst, label); } }
+    super::edge_extract::structural(&deferred, phase1, |src, dst, label| {
+        builder.add_edge(src, dst, label); Ok(())
+    })?;
+    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory(&deferred.deferred_instances)), edge_store: builder.build(phase1.node_store.len()), waste_raw: phase1.waste_raw.clone() })
+}
 
-    let estimated_nodes = node_store.len();
-    let mut edge_builder = EdgeBuilder::with_capacity(estimated_nodes * 2);
+/// Disk mode streams each resolved reference into a bounded sorted-run builder.
+pub fn parse_indexed_phase2_disk(
+    phase1: &Phase1Result,
+    deferred: DeferredEdgeData,
+    directory: &std::path::Path,
+    edge_buffer_bytes: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Phase2Result> {
+    Ok(parse_indexed_phase2_disk_recorded(phase1, deferred, directory, edge_buffer_bytes, cancel)?.0)
+}
 
-    // Carry forward Phase 1's waste data (no backing array content available)
-    let waste_data = phase1.waste_raw.clone();
-
-    // SuperRoot -> GC root edges
-    for &gc_id in &phase1.gc_root_ids {
-        if let Some(root_idx) = node_store.index_of(gc_id) {
-            edge_builder.add_edge(0, root_idx, label::GC_ROOT);
-        }
+pub(crate) fn parse_indexed_phase2_disk_recorded(
+    phase1: &Phase1Result,
+    mut deferred: DeferredEdgeData,
+    directory: &std::path::Path,
+    edge_buffer_bytes: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(Phase2Result, Vec<super::cache_writer::Receipt>)> {
+    let mut builder = super::disk_edges::DiskEdgeBuilder::new(directory, phase1.node_store.len(), edge_buffer_bytes, cancel)?;
+    for instance in &deferred.deferred_instances {
+        super::disk_edges::check(cancel)?;
+        super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
     }
-
-    // Instance edges from deferred data (parallel with rayon)
-    let chunk_edges: Vec<Vec<(u32, u32, u8)>> = deferred.deferred_instances
-        .par_chunks(10_000)
-        .map(|chunk| {
-            let mut local_edges = Vec::new();
-            for di in chunk {
-                let fields = &di.field_bytes;
-                let class_obj_id = di.class_obj_id;
-
-                if let Some(field_layout) = class_index.field_layout(class_obj_id) {
-                    extract_typed_references_named(
-                        fields,
-                        id_size,
-                        field_layout,
-                        |ref_id, _fname, field_index| {
-                            if class_index
-                                .is_strong_reference_field(class_obj_id, field_index)
-                            {
-                                if let Some(ref_idx) = node_store.index_of(ref_id) {
-                                    local_edges.push((
-                                        di.node_idx,
-                                        ref_idx,
-                                        label::INSTANCE_FIELD,
-                                    ));
-                                }
-                            }
-                        },
-                    );
-                } else {
-                    // Fallback: brute-force reference extraction
-                    extract_object_references_fallback(fields, id_size, |ref_id| {
-                        if let Some(ref_idx) = node_store.index_of(ref_id) {
-                            local_edges.push((di.node_idx, ref_idx, label::UNKNOWN));
-                        }
-                    });
-                }
-            }
-            local_edges
-        })
-        .collect();
-
-    for edges in chunk_edges {
-        for (src, dst, lbl) in edges {
-            edge_builder.add_edge(src, dst, lbl);
-        }
-    }
-
-    // ========================================================================
-    // Object array element edges (from deferred data, no file rescan needed)
-    // ========================================================================
-
-    for da in &deferred.deferred_arrays {
-        for &ref_id in &da.element_refs {
-            if let Some(ref_idx) = node_store.index_of(ref_id) {
-                edge_builder.add_edge(da.node_idx, ref_idx, label::ARRAY_ELEMENT);
-            }
-        }
-    }
-
-    // ========================================================================
-    // Class structural edges (from deferred data, no file rescan needed)
-    // ========================================================================
-
-    for dce in &deferred.deferred_class_edges {
-        // Superclass edge
-        if let Some(super_id) = dce.super_class_id {
-            if let Some(super_idx) = node_store.index_of(super_id) {
-                edge_builder.add_edge(dce.class_node_idx, super_idx, label::SUPER_CLASS);
-            }
-        }
-        // Classloader edge
-        if let Some(cl_id) = dce.classloader_id {
-            if let Some(cl_idx) = node_store.index_of(cl_id) {
-                edge_builder.add_edge(dce.class_node_idx, cl_idx, label::CLASS_LOADER);
-            }
-        }
-        // Static field edges
-        for &ref_id in &dce.static_field_refs {
-            if let Some(ref_idx) = node_store.index_of(ref_id) {
-                edge_builder.add_edge(dce.class_node_idx, ref_idx, label::CLASS_STATIC);
-            }
-        }
-    }
-
-    // ========================================================================
-    // Build CSR edge store
-    // ========================================================================
-
-    let edge_store = edge_builder.build(node_store.len());
-
-    Ok(Phase2Result {
-        edge_store,
-        waste_raw: waste_data,
-    })
+    super::edge_extract::structural(&deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
+    let body_receipt = super::object_bodies::ObjectBodies::write_records(&mut deferred.deferred_instances,directory,cancel)?;
+    let bodies=super::object_bodies::ObjectBodies::map(directory,phase1.node_store.len(),deferred.mapping.as_ref().ok_or_else(||anyhow::anyhow!("Disk storage requires mapped input"))?.len())?;
+    let (edge_store, mut receipts) = builder.build_recorded()?;
+    receipts.push(body_receipt);
+    Ok((Phase2Result { object_bodies: Some(bodies), edge_store, waste_raw: phase1.waste_raw.clone() }, receipts))
 }
 
 #[cfg(test)]
@@ -1126,11 +1077,11 @@ mod tests {
         let di = DeferredInstance {
             node_idx: 0,
             class_obj_id: 42,
-            field_bytes: vec![1, 2, 3],
+            field_bytes: DeferredBytes::Owned(vec![1, 2, 3]),
         };
         assert_eq!(di.node_idx, 0);
         assert_eq!(di.class_obj_id, 42);
-        assert_eq!(di.field_bytes.len(), 3);
+        assert_eq!(di.field_bytes.bytes(None).unwrap().len(), 3);
     }
 
     #[test]
@@ -1197,10 +1148,11 @@ mod tests {
             class_histogram: Vec::new(),
         };
         let deferred = DeferredEdgeData {
+            mapping: None,
             deferred_instances: vec![DeferredInstance {
                 node_idx: reference_idx,
                 class_obj_id: 11,
-                field_bytes: 200u64.to_be_bytes().to_vec(),
+                field_bytes: DeferredBytes::Owned(200u64.to_be_bytes().to_vec()),
             }],
             deferred_arrays: Vec::new(),
             deferred_class_edges: Vec::new(),

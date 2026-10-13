@@ -75,8 +75,11 @@ for (const width of [1280,600]) test('Dominator shared tree, scoped replies, rec
     assert.match(await page.locator('#dominator-tree').textContent(),/unavailable/);
     await send(page,{...pending,command:'dominatorChildrenResult',children:[node(99)]});
     assert.equal(await row(page,99).count(),0);
+    await send(page,{command:'analysisStarting',analysisScope:'full'});
     await send(page,{command:'analysisProgress',stage:'loading',phase:1,totalPhases:4});
     await send(page,analysis);
+    // Busy analyses select Overview; the recovered tree renders on activation.
+    await page.locator('#tabBtn-domtree').click();
     assert.equal(await page.locator('#dominator-status').textContent(),'');
     assert.equal(await page.locator('#dominator-tree > .tree-row').count(),3);
     await row(page,42).click(); const fresh = await latest(page);
@@ -89,11 +92,14 @@ for (const width of [1280,600]) test('Dominator shared tree, scoped replies, rec
       fs.mkdirSync(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR,{recursive:true});
       await page.screenshot({path:path.join(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR,'dominator-'+width+'.png')});
     }
+    await send(page,{command:'analysisStarting',analysisScope:'full'});
     await send(page,{command:'analysisProgress',stage:'loading',phase:1,totalPhases:4});
     await send(page,{command:'analysisCancelled'});
     assert.match(await page.locator('#dominator-tree').textContent(),/cancelled/);
+    await send(page,{command:'analysisStarting',analysisScope:'full'});
     await send(page,{command:'analysisProgress',stage:'loading',phase:1,totalPhases:4});
     await send(page,analysis);
+    await page.locator('#tabBtn-domtree').click();
     assert.equal(await page.locator('#dominator-tree > .tree-row').count(),3);
     assert.deepEqual(errors,[]);
   } finally { await page.close(); }

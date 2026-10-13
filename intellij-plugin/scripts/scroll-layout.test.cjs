@@ -48,9 +48,11 @@ for (const [width, fontSize] of [[1280, 13], [600, 13], [600, 22]]) {
       await paint(page);
       const metrics = await page.evaluate(() => {
         const tab = document.querySelector('.tab-bar');
+        const mode = document.querySelector('.analysis-mode-bar');
         const header = document.querySelector('#top-objects-table th');
         const panel = document.getElementById('tab-overview');
         return { tabTop: tab.getBoundingClientRect().top, tabBottom: tab.getBoundingClientRect().bottom,
+          modeTop: mode.getBoundingClientRect().top, modeBottom: mode.getBoundingClientRect().bottom,
           headerTop: header.getBoundingClientRect().top, windowScroll: window.scrollY, panelScroll: panel.scrollTop,
           tabBackground: getComputedStyle(tab).backgroundColor, headerBackground: getComputedStyle(header).backgroundColor };
       });
@@ -62,7 +64,8 @@ for (const [width, fontSize] of [[1280, 13], [600, 13], [600, 22]]) {
       }
       assert.ok(Math.abs(metrics.headerTop - metrics.tabBottom) <= 1,
         `Headers must meet, not just avoid overlap: tab bottom=${metrics.tabBottom}, table top=${metrics.headerTop}`);
-      assert.equal(metrics.tabTop, 0);
+      assert.equal(metrics.modeTop, 0, 'Analysis controls stay at the viewport edge');
+      assert.equal(metrics.tabTop, metrics.modeBottom, 'Tabs follow the fixed analysis controls without a gap');
       assert.equal(metrics.windowScroll, 0, 'Only the content pane should scroll');
       assert.ok(metrics.panelScroll > 0);
       for (const color of [metrics.tabBackground, metrics.headerBackground]) assert.match(color, /^rgb\(/);
@@ -73,7 +76,8 @@ for (const [width, fontSize] of [[1280, 13], [600, 13], [600, 22]]) {
       // chart. Content is clipped below the navigation even while this happens.
       await page.evaluate(() => { const panel = document.getElementById('tab-overview'); panel.scrollTop = panel.scrollHeight; });
       await paint(page);
-      assert.equal(await page.evaluate(() => Boolean(document.elementFromPoint(30, 15)?.closest('.tab-bar'))), true);
+      assert.equal(await page.evaluate(y => Boolean(document.elementFromPoint(30, y)?.closest('.tab-bar')),
+        metrics.tabTop + (metrics.tabBottom - metrics.tabTop) / 2), true);
       assert.equal(await page.locator('#top-objects-table th').first().evaluate(el => {
         const panel = document.getElementById('tab-overview');
         return el.getBoundingClientRect().bottom <= panel.getBoundingClientRect().top;

@@ -23,14 +23,14 @@ mod layout_tests {
 }
 
 /// Info about a java.lang.String instance collected during Pass 2.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StringInstanceInfo {
     pub value_array_id: u64,
     pub shallow_size: u64,
 }
 
 /// Info about a backing array (byte[] or char[]) for string dedup.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BackingArrayInfo {
     pub content_hash: u64,
     pub size: u64,
@@ -38,14 +38,14 @@ pub(crate) struct BackingArrayInfo {
 }
 
 /// Info about an empty collection instance.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EmptyCollectionInfo {
     pub class_name: String,
     pub shallow_size: u64,
 }
 
 /// Info about an over-allocated collection instance.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OverAllocatedCollectionInfo {
     pub class_name: String,
     pub size: u32,
@@ -53,15 +53,17 @@ pub(crate) struct OverAllocatedCollectionInfo {
 }
 
 /// Info about a boxed primitive instance.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BoxedPrimitiveInfo {
     pub class_name: String,
     pub shallow_size: u64,
 }
 
 /// Raw waste data collected during graph building.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct WasteRawData {
+    #[serde(skip)]
+    pub(crate) lazy_contents: Option<std::sync::Arc<crate::indexed::waste::LazyStringContents>>,
     pub(crate) reference_bytes: u64,
     pub(crate) string_instances: Vec<StringInstanceInfo>,
     pub(crate) backing_arrays: HashMap<u64, BackingArrayInfo>,
@@ -74,6 +76,7 @@ pub struct WasteRawData {
 impl WasteRawData {
     pub fn new() -> Self {
         WasteRawData {
+            lazy_contents: None,
             reference_bytes: 8,
             string_instances: Vec::new(),
             backing_arrays: HashMap::new(),
@@ -250,7 +253,11 @@ pub fn compute_waste_analysis(
             DuplicateStringGroup { preview, count, wasted_bytes: wasted, total_bytes: total }
         })
         .collect();
-    dup_groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
+    // Stable ties matter at the top-50 cutoff and across independent processes.
+    dup_groups.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes)
+        .then_with(|| a.preview.cmp(&b.preview))
+        .then_with(|| b.count.cmp(&a.count))
+        .then_with(|| b.total_bytes.cmp(&a.total_bytes)));
     dup_groups.truncate(50);
 
     let duplicate_string_wasted_bytes: u64 = dup_groups.iter().map(|g| g.wasted_bytes).sum();

@@ -37,6 +37,15 @@ pub struct Args {
     /// Analysis backend; both reuse the shared analyzer library.
     #[arg(long, global = true, value_enum, default_value = "indexed")]
     pub backend: Backend,
+    /// Reference storage: memory (default) or private reusable disk indices.
+    #[arg(long, global = true, value_parser = ["memory", "disk"])]
+    pub storage: Option<String>,
+    /// Private absolute index directory; used only by disk mode.
+    #[arg(long, global = true)]
+    pub cache_dir: Option<PathBuf>,
+    /// Disk edge-sort buffer in MiB (not a total RAM/RSS limit).
+    #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..=1024))]
+    pub edge_buffer_mib: Option<u64>,
     /// Maximum rows per report section or query page (not an analysis memory budget).
     #[arg(long, global = true, default_value_t = 100, value_parser = clap::value_parser!(u64).range(1..=10_000))]
     pub rows: u64,
@@ -52,6 +61,18 @@ pub struct Args {
     /// Save recent allowlisted diagnostic records locally to a NEW file; never auto-upload this file.
     #[arg(long, global = true)]
     pub diagnostics: Option<PathBuf>,
+}
+
+impl Args {
+    pub fn storage_options(&self) -> anyhow::Result<hprof_analyzer::indexed::storage::StorageOptions> {
+        use hprof_analyzer::indexed::storage::{StorageMode, StorageOptions};
+        let mut options = StorageOptions::from_env()?;
+        if let Some(mode) = &self.storage { options.mode = StorageMode::parse(mode)?; }
+        if let Some(directory) = &self.cache_dir { options.cache_dir = Some(directory.clone()); }
+        if let Some(mib) = self.edge_buffer_mib { options.set_buffer_mib(mib as usize)?; }
+        anyhow::ensure!(!matches!(self.backend, Backend::Legacy) || options.mode == StorageMode::Memory, "Disk storage requires the indexed backend");
+        Ok(options)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -99,12 +120,22 @@ pub enum Command {
         /// Print the private launch URL without opening a browser.
         #[arg(long)]
         no_browser: bool,
+        /// Start with shallow totals only; Analyze Retained explicitly starts full analysis.
+        #[arg(long)]
+        quick_scan: bool,
         /// Loopback port; zero selects a free port. Never binds externally.
         #[arg(long, default_value_t = 0)]
         port: u16,
     },
-    /// Complete analysis: summary, top objects, histograms, suspects and waste totals.
-    Analyze { hprof: PathBuf },
+    /// Structural analysis: summary, top objects, histograms and suspects.
+    Analyze {
+        hprof: PathBuf,
+        /// Also calculate content-based Waste; omitted results are not zero.
+        #[arg(long)]
+        with_waste: bool,
+    },
+    /// Shallow summary and histogram only; no object index, references or dominators.
+    Scan { hprof: PathBuf },
     /// Read-only HeapQL, including :path, :refs, :children and :info.
     Query {
         hprof: PathBuf,
@@ -122,6 +153,7 @@ impl Command {
         match self {
             Self::Open { .. } => "open",
             Self::Analyze { .. } => "analyze",
+            Self::Scan { .. } => "scan",
             Self::Query { .. } => "query",
             Self::Compare { .. } => "compare",
         }

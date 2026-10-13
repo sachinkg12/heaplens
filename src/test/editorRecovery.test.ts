@@ -2,6 +2,87 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { editorHarness, FakeServer, settle } from './editorHarness';
 
+test('Waste is requested explicitly, updates editor context and sanitizes a failed retry', async () => {
+    const client=new FakeServer(), host=editorHarness(()=>client), view=host.panel();
+    try {
+        await host.open('/tmp/waste.hprof',view);await view.send({command:'ready'});
+        assert.equal(client.requests.filter(r=>r.method==='get_waste_analysis').length,0);
+        const send=client.sendRequest.bind(client);
+        const waste={total_wasted_bytes:42,waste_percentage:1,duplicate_string_wasted_bytes:42,empty_collection_wasted_bytes:0,duplicate_strings:[],empty_collections:[]};
+        client.sendRequest=async(method,params)=>method==='get_waste_analysis'?waste:send(method,params);
+        await view.send({command:'calculateWaste',requestId:'waste-1',path:'/untrusted/dump'});
+        assert.equal(view.messages.at(-1).command,'wasteResult');
+        assert.equal(host.provider.getAnalysisData()?.wasteAnalysis,waste);
+        client.sendRequest=async()=>{throw new Error('PRIVATE failure');};
+        await view.send({command:'calculateWaste',requestId:'waste-2'});
+        assert.equal(view.messages.at(-1).command,'wasteError');
+        assert.doesNotMatch(JSON.stringify(view.messages.at(-1)),/PRIVATE/);
+    } finally {host.provider.dispose();}
+});
+
+test('a retired Waste response cannot overwrite a replacement analysis', async () => {
+    const clients:FakeServer[]=[],host=editorHarness(()=>{const c=new FakeServer();clients.push(c);return c;}),view=host.panel();
+    try {
+        await host.open('/tmp/waste-retry.hprof',view);await view.send({command:'ready'});
+        let resolve!: (value:any)=>void;
+        clients[0].sendRequest=async()=>new Promise(r=>{resolve=r;});
+        const pending=view.send({command:'calculateWaste',requestId:'retired-waste'});
+        await settle();await view.send({command:'analyzeRetained'});
+        resolve({total_wasted_bytes:999});await pending;await settle();
+        assert.equal(view.messages.filter(m=>m.requestId==='retired-waste').length,0);
+        assert.equal(host.provider.getAnalysisData()?.wasteAnalysis,undefined);
+    } finally {host.provider.dispose();}
+});
+
+test('Quick Scan initial mode gates graph actions; only explicit escalation runs full analysis', async () => {
+    const clients:FakeServer[]=[];
+    const host=editorHarness(()=>{const c=new FakeServer();clients.push(c);return c;},'shallow');
+    const view=host.panel();
+    try {
+        await host.open('/tmp/shallow.hprof',view); await view.send({command:'ready'});
+        assert.equal(clients[0].requests[0].method,'scan_heap');
+        assert.equal(view.messages.at(-1).command,'shallowScanComplete');
+        assert.equal(host.provider.getAnalysisData(),null);
+        const before=clients[0].requests.length;
+        for(const command of ['executeQuery','inspectObject','gcRootPath','fixWithAi','sendChatMessage'])await view.send({command,objectId:512});
+        assert.equal(clients[0].requests.length,before);
+        await view.send({command:'analyzeRetained'});
+        assert.equal(clients[1].requests.at(-1)?.method,'analyze_heap');
+        assert.equal(view.messages.at(-1).command,'analysisComplete');
+        await view.send({command:'executeQuery',query:'SELECT * FROM instances LIMIT 1'});
+        assert.equal(clients[1].requests.at(-1)?.method,'execute_query');
+        await view.send({command:'quickScan'});
+        assert.equal(view.messages.at(-1).command,'shallowScanComplete');
+        assert.equal(host.provider.getAnalysisData(),null);
+    }finally {host.provider.dispose();}
+});
+
+test('mode changes retire in-flight full-analysis reads before shallow results are shown', async () => {
+    const clients:FakeServer[]=[];
+    const host=editorHarness(()=>{const c=new FakeServer();clients.push(c);return c;});const view=host.panel();
+    try {
+        await host.open('/tmp/mode.hprof',view);await view.send({command:'ready'});
+        let reply!: (value:any)=>void;
+        clients[0].sendRequest=async()=>new Promise(resolve=>{reply=resolve;});
+        const old=view.send({command:'executeQuery',query:'SELECT * FROM instances'});
+        await view.send({command:'quickScan'});assert.equal(clients.length,2);assert.equal(clients[0].isDisposed,true);
+        const count=view.messages.length;reply({rows:[[512]]});await old;
+        assert.equal(view.messages.length,count);assert.equal(view.messages.at(-1).command,'shallowScanComplete');
+    }finally{host.provider.dispose();}
+});
+
+test('crash Retry repeats Quick Scan without silently escalating', async () => {
+    const clients:FakeServer[]=[];
+    const host=editorHarness(()=>{const c=new FakeServer();clients.push(c);return c;},'shallow');
+    const view=host.panel();
+    try {
+        await host.open('/tmp/shallow.hprof',view); await view.send({command:'ready'});
+        clients[0].die(); await view.send({command:'retryAnalysis'});
+        assert.equal(clients.length,2);assert.equal(clients[1].requests[0].method,'scan_heap');
+        assert.equal(view.messages.at(-1).command,'shallowScanComplete');
+    }finally {host.provider.dispose();}
+});
+
 test('Retry replaces a dead process and subsequent HeapQL uses the replacement', async () => {
     const clients: FakeServer[] = [];
     const host = editorHarness(() => {

@@ -28,6 +28,15 @@ test('packaged headless commands delegate unchanged with no shell interpolation'
   assert.deepEqual(plan.args, args);
   assert.equal(plan.executable, path.join(root, 'runtime/bin/heaplens'));
 });
+test('additive shallow scan delegates without browser injection or launcher changes', t => {
+  const root = installation(t);
+  for (const args of [['scan', 'open', '--telemetry', 'off'],
+    ['--output', 'open', 'scan', '/authorized/heap with spaces.hprof', '--format', 'json']]) {
+    const plan = launchPlan(root, args, apple);
+    assert.deepEqual(plan.args, args);
+    assert.equal(plan.executable, path.join(root, 'runtime/bin/heaplens'));
+  }
+});
 test('browser defaults resolve inside the installation rather than a developer checkout', t => {
   const root = installation(t), args = ['--telemetry', 'off', 'open', '/dump with spaces.hprof', '--no-browser'];
   const plan = launchPlan(root, args, apple);
@@ -112,6 +121,8 @@ test('distribution code stays additive and is excluded from the VSIX', () => {
   assert.match(builder, /path\.join\(__dirname, 'package', 'README\.md'\)/);
   assert.doesNotMatch(builder, /package-README\.md/);
   const packageReadme = fs.readFileSync(path.join(__dirname, 'package', 'README.md'), 'utf8');
+  assert.match(builder, /'progressive-actions'/, 'Standalone packages must include the explicit scan capability registry');
+  assert.match(builder, /'waste-actions'/, 'Standalone packages must include on-demand Waste dispatch');
   assert.match(packageReadme, /macOS Apple Silicon/);
   assert.match(packageReadme, /Telemetry is enabled by default/);
   assert.match(packageReadme, /Node\.js 22 or newer/); assert.doesNotMatch(packageReadme, /Node\.js 20/);

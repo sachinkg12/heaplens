@@ -17,6 +17,7 @@ use crate::{ClassHistogramEntry, FieldInfo, HeapSummary, LeakSuspect, ObjectRepo
 /// Implementations must be `Send + Sync` so the trait object can live behind
 /// an `Arc` in the async server.
 pub trait HeapAnalysis: Send + Sync {
+    fn storage_report(&self) -> Option<&super::storage::StorageReport> { None }
     /// Returns children of the given object in the dominator tree.
     fn get_children(&self, object_id: u64) -> Option<Vec<ObjectReport>>;
 
@@ -34,6 +35,9 @@ pub trait HeapAnalysis: Send + Sync {
 
     /// Returns waste analysis (duplicate strings, empty collections, etc.).
     fn get_waste_analysis(&self) -> &WasteAnalysis;
+
+    /// Observe availability without triggering content reads or computation.
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { None }
 
     /// Returns the top objects via a BFS of the dominator tree.
     fn get_top_layers(&self, max_depth: usize, max_nodes: usize) -> Vec<ObjectReport>;
@@ -111,6 +115,8 @@ impl HeapAnalysis for crate::AnalysisState {
     fn get_waste_analysis(&self) -> &WasteAnalysis {
         &self.waste_analysis
     }
+
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { Some(&self.waste_analysis) }
 
     fn get_top_layers(&self, max_depth: usize, max_nodes: usize) -> Vec<ObjectReport> {
         self.get_top_layers(max_depth, max_nodes)

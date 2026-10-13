@@ -10,7 +10,7 @@ for (const width of [1280, 640])
         const files = await Promise.all([dump, second].map(async (file) => { const stat = await fs.stat(file); return { path: file, label: path.basename(file), size: stat.size, mtime: stat.mtimeMs }; }));
         const host = await new BrowserHost({ server: process.env.HEAPLENS_TEST_SERVER || path.resolve(__dirname, '../hprof-analyzer/target/release/hprof-server'), files, roots: [], telemetry: 'off' }).listen();
         t.after(() => host.shutdown());
-        const browser = await chromium.launch({ headless: true });
+        const browser = await chromium.launch({ headless: true, ...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{}) });
         t.after(() => browser.close());
         const page = await browser.newPage({ viewport: { width, height: 850 }, acceptDownloads: true });
         page.setDefaultTimeout(7000);
@@ -38,6 +38,11 @@ for (const width of [1280, 640])
         assert.equal(await page.locator('.tab-btn').count(), 11);
         for (const tab of ['overview', 'histogram', 'domtree', 'leaks', 'waste', 'source', 'query', 'compare', 'timeline', 'monitor', 'chat'])
             await page.locator('#tabBtn-' + tab).click();
+        await page.locator('#tabBtn-waste').click();
+        assert.match(await page.locator('#waste-summary-bar').innerText(),/Not calculated/);
+        await page.locator('#calculate-waste-btn').click();
+        await page.waitForFunction(()=>!document.querySelector('#calculate-waste-btn'));
+        assert.ok(a.raw.waste_analysis);
         await page.locator('#tabBtn-query').click();
         await page.locator('#query-input').fill('SELECT object_id, class_name, shallow_size, retained_size FROM instances WHERE object_id = 14176760392 OR object_id = 14176760768 OR object_id = 14176762104 OR object_id = 14176766104 OR object_id = 14176776512 ORDER BY object_id');
         await page.locator('#query-run-btn').click();

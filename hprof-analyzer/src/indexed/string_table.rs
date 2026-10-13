@@ -11,12 +11,14 @@ use std::sync::Arc;
 /// Built from UTF8 records during HPROF parsing. Each string is stored
 /// once as `Arc<str>` so it can be cheaply cloned into class names,
 /// field names, etc.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StringTable {
     inner: HashMap<u64, Arc<str>>,
 }
 
 impl StringTable {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&u64, &Arc<str>)> + Clone { self.inner.iter() }
+    pub(crate) fn insert_shared(&mut self, id: u64, text: Arc<str>) { self.inner.insert(id, text); }
     /// Creates an empty `StringTable`.
     pub fn new() -> Self {
         Self {

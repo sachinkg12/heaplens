@@ -110,6 +110,8 @@ impl ClassloaderTree for IndexedClassloaderTree<'_> {
 /// access via `OnceLock`.
 #[allow(dead_code)]
 pub struct IndexedAnalysisState {
+    object_bodies: Option<super::object_bodies::ObjectBodies>,
+    storage_report: Option<super::storage::StorageReport>,
     node_store: NodeStore,
     edge_store: EdgeStore,
     class_index: ClassIndex,
@@ -189,6 +191,90 @@ fn find_accumulation_point(
 }
 
 impl IndexedAnalysisState {
+    fn decode_fields(&self,id_size:jvm_hprof::IdSize,class_obj_id:u64,field_data:&[u8])->Option<Vec<FieldInfo>> {
+        use jvm_hprof::heap_dump::FieldType;
+        let layout=self.class_index.field_layout(class_obj_id)?;
+        let mut fields = Vec::with_capacity(layout.len());
+        let mut offset = 0;
+
+        for (name, ft) in layout {
+            let size = crate::field_type_size(ft, id_size);
+            if offset + size > field_data.len() {
+                break;
+            }
+
+            let type_str = match *ft {
+                FieldType::ObjectId => "ref",
+                FieldType::Boolean => "boolean",
+                FieldType::Byte => "byte",
+                FieldType::Char => "char",
+                FieldType::Short => "short",
+                FieldType::Int => "int",
+                FieldType::Float => "float",
+                FieldType::Long => "long",
+                FieldType::Double => "double",
+            };
+
+            let bytes = &field_data[offset..offset + size];
+            let raw_value = match size {
+                1 => bytes[0] as u64,
+                2 => u16::from_be_bytes([bytes[0], bytes[1]]) as u64,
+                4 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
+                8 => u64::from_be_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                    bytes[4], bytes[5], bytes[6], bytes[7],
+                ]),
+                _ => 0,
+            };
+
+            let (primitive_value, ref_object_id, ref_summary) = match *ft {
+                FieldType::ObjectId => {
+                    if raw_value == 0 {
+                        (Some("null".to_string()), None, None)
+                    } else {
+                        let ref_id = raw_value;
+                        let summary = self.node_store.get_by_id(ref_id).map(|n| {
+                            let idx = self.node_store.index_of(ref_id).unwrap_or(0) as usize;
+                            let retained = self.dominator.retained_sizes[idx];
+                            let node_type_str = match n.node_type {
+                                NodeType::Instance => "Instance",
+                                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                                NodeType::Class => "Class",
+                                NodeType::GcRoot => "Root",
+                                NodeType::SuperRoot => "SuperRoot",
+                            };
+                            crate::RefSummary {
+                                class_name: n.class_name.to_string(),
+                                node_type: node_type_str.to_string(),
+                                shallow_size: n.shallow_size as u64,
+                                retained_size: retained,
+                            }
+                        });
+                        (None, Some(ref_id), summary)
+                    }
+                }
+                FieldType::Boolean => (Some(if raw_value != 0 { "true" } else { "false" }.to_string()), None, None),
+                FieldType::Char => (Some(format!("'{}'", char::from_u32(raw_value as u32).unwrap_or('?'))), None, None),
+                FieldType::Float => (Some(format!("{}", f32::from_bits(raw_value as u32))), None, None),
+                FieldType::Double => (Some(format!("{}", f64::from_bits(raw_value))), None, None),
+                _ => (Some(raw_value.to_string()), None, None),
+            };
+
+            fields.push(FieldInfo {
+                name: name.to_string(),
+                field_type: type_str.to_string(),
+                primitive_value,
+                ref_object_id,
+                ref_summary,
+            });
+
+            offset += size;
+        }
+
+
+        Some(fields)
+    }
+    pub fn with_storage_report(mut self, report: super::storage::StorageReport) -> Self { self.storage_report = Some(report); self }
     /// Builds an `IndexedAnalysisState` from a `ParseResult`.
     ///
     /// This performs:
@@ -485,6 +571,8 @@ impl IndexedAnalysisState {
         let top_objects: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
         Ok(Self {
+            object_bodies: None,
+            storage_report: None,
             node_store,
             edge_store,
             class_index,
@@ -502,6 +590,8 @@ impl IndexedAnalysisState {
 }
 
 impl HeapAnalysis for IndexedAnalysisState {
+    fn storage_report(&self) -> Option<&super::storage::StorageReport> { self.storage_report.as_ref() }
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { self.waste.get() }
     fn get_children(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
         let node_idx = if object_id == 0 {
             0u32
@@ -587,12 +677,11 @@ impl HeapAnalysis for IndexedAnalysisState {
     }
 
     fn inspect_object(&self, hprof_path: &Path, object_id: u64) -> Option<Vec<FieldInfo>> {
-        let data = std::fs::read(hprof_path).ok()?;
+        let data = crate::HprofLoader::new(hprof_path.into()).map_file().ok()?;
         self.inspect_object_bytes(&data, object_id)
     }
 
     fn inspect_object_bytes(&self, hprof_bytes: &[u8], object_id: u64) -> Option<Vec<FieldInfo>> {
-        use jvm_hprof::heap_dump::FieldType;
         use jvm_hprof::{parse_hprof, RecordTag};
 
         // Verify object exists and is an Instance
@@ -604,10 +693,10 @@ impl HeapAnalysis for IndexedAnalysisState {
 
         let hprof = parse_hprof(hprof_bytes).ok()?;
         let id_size = hprof.header().id_size();
-        let id_bytes: usize = match id_size {
-            jvm_hprof::IdSize::U32 => 4,
-            jvm_hprof::IdSize::U64 => 8,
-        };
+        if let Some(bodies)=&self.object_bodies {
+            let (class,fields)=bodies.fields(node_idx,hprof_bytes)?;
+            return self.decode_fields(id_size,class,fields);
+        }
 
         // Scan for the Instance record with matching obj_id
         for record_result in hprof.records_iter() {
@@ -632,87 +721,9 @@ impl HeapAnalysis for IndexedAnalysisState {
                         continue;
                     }
                     let class_obj_id = instance.class_obj_id().id();
-                    let layout = self.class_index.field_layout(class_obj_id)?;
                     let field_data = instance.fields();
 
-                    let mut fields = Vec::with_capacity(layout.len());
-                    let mut offset = 0;
-
-                    for (name, ft) in layout {
-                        let size = crate::field_type_size(ft, id_size);
-                        if offset + size > field_data.len() {
-                            break;
-                        }
-
-                        let type_str = match *ft {
-                            FieldType::ObjectId => "ref",
-                            FieldType::Boolean => "boolean",
-                            FieldType::Byte => "byte",
-                            FieldType::Char => "char",
-                            FieldType::Short => "short",
-                            FieldType::Int => "int",
-                            FieldType::Float => "float",
-                            FieldType::Long => "long",
-                            FieldType::Double => "double",
-                        };
-
-                        let bytes = &field_data[offset..offset + size];
-                        let raw_value = match size {
-                            1 => bytes[0] as u64,
-                            2 => u16::from_be_bytes([bytes[0], bytes[1]]) as u64,
-                            4 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
-                            8 => u64::from_be_bytes([
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                                bytes[4], bytes[5], bytes[6], bytes[7],
-                            ]),
-                            _ => 0,
-                        };
-
-                        let (primitive_value, ref_object_id, ref_summary) = match *ft {
-                            FieldType::ObjectId => {
-                                if raw_value == 0 {
-                                    (Some("null".to_string()), None, None)
-                                } else {
-                                    let ref_id = raw_value;
-                                    let summary = self.node_store.get_by_id(ref_id).map(|n| {
-                                        let idx = self.node_store.index_of(ref_id).unwrap_or(0) as usize;
-                                        let retained = self.dominator.retained_sizes[idx];
-                                        let node_type_str = match n.node_type {
-                                            NodeType::Instance => "Instance",
-                                            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
-                                            NodeType::Class => "Class",
-                                            NodeType::GcRoot => "Root",
-                                            NodeType::SuperRoot => "SuperRoot",
-                                        };
-                                        crate::RefSummary {
-                                            class_name: n.class_name.to_string(),
-                                            node_type: node_type_str.to_string(),
-                                            shallow_size: n.shallow_size as u64,
-                                            retained_size: retained,
-                                        }
-                                    });
-                                    (None, Some(ref_id), summary)
-                                }
-                            }
-                            FieldType::Boolean => (Some(if raw_value != 0 { "true" } else { "false" }.to_string()), None, None),
-                            FieldType::Char => (Some(format!("'{}'", char::from_u32(raw_value as u32).unwrap_or('?'))), None, None),
-                            FieldType::Float => (Some(format!("{}", f32::from_bits(raw_value as u32))), None, None),
-                            FieldType::Double => (Some(format!("{}", f64::from_bits(raw_value))), None, None),
-                            _ => (Some(raw_value.to_string()), None, None),
-                        };
-
-                        fields.push(FieldInfo {
-                            name: name.to_string(),
-                            field_type: type_str.to_string(),
-                            primitive_value,
-                            ref_object_id,
-                            ref_summary,
-                        });
-
-                        offset += size;
-                    }
-
-                    return Some(fields);
+                    return self.decode_fields(id_size,class_obj_id,field_data);
                 }
             }
         }
@@ -1025,6 +1036,7 @@ impl IndexedAnalysisState {
     ///
     /// This is the two-phase counterpart of `from_parse_result`.
     pub fn from_phases(phase1: Phase1Result, phase2: Phase2Result) -> anyhow::Result<Self> {
+        let object_bodies=phase2.object_bodies;
         let parse_result = ParseResult {
             node_store: phase1.node_store,
             edge_store: phase2.edge_store,
@@ -1035,7 +1047,7 @@ impl IndexedAnalysisState {
             summary: phase1.summary,
             waste_raw: phase2.waste_raw,
         };
-        Self::from_parse_result(parse_result)
+        let mut state=Self::from_parse_result(parse_result)?;state.object_bodies=object_bodies;Ok(state)
     }
 }
 
@@ -1118,6 +1130,7 @@ impl Phase1AnalysisState {
 }
 
 impl HeapAnalysis for Phase1AnalysisState {
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { self.waste.get() }
     fn get_children(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
         // No dominator tree in Phase 1
         None
@@ -1639,6 +1652,7 @@ mod tests {
             class_histogram: Vec::new(),
         };
         let phase2 = Phase2Result {
+            object_bodies: None,
             edge_store: edges.build(6),
             waste_raw: WasteRawData::new(),
         };

@@ -75,6 +75,10 @@
         "title": "HeapLens: Review Local Diagnostics"
       },
       {
+        "command": "heaplens.configureAnalysisStorage",
+        "title": "HeapLens: Configure Analysis Storage"
+      },
+      {
         "command": "heaplens.exportJson",
         "title": "HeapLens: Export Analysis to JSON"
       },
@@ -203,6 +207,28 @@
           "default": true,
           "description": "When source JARs are unavailable, decompile .class files using CFR decompiler (requires java on PATH)"
         },
+        "heaplens.analysis.initialMode": {
+          "type": "string",
+          "enum": ["full", "shallow"],
+          "default": "full",
+          "description": "Start new dump editors with full analysis or Quick Scan (shallow totals only). Quick Scan needs an explicit Analyze Retained action for graph-dependent views."
+        },
+        "heaplens.analysis.storage": {
+          "type": "string",
+          "enum": ["memory", "disk"],
+          "enumItemLabels": ["Memory storage", "Disk-backed references"],
+          "default": "memory",
+          "scope": "application",
+          "description": "Reference storage for newly started servers. Disk uses private reusable indices and a bounded reference-sort buffer. It can be slower on first load; nodes and exact dominators still use RAM. Close and reopen existing dump editors after changing. The cache location is managed automatically."
+        },
+        "heaplens.analysis.edgeBufferMiB": {
+          "type": "integer",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 1024,
+          "scope": "application",
+          "description": "Advanced: disk reference-sort buffer in MiB, not a total RAM limit. The default is sufficient for ordinary use. Applies to newly started servers."
+        },
         "heaplens.analysis.longRunningWarningMinutes": {
           "type": "number",
           "default": 5,
@@ -240,13 +266,13 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "bash scripts/package-binary.sh && npm run compile",
+    "vscode:prepublish": "bash scripts/package-binary.sh && node scripts/distribution/vscode-notices.cjs && npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
+    "test": "node --test ./out/test/analysisStorage.test.js ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
     "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
     "test:histogram:matrix": "npm run compile && node --test ./out/test/histogramPercentage.integration.test.js",
     "test:privacy:matrix": "npm run compile && node --test ./out/test/llmPrivacy.integration.test.js"
