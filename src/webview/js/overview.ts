@@ -16,7 +16,7 @@ export function getOverviewJs(): string {
                 ].map(function(c) { return '<div class="stat-card"><div class="label">' + c.label + '</div><div class="value">' + c.value + '</div></div>'; }).join('');
 
                 if (s.size_model && s.size_model.estimated) {
-                    statsHtml += '<div class="stat-card" title="Byte sizes are estimates; see the shallow-size documentation for model assumptions."><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
+                    statsHtml += '<div class="stat-card" title="Shallow and retained byte sizes are estimates. HPROF omits physical field offsets, VM-injected fields and contended padding. Retention follows strong references, including runtime classes; JDK Reference.referent is excluded."><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
                 }
 
                 // Platform badge

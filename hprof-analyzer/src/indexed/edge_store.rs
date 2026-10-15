@@ -14,6 +14,10 @@ pub mod label {
     pub const SUPER_CLASS: u8 = 4;
     pub const CLASS_LOADER: u8 = 5;
     pub const UNKNOWN: u8 = 6;
+    pub const RUNTIME_CLASS: u8 = 7;
+    pub const CLASS_SIGNERS: u8 = 8;
+    pub const PROTECTION_DOMAIN: u8 = 9;
+    pub(crate) fn valid(value: u8) -> bool { value <= PROTECTION_DOMAIN }
 }
 
 /// Collects edges during parsing before building the CSR store.
@@ -39,6 +43,12 @@ impl EdgeBuilder {
     /// Adds an edge from `src` to `dst` with the given label.
     pub fn add_edge(&mut self, src: u32, dst: u32, label: u8) {
         self.edges.push((src, dst, label));
+    }
+
+    pub(crate) fn extend_edges(&mut self, edges: &[(u32, u32, u8)]) -> anyhow::Result<()> {
+        self.edges.try_reserve(edges.len())?;
+        self.edges.extend_from_slice(edges);
+        Ok(())
     }
 
     /// Returns the number of collected edges.
@@ -144,7 +154,7 @@ impl EdgeStore {
             anyhow::ensure!(offsets.windows(2).all(|w| w[0] <= w[1]), "Invalid CSR offsets");
         }
         anyhow::ensure!(store.targets.iter().chain(store.reverse_targets.iter()).all(|&i| (i as usize) < nodes), "Invalid CSR target");
-        anyhow::ensure!(store.labels.iter().all(|&i| i <= label::UNKNOWN), "Invalid edge label");
+        anyhow::ensure!(store.labels.iter().copied().all(label::valid), "Invalid edge label");
         Ok(store)
     }
 

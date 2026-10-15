@@ -20,17 +20,23 @@ pub struct SizeModel {
     pub layout: ObjectLayout,
     pub layout_source: &'static str,
     pub incomplete_classes: usize,
+    /// Retained byte estimates depend on graph policy as well as layout.
+    /// Historical reports omit it, so comparisons can detect the change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_size_policy: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for SizeModel {
     fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
-        struct Owned { name: String, estimated: bool, layout: ObjectLayout, layout_source: String, incomplete_classes: usize }
+        struct Owned { name: String, estimated: bool, layout: ObjectLayout, layout_source: String, incomplete_classes: usize,
+            #[serde(default)] retained_size_policy: Option<String> }
         let value = <Owned as serde::Deserialize>::deserialize(input)?;
         let name = match value.name.as_str() { "legacy-payload-v0" => "legacy-payload-v0", "conventional-jvm-v1" => "conventional-jvm-v1", _ => return Err(serde::de::Error::custom("Unknown size model")) };
         let layout_source = match value.layout_source.as_str() { "legacy-payload" => "legacy-payload", "explicit" => "explicit", "address-inference-with-defaults" => "address-inference-with-defaults", _ => return Err(serde::de::Error::custom("Unknown layout source")) };
         let layout = ObjectLayout::new(value.layout.word_bytes, value.layout.reference_bytes, value.layout.class_pointer_bytes, value.layout.alignment).map_err(serde::de::Error::custom)?;
-        Ok(Self { name, estimated: value.estimated, layout, layout_source, incomplete_classes: value.incomplete_classes })
+        Ok(Self { name, estimated: value.estimated, layout, layout_source, incomplete_classes: value.incomplete_classes,
+            retained_size_policy: value.retained_size_policy })
     }
 }
 
@@ -165,5 +171,18 @@ mod tests {
         assert!(ObjectLayout::new(4, 8, 4, 8).is_err());
         assert!(ObjectLayout::new(8, 3, 4, 8).is_err());
         assert!(ObjectLayout::round(u64::MAX, 8).is_err());
+    }
+    #[test]
+    fn historical_models_remain_readable_without_inventing_graph_provenance() {
+        let old = serde_json::json!({"name":"conventional-jvm-v1", "estimated":true,
+            "layout":{"word_bytes":8,"reference_bytes":8,"class_pointer_bytes":4,"alignment":8},
+            "layout_source":"explicit", "incomplete_classes":0});
+        let mut model: SizeModel = serde_json::from_value(old.clone()).unwrap();
+        assert!(model.retained_size_policy.is_none());
+        assert_eq!(serde_json::to_value(&model).unwrap(), old);
+        model.retained_size_policy = Some(crate::reference_strength::RETAINED_SIZE_POLICY.into());
+        let current = serde_json::to_value(&model).unwrap();
+        assert_ne!(old, current);
+        assert_eq!(serde_json::from_value::<SizeModel>(current).unwrap(), model);
     }
 }

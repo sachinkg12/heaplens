@@ -12,7 +12,7 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
-const ABI: &str = "structure-v4-bodies-blake3-sizing-v1-strong-v1";
+const ABI: &str = "structure-v6-bodies-blake3-sizing-v1-strong-class-v3";
 const FILES: [&str; 8] = [
     "nodes.bin",
     "metadata.bin",
@@ -136,7 +136,12 @@ fn read(
 ) -> Result<(Phase1Result, Phase2Result)> {
     validate(directory, mapping.len(), key, cancel)?;
     let input_bytes = mapping.len();
-    let phase1 = super::cache_format::read(directory, mapping, cancel)?;
+    let mut phase1 = super::cache_format::read(directory, mapping, cancel)?;
+    // Derive graph provenance from the validated ABI, not optional text in
+    // persisted metadata. Historical report deserialization stays unchanged.
+    if let Some(model) = phase1.summary.size_model.as_mut() {
+        model.retained_size_policy = Some(crate::reference_strength::RETAINED_SIZE_POLICY.into());
+    }
     let edges = EdgeStore::map(directory, phase1.node_store.len())?;
     let phase2 = Phase2Result {
         object_bodies: Some(super::object_bodies::ObjectBodies::map(

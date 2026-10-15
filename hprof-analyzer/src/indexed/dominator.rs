@@ -94,13 +94,15 @@ pub fn compute_dominators(
     if reachable <= 1 {
         // Only the root or nothing is reachable
         use rayon::prelude::*;
-        let retained_sizes: Vec<u64> = (0..n)
+        let unreachable_shallow_size: u64 = (1..n)
             .into_par_iter()
             .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
-            .collect();
-        let dominator_parent = vec![u32::MAX; n];
-        let dominator_children = DominatorChildren::empty(n);
-        let unreachable_shallow_size: u64 = retained_sizes.iter().sum();
+            .sum();
+        let mut retained_sizes = vec![0; n];
+        retained_sizes[0] = node_store.get_by_index(0).shallow_size;
+        let mut dominator_parent = vec![root; n];
+        dominator_parent[0] = u32::MAX;
+        let dominator_children = DominatorChildren::from_parents(&dominator_parent);
         return DominatorResult {
             retained_sizes,
             dominator_parent,
@@ -528,6 +530,11 @@ mod tests {
     }
 
     #[test]
+    fn no_gc_roots_does_not_assign_retained_memory_to_garbage() {
+        assert_matches_oracles("no GC roots", 4, &[(1, 2), (2, 1)], &[], &[0, 10, 20, 30]);
+    }
+
+    #[test]
     fn deep_chain_and_shared_fanout_remain_iterative_and_exact() {
         let n = 100_000;
         let mut edges: Vec<(u32,u32)> = (1..n - 1).map(|i| (i, i + 1)).collect();
@@ -738,7 +745,9 @@ mod tests {
 
         for case_index in 0..GRAPH_COUNT {
             let node_count = 2 + (rng.next_u32() as usize % 31);
-            let root_count = 1 + (rng.next_u32() as usize % (node_count - 1).min(3));
+            let root_count = if case_index % 17 == 0 { 0 } else {
+                1 + (rng.next_u32() as usize % (node_count - 1).min(3))
+            };
             let mut gc_roots = Vec::with_capacity(root_count);
             while gc_roots.len() < root_count {
                 let candidate = 1 + (rng.next_u32() as usize % (node_count - 1));

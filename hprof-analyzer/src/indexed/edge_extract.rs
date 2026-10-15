@@ -12,6 +12,11 @@ pub(crate) fn instance(
     phase: &Phase1Result,
     mut emit: impl FnMut(u32, u32, u8) -> Result<()>,
 ) -> Result<()> {
+    // The VM keeps an object's runtime class alive independently of its fields.
+    // Omitting this edge can make shared class statics appear exclusively owned.
+    if let Some(class) = phase.node_store.index_of(di.class_obj_id) {
+        emit(di.node_idx, class, label::RUNTIME_CLASS)?;
+    }
     let fields = di
         .field_bytes
         .bytes(deferred.mapping.as_deref().map(|map| &map[..]))?;
@@ -57,6 +62,9 @@ pub(crate) fn structural(
         jvm_hprof::IdSize::U64 => 8,
     };
     for array in &deferred.deferred_arrays {
+        if let Some(class) = phase.node_store.index_of(array.class_obj_id) {
+            emit(array.node_idx, class, label::RUNTIME_CLASS)?;
+        }
         for bytes in array
             .element_refs
             .bytes(deferred.mapping.as_deref().map(|map| &map[..]))?
@@ -74,10 +82,54 @@ pub(crate) fn structural(
             }
         }
     }
+    // Primitive array records carry a type rather than a class object ID.
+    // Only primitive types have a unique bootstrap runtime class by name.
+    let primitive_classes: std::collections::HashMap<_, _> = deferred
+        .class_name_map
+        .iter()
+        .filter(|(_, name)| {
+            matches!(
+                name.as_ref(),
+                "boolean[]"
+                    | "byte[]"
+                    | "char[]"
+                    | "short[]"
+                    | "int[]"
+                    | "float[]"
+                    | "long[]"
+                    | "double[]"
+            )
+        })
+        .filter_map(|(&id, name)| {
+            phase
+                .node_store
+                .index_of(id)
+                .map(|node| (name.as_ref(), node))
+        })
+        .collect();
+    let mirror = deferred
+        .class_name_map
+        .iter()
+        .find(|(_, name)| name.as_ref() == "java.lang.Class")
+        .and_then(|(&id, _)| phase.node_store.index_of(id));
+    for (index, node) in phase.node_store.iter().enumerate() {
+        let class = match node.node_type {
+            super::node_store::NodeType::PrimitiveArray => {
+                primitive_classes.get(node.class_name.as_ref()).copied()
+            }
+            super::node_store::NodeType::Class => mirror,
+            _ => None,
+        };
+        if let Some(class) = class {
+            emit(index as u32, class, label::RUNTIME_CLASS)?;
+        }
+    }
     for class in &deferred.deferred_class_edges {
         for (id, label) in [
             (class.super_class_id, label::SUPER_CLASS),
             (class.classloader_id, label::CLASS_LOADER),
+            (class.signers_id, label::CLASS_SIGNERS),
+            (class.protection_domain_id, label::PROTECTION_DOMAIN),
         ] {
             if let Some(node) = id.and_then(|id| phase.node_store.index_of(id)) {
                 emit(class.class_node_idx, node, label)?;

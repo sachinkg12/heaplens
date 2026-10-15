@@ -364,6 +364,14 @@ impl IndexedAnalysisState {
             }
 
             // Top-50 objects by retained size (BinaryHeap min-heap via ObjectReport Ord)
+            // Do not allocate output strings for objects below the current cutoff.
+            // Ties still follow ObjectReport's existing object-ID ordering.
+            if top_heap.len() == 50 && top_heap.peek().is_some_and(|cutoff| {
+                retained < cutoff.retained_size
+                    || (retained == cutoff.retained_size && node.id >= cutoff.object_id)
+            }) {
+                continue;
+            }
             let node_type_str = match node.node_type {
                 NodeType::Instance => "Instance",
                 NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
@@ -924,8 +932,7 @@ impl HeapAnalysis for IndexedAnalysisState {
             NodeIndex::new(node_idx as usize),
         );
         let child_count = self.dominator.dominator_children[node_idx as usize].len();
-        // Referrer count not available in indexed backend yet
-        let ref_count = 0;
+        let ref_count = self.edge_store.reverse_neighbors(node_idx).len();
         Some((report, child_count, ref_count))
     }
 
@@ -1363,6 +1370,35 @@ mod tests {
         assert_eq!(state.summary.total_heap_size, 448);
         assert!(!state.class_histogram.is_empty());
         assert!(!state.top_objects.is_empty());
+    }
+
+    #[test]
+    fn top_objects_match_eager_selection_with_ties_and_reversed_ids() {
+        use std::collections::BinaryHeap;
+        let mut result = build_test_parse_result();
+        let mut nodes = NodeStore::new();
+        nodes.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        let mut edges = EdgeBuilder::new();
+        let mut expected = BinaryHeap::new();
+        let mut roots = Vec::new();
+        let mut total = 0;
+        for i in 0..240u32 {
+            let id = (500 - i) as u64;
+            let size = [16u64, 128, 64, 128, 8, 512][i as usize % 6];
+            total += size;
+            let index = nodes.add_node(id, 0, size, NodeType::Instance, Arc::from("example.Owner"));
+            edges.add_edge(0, index, 0);
+            roots.push(id);
+            expected.push(ObjectReport::new(id, "Instance".into(), "example.Owner".into(), size, size, NodeIndex::new(index as usize)));
+            if expected.len() > 50 { expected.pop(); }
+        }
+        result.edge_store = edges.build(nodes.len());
+        result.node_store = nodes;
+        result.gc_root_ids = roots;
+        result.summary.total_heap_size = total;
+        result.summary.reachable_heap_size = total;
+        let state = IndexedAnalysisState::from_parse_result(result).unwrap();
+        assert_eq!(state.top_objects, expected.into_sorted_vec());
     }
 
     #[test]

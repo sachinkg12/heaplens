@@ -212,7 +212,7 @@ impl<'a> DiskEdgeBuilder<'a> {
     }
     pub fn add_edge(&mut self, src: u32, dst: u32, label: u8) -> Result<()> {
         ensure!(
-            (src as usize) < self.nodes && (dst as usize) < self.nodes && label <= 6,
+            (src as usize) < self.nodes && (dst as usize) < self.nodes && super::edge_store::label::valid(label),
             "Invalid edge"
         );
         self.sorter.as_mut().unwrap().add((src, dst, label))

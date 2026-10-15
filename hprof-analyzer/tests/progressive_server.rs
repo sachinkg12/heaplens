@@ -154,7 +154,10 @@ fn fixture(count: usize) -> Vec<u8> {
     data.extend(4u32.to_be_bytes());
     data.extend(0u64.to_be_bytes());
     let array = [0x23, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8];
-    let heap = array.repeat(count);
+    // Readiness queries exercise a live object, not an unrooted garbage-only dump.
+    let mut heap = Vec::new();
+    if count != 0 { heap.push(0xff); heap.extend(512u32.to_be_bytes()); }
+    heap.extend(array.repeat(count));
     data.push(0x1c);
     data.extend(0u32.to_be_bytes());
     data.extend((heap.len() as u32).to_be_bytes());

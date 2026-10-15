@@ -184,7 +184,7 @@ impl HprofLoader {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// use hprof_analyzer::HprofLoader;
     /// use std::path::PathBuf;
     ///
@@ -534,6 +534,12 @@ pub enum EdgeLabel {
     SuperClass,
     /// Class → class-loader edge.
     ClassLoader,
+    /// Object → runtime class mirror (including arrays and class objects).
+    RuntimeClass,
+    /// Class → signers array.
+    ClassSigners,
+    /// Class → protection domain.
+    ProtectionDomain,
     /// SuperRoot → GC root edge.
     GcRoot,
     /// Fallback extraction (no field type info available).
@@ -588,7 +594,7 @@ pub struct FieldInfo {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
 ///
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 /// println!("Graph has {} nodes and {} edges", 
 ///          graph.graph().node_count(), 
 ///          graph.graph().edge_count());
@@ -727,7 +733,7 @@ pub struct HeapGraphParts {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
 ///
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 /// println!("Graph: {} nodes, {} edges", 
 ///          graph.node_count(), 
 ///          graph.edge_count());
@@ -1227,6 +1233,25 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
     let mut added_edges: std::collections::HashSet<(NodeIndex, NodeIndex)> =
         std::collections::HashSet::with_capacity(estimated_nodes * 2);
 
+    let primitive_classes: HashMap<_, _> = class_name_map.iter()
+        .filter(|(_, name)| matches!(name.as_ref(), "boolean[]" | "byte[]" | "char[]" | "short[]" | "int[]" | "float[]" | "long[]" | "double[]"))
+        .filter_map(|(id, name)| id_to_node.get(id).map(|&node| (name.as_ref(), node)))
+        .collect();
+    let mirror = class_name_map.iter().find(|(_, name)| name.as_ref() == "java.lang.Class")
+        .and_then(|(id, _)| id_to_node.get(id).copied());
+    for source in graph.node_indices() {
+        let class = match &graph[source] {
+            NodeData::Class => mirror,
+            NodeData::Array { class_name, .. } => primitive_classes.get(class_name.as_ref()).copied(),
+            _ => None,
+        };
+        if let Some(target) = class {
+            if added_edges.insert((source, target)) {
+                graph.add_edge(source, target, EdgeLabel::RuntimeClass); edge_count += 1;
+            }
+        }
+    }
+
     // Connect SuperRoot to all GC roots
     for gc_root_id in &gc_root_ids {
         if let Some(&root_node) = id_to_node.get(gc_root_id) {
@@ -1263,6 +1288,12 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let class_obj_id = instance.class_obj_id().id();
 
                             if let Some(&instance_idx) = id_to_node.get(&instance_id) {
+                                if let Some(&class_idx) = id_to_node.get(&class_obj_id) {
+                                    if added_edges.insert((instance_idx, class_idx)) {
+                                        graph.add_edge(instance_idx, class_idx, EdgeLabel::RuntimeClass);
+                                        edge_count += 1;
+                                    }
+                                }
                                 let fields = instance.fields();
 
                                 if let Some(field_layout) = class_field_layouts.get(&class_obj_id) {
@@ -1363,6 +1394,12 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let array_id = array.obj_id().id();
 
                             if let Some(&array_idx) = id_to_node.get(&array_id) {
+                                if let Some(&class_idx) = id_to_node.get(&array.array_class_obj_id().id()) {
+                                    if added_edges.insert((array_idx, class_idx)) {
+                                        graph.add_edge(array_idx, class_idx, EdgeLabel::RuntimeClass);
+                                        edge_count += 1;
+                                    }
+                                }
                                 for element_result in array.elements(id_size) {
                                     if let Ok(Some(element_id)) = element_result {
                                         let ref_id = element_id.id();
@@ -1381,6 +1418,16 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let class_id = class.obj_id().id();
 
                             if let Some(&class_idx) = id_to_node.get(&class_id) {
+                                for (target, label) in [
+                                    (class.signers_obj_id(), EdgeLabel::ClassSigners),
+                                    (class.protection_domain_obj_id(), EdgeLabel::ProtectionDomain),
+                                ] {
+                                    if let Some(target) = target.and_then(|id| id_to_node.get(&id.id()).copied()) {
+                                        if added_edges.insert((class_idx, target)) {
+                                            graph.add_edge(class_idx, target, label); edge_count += 1;
+                                        }
+                                    }
+                                }
                                 // Reference to superclass
                                 if let Some(super_class_id) = class.super_class_obj_id() {
                                     if let Some(&super_class_node) = id_to_node.get(&super_class_id.id()) {
@@ -1607,7 +1654,7 @@ impl Ord for ObjectReport {
 /// Retained size is the amount of memory that would be freed if an object
 /// were garbage collected. It is calculated as:
 ///
-/// ```
+/// ```text
 /// Retained Size(N) = Shallow Size(N) + Sum(Retained Size of all children of N in Dominator Tree)
 /// ```
 ///
@@ -1640,7 +1687,7 @@ impl Ord for ObjectReport {
 /// # fn main() -> anyhow::Result<()> {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 ///
 /// let top_objects = calculate_dominators(&graph)?;
 /// for (i, report) in top_objects.iter().enumerate() {
@@ -1792,6 +1839,9 @@ impl AnalysisState {
             EdgeLabel::ArrayElement => Some("[element]".to_string()),
             EdgeLabel::SuperClass => Some("<super>".to_string()),
             EdgeLabel::ClassLoader => Some("<classloader>".to_string()),
+            EdgeLabel::RuntimeClass => Some("<class>".to_string()),
+            EdgeLabel::ClassSigners => Some("<signers>".to_string()),
+            EdgeLabel::ProtectionDomain => Some("<protection-domain>".to_string()),
             EdgeLabel::GcRoot => Some("<gc-root>".to_string()),
             EdgeLabel::Unknown => None,
         }

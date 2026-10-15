@@ -179,7 +179,7 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             );
             let value = report::compare(result, baseline_summary, current_summary, rows);
             if value["size_models_differ"] == true {
-                warnings.push("Producer size-model estimates differ; size deltas may reflect layout changes, not just application growth.");
+                warnings.push("Analysis size/reference models differ; size deltas may reflect model changes, not just application growth.");
             }
             value
         }

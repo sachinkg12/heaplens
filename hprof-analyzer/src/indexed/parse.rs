@@ -10,11 +10,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use jvm_hprof::{parse_hprof, RecordTag};
-use rayon::prelude::*;
 
-use crate::graph_builder::{convert_jvm_class_name, types_only};
+use crate::graph_builder::convert_jvm_class_name;
 use crate::waste::{
-    extract_nth_field_of_type,
     BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo,
     OverAllocatedCollectionInfo, StringInstanceInfo, WasteRawData,
 };
@@ -23,6 +21,7 @@ use crate::HeapSummary;
 use super::class_index::{ClassIndex, ClassInfo, FieldDescriptor};
 use super::edge_store::{EdgeBuilder, EdgeStore};
 use super::node_store::{NodeStore, NodeType};
+use super::parse_metadata::{CandidateFields, ParseNames, shallow_histogram};
 use super::string_table::StringTable;
 use super::waste::{backing_array, ArrayContentRange, LazyStringContents};
 
@@ -61,6 +60,8 @@ impl DeferredBytes {
 pub struct DeferredObjectArray {
     /// Index of the array node in the NodeStore.
     pub node_idx: u32,
+    /// Runtime array class, including for empty arrays.
+    pub class_obj_id: u64,
     /// Encoded array IDs; nulls are skipped during edge extraction.
     pub element_refs: DeferredBytes,
 }
@@ -73,6 +74,8 @@ pub struct DeferredClassEdge {
     pub super_class_id: Option<u64>,
     /// Classloader object ID (None if bootstrap/0).
     pub classloader_id: Option<u64>,
+    pub signers_id: Option<u64>,
+    pub protection_domain_id: Option<u64>,
     /// Static field references: (ref_id,) for ObjectId-type statics with non-zero values.
     pub static_field_refs: Vec<u64>,
 }
@@ -225,6 +228,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // Class name map: class_obj_id -> human-readable name
     let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::new();
     class_name_map.try_reserve(counts.load_classes)?;
+    let mut names = ParseNames::new();
     // Instance sizes from ClassDump records
     let class_instance_sizes = sizing.class_sizes.clone();
     // Field name intern pool
@@ -348,8 +352,15 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                     },
                                 );
 
-                                // Add class node if not already present
-                                if node_store.index_of(obj_id).is_none() {
+                                // A root record may precede the class definition.
+                                if let Some(index) = node_store.index_of(obj_id) {
+                                    let node = node_store.get_by_index_mut(index);
+                                    if node.node_type == NodeType::GcRoot {
+                                        node.node_type = NodeType::Class;
+                                        node.class_name = Arc::from("Class");
+                                        class_count += 1;
+                                    }
+                                } else {
                                     let cn: Arc<str> = Arc::from("Class");
                                     node_store.add_node(
                                         obj_id,
@@ -391,6 +402,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                         class_node_idx: class_idx,
                                         super_class_id,
                                         classloader_id,
+                                        signers_id: class.signers_obj_id().map(|id| id.id()).filter(|&id| id != 0),
+                                        protection_domain_id: class.protection_domain_obj_id().map(|id| id.id()).filter(|&id| id != 0),
                                         static_field_refs,
                                     });
                                 }
@@ -404,11 +417,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let class_name = class_name_map
                                     .get(&class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| {
-                                        Arc::from(
-                                            format!("Unknown(0x{:x})", class_obj_id).as_str(),
-                                        )
-                                    });
+                                    .unwrap_or_else(|| names.unknown(class_obj_id));
 
                                 let existing = node_store.index_of(obj_id);
                                 let node_idx = if let Some(idx) = existing {
@@ -460,7 +469,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let class_name = class_name_map
                                     .get(&array_class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| Arc::from("Object[]"));
+                                    .unwrap_or_else(|| names.object_array());
                                 array_element_counts.insert(obj_id, element_count);
 
                                 let existing = node_store.index_of(obj_id);
@@ -491,12 +500,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 object_array_class_ids.push((node_idx, array_class_obj_id));
 
                                 // Store element refs for deferred edge extraction in Phase 2
-                                if element_count != 0 {
-                                    deferred_arrays.push(DeferredObjectArray {
-                                        node_idx,
-                                        element_refs,
-                                    });
-                                }
+                                deferred_arrays.push(DeferredObjectArray {
+                                    node_idx,
+                                    class_obj_id: array_class_obj_id,
+                                    element_refs,
+                                });
                             }
 
                             // ---- Primitive Array ----
@@ -506,33 +514,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 // Use num_elements() from the HPROF header directly (O(1))
                                 // instead of iterating all elements via typed iterators.
                                 let elem_count = array.num_elements();
-                                let (elem_size, class_name): (u32, Arc<str>) =
-                                    match prim_type {
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Boolean => {
-                                            (1, Arc::from("boolean[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Byte => {
-                                            (1, Arc::from("byte[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Char => {
-                                            (2, Arc::from("char[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Short => {
-                                            (2, Arc::from("short[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Int => {
-                                            (4, Arc::from("int[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Float => {
-                                            (4, Arc::from("float[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Long => {
-                                            (8, Arc::from("long[]"))
-                                        }
-                                        jvm_hprof::heap_dump::PrimitiveArrayType::Double => {
-                                            (8, Arc::from("double[]"))
-                                        }
-                                    };
+                                let (elem_size, class_name) = names.primitive(prim_type);
 
                                 let size = sizing.primitive_array(elem_count, elem_size as u64)?;
                                 array_element_counts.insert(obj_id, elem_count);
@@ -588,9 +570,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                             jvm_hprof::heap_dump::SubRecord::PrimitiveArrayNoData(array) => {
                                 let obj_id = array.obj_id().id();
                                 let prim_type = array.primitive_type();
-                                let class_name: Arc<str> = Arc::from(
-                                    format!("{}[]", prim_type.java_type_name()).as_str(),
-                                );
+                                let (_, class_name) = names.primitive(prim_type);
 
                                 let existing = node_store.index_of(obj_id);
                                 if let Some(idx) = existing {
@@ -704,37 +684,13 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
     class_index.resolve_field_layouts();
     drop(field_name_intern);
+    drop(names);
 
     // ========================================================================
     // Build class histogram from shallow sizes (no retained sizes yet)
     // ========================================================================
 
-    let mut histogram_map: HashMap<String, (u64, u64)> = HashMap::new();
-    for i in 0..node_store.len() {
-        let node = node_store.get_by_index(i as u32);
-        match node.node_type {
-            NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
-            _ => continue,
-        }
-        let shallow = node.shallow_size as u64;
-        let class_name = node.class_name.to_string();
-        let entry = histogram_map.entry(class_name).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += shallow;
-    }
-
-    let mut class_histogram: Vec<crate::ClassHistogramEntry> = histogram_map
-        .into_iter()
-        .map(|(class_name, (instance_count_val, shallow_size))| {
-            crate::ClassHistogramEntry {
-                class_name,
-                instance_count: instance_count_val,
-                shallow_size,
-                retained_size: 0, // Not yet computed — requires dominators
-            }
-        })
-        .collect();
-    class_histogram.sort_by(|a, b| b.shallow_size.cmp(&a.shallow_size));
+    let class_histogram = shallow_histogram(&node_store);
 
     // ========================================================================
     // Build waste_raw with array_element_counts (Phase 1 portion)
@@ -784,24 +740,23 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
             })
             .collect();
 
+        let candidate_fields: HashMap<u64, CandidateFields> = [
+            string_class_id, hashmap_class_id, linked_hashmap_class_id, arraylist_class_id,
+        ].into_iter().flatten().filter_map(|id| {
+            class_index.field_layout(id).map(|layout| (id, CandidateFields::new(layout, id_size)))
+        }).collect();
+
         waste_raw.array_element_counts = array_element_counts.clone();
 
         for di in &deferred_instances {
-            let fields = di.field_bytes.bytes(Some(data))?;
             let class_obj_id = di.class_obj_id;
 
-            if let Some(field_layout) = class_index.field_layout(class_obj_id) {
-                let ft = types_only(field_layout);
+            if let Some(plan) = candidate_fields.get(&class_obj_id) {
+                let fields = di.field_bytes.bytes(Some(data))?;
 
                 // Waste: String value references
                 if string_class_id == Some(class_obj_id) {
-                    if let Some(value_array_id) = extract_nth_field_of_type(
-                        fields,
-                        id_size,
-                        &ft,
-                        jvm_hprof::heap_dump::FieldType::ObjectId,
-                        0,
-                    ) {
+                    if let Some(value_array_id) = plan.object(fields) {
                         if value_array_id != 0 {
                             let shallow = sizing.instance(class_obj_id, fields.len())?;
                             waste_raw.string_instances.push(StringInstanceInfo {
@@ -817,13 +772,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                     || linked_hashmap_class_id == Some(class_obj_id)
                     || arraylist_class_id == Some(class_obj_id);
                 if is_collection {
-                    if let Some(size_val) = extract_nth_field_of_type(
-                        fields,
-                        id_size,
-                        &ft,
-                        jvm_hprof::heap_dump::FieldType::Int,
-                        0,
-                    ) {
+                    if let Some(size_val) = plan.int(fields) {
                         let cname = class_name_map
                             .get(&class_obj_id)
                             .map(|s| s.to_string())
@@ -834,13 +783,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 class_name: cname,
                                 shallow_size: shallow,
                             });
-                        } else if let Some(backing_array_id) = extract_nth_field_of_type(
-                            fields,
-                            id_size,
-                            &ft,
-                            jvm_hprof::heap_dump::FieldType::ObjectId,
-                            0,
-                        ) {
+                        } else if let Some(backing_array_id) = plan.object(fields) {
                             if let Some(&capacity) =
                                 waste_raw.array_element_counts.get(&backing_array_id)
                             {
@@ -864,6 +807,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
             // Waste: boxed primitives (outside field_layout check —
             // boxed primitives may not have field layouts resolved)
             if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
+                let fields = di.field_bytes.bytes(Some(data))?;
                 let shallow = sizing.instance(class_obj_id, fields.len())?;
                 waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
                     class_name: bp_name.to_string(),
@@ -924,17 +868,9 @@ pub fn parse_indexed_phase2(
     deferred: DeferredEdgeData,
 ) -> Result<Phase2Result> {
     let mut builder = EdgeBuilder::with_capacity(phase1.node_store.len() * 2);
-    let chunks: Result<Vec<Vec<(u32, u32, u8)>>> = deferred.deferred_instances
-        .par_chunks(10_000).map(|chunk| {
-            let mut edges = Vec::new();
-            for instance in chunk {
-                super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| {
-                    edges.push((src, dst, label)); Ok(())
-                })?;
-            }
-            Ok(edges)
-        }).collect();
-    for edges in chunks? { for (src, dst, label) in edges { builder.add_edge(src, dst, label); } }
+    super::bounded_edges::extract(&deferred.deferred_instances, |instance, emit| {
+        super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| emit((src, dst, label)))
+    }, |batch| builder.extend_edges(batch))?;
     super::edge_extract::structural(&deferred, phase1, |src, dst, label| {
         builder.add_edge(src, dst, label); Ok(())
     })?;

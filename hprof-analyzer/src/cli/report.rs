@@ -6,10 +6,11 @@ use hprof_analyzer::{
 };
 use serde_json::{json, Value};
 
-pub const WARNINGS: [&str; 3] = [
+pub const WARNINGS: [&str; 4] = [
     "Retained memory is evidence for investigation, not proof of a leak.",
     "Class retained sets can overlap across classes; their sizes are not additive.",
-    "Output limits do not bound parsing, graph or query-evaluation memory; no disk indexes are reused.",
+    "Output limits do not bound parsing, graph or query-evaluation memory.",
+    "Shallow and retained bytes are JVM-layout estimates: VM-injected fields and contended padding can be omitted. Retention uses strong references, including runtime classes; JDK Reference.referent is excluded.",
 ];
 
 pub const SCAN_WARNINGS: [&str; 3] = [

@@ -15,6 +15,8 @@ pub mod edge_store;
 mod column;
 pub mod disk_edges;
 mod edge_extract;
+mod bounded_edges;
+mod parse_metadata;
 pub mod storage;
 mod cache_format;
 mod cache_metadata;

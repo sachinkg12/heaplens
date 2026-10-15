@@ -279,7 +279,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("structure-v4-bodies-blake3-"));
+            .starts_with("structure-v6-bodies-blake3-"));
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();
@@ -339,6 +339,20 @@ mod tests {
         assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "reused");
         assert_eq!(std::fs::read(old.join("instance.bodies")).unwrap(), b"preserve wide records");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn previous_incomplete_class_graph_is_preserved_and_never_reused() {
+        for namespace in ["structure-v4-bodies-blake3-sizing-v1-strong-v1-old",
+            "structure-v5-bodies-blake3-sizing-v1-strong-class-v2-old"] {
+        let root = private_root();
+        let old = root.path().join(namespace);
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("manifest.json"), b"preserve pre-correction graph").unwrap();
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "built");
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "reused");
+        assert_eq!(std::fs::read(old.join("manifest.json")).unwrap(), b"preserve pre-correction graph");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+        }
     }
     #[test]
     fn mismatched_digest_algorithm_is_rejected_before_cache_loading() {

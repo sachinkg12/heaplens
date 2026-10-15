@@ -260,6 +260,7 @@ impl HprofSizing {
                 "address-inference-with-defaults"
             },
             incomplete_classes: classes.len() - class_sizes.len(),
+            retained_size_policy: Some(crate::reference_strength::RETAINED_SIZE_POLICY.into()),
         };
         Ok(Self {
             layout,

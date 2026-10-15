@@ -58,6 +58,7 @@ fn main() -> Result<()> {
     let (legacy, _) = build_graph(&data)?;
     let mut tested = 0;
     let mut deltas = 0;
+    let mut samples = Vec::new();
     for record in hprof.records_iter() {
         if let Some(heap) = record.unwrap().as_heap_dump_segment() {
             for sub in heap.unwrap().sub_records() {
@@ -96,9 +97,12 @@ fn main() -> Result<()> {
                         "backend mismatch at {target:x}"
                     );
                     tested += 1;
+                    samples.push(serde_json::json!({ "address": target.to_string(),
+                        "class_name": node.class_name, "jvm_bytes": expected,
+                        "heaplens_bytes": node.shallow_size, "legacy_bytes": legacy_size }));
                     if expected != node.shallow_size as u64 {
                         deltas += 1;
-                        println!(
+                        eprintln!(
                             "DELTA 0x{target:x} {} expected={expected} actual={}",
                             node.class_name, node.shallow_size
                         );
@@ -107,10 +111,18 @@ fn main() -> Result<()> {
             }
         }
     }
-    println!(
-        "ORACLE samples={tested} mismatches={deltas} total_heap={} backend_parity=true",
-        indexed.summary.total_heap_size
-    );
+    if args.iter().any(|arg| arg == "--json") {
+        println!(
+            "{}",
+            serde_json::json!({"samples": samples, "mismatches": deltas,
+            "size_model": indexed.summary.size_model, "backends_match": true})
+        );
+    } else {
+        println!(
+            "ORACLE samples={tested} mismatches={deltas} total_heap={} backend_parity=true",
+            indexed.summary.total_heap_size
+        );
+    }
     if tested == 0 || (deltas > 0 && !args.iter().any(|a| a == "--allow-deltas")) {
         bail!("shallow-size oracle mismatch");
     }
