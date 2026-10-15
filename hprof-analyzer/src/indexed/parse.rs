@@ -130,6 +130,12 @@ pub struct Phase2Result {
     pub waste_raw: WasteRawData,
 }
 
+fn reserved_records<T>(capacity: usize) -> Result<Vec<T>> {
+    let mut records = Vec::new();
+    records.try_reserve_exact(capacity)?;
+    Ok(records)
+}
+
 /// Helper: register a GC root node.
 fn add_gc_root(
     obj_id: u64,
@@ -202,22 +208,23 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         .unwrap_or("unknown")
         .to_string();
 
-    // Capacity estimates based on file size
-    let estimated_nodes = (data.len() / 100).max(1024);
-    let estimated_strings = (data.len() / 500).max(256);
-
-    let mut string_table = StringTable::with_capacity(estimated_strings);
-    let mut load_class_entries: Vec<(u64, u64)> = Vec::new();
-    let mut class_index = ClassIndex::with_capacity(estimated_nodes / 10);
-    let mut node_store = NodeStore::with_capacity(estimated_nodes);
-    let mut gc_root_ids: Vec<u64> = Vec::new();
-    let mut deferred_instances: Vec<DeferredInstance> = Vec::with_capacity(estimated_nodes);
-    let mut deferred_arrays: Vec<DeferredObjectArray> = Vec::new();
-    let mut deferred_class_edges: Vec<DeferredClassEdge> = Vec::new();
+    // The sizing scan already visits these records. Reuse its independent hints
+    // rather than reserving object/class/string tables from payload byte size.
+    // Record multiplicity is preserved; this is not a total process RAM limit.
+    let counts = sizing.record_counts;
+    let mut string_table = StringTable::try_with_capacity(counts.strings)?;
+    let mut load_class_entries: Vec<(u64, u64)> = reserved_records(counts.load_classes)?;
+    let mut class_index = ClassIndex::try_with_capacity(counts.classes)?;
+    let mut node_store = NodeStore::try_with_capacity(counts.node_capacity()?)?;
+    let mut gc_root_ids: Vec<u64> = reserved_records(counts.roots)?;
+    let mut deferred_instances: Vec<DeferredInstance> = reserved_records(counts.instances)?;
+    let mut deferred_arrays: Vec<DeferredObjectArray> = reserved_records(counts.object_arrays)?;
+    let mut deferred_class_edges: Vec<DeferredClassEdge> = reserved_records(counts.classes)?;
     let mut heap_types: Vec<String> = Vec::new();
 
     // Class name map: class_obj_id -> human-readable name
-    let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::with_capacity(estimated_nodes / 10);
+    let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::new();
+    class_name_map.try_reserve(counts.load_classes)?;
     // Instance sizes from ClassDump records
     let class_instance_sizes = sizing.class_sizes.clone();
     // Field name intern pool
@@ -231,7 +238,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     let mut backing_arrays: HashMap<u64, BackingArrayInfo> = HashMap::new();
 
     // Track object array node indices to their array_class_obj_id for deferred name fixup
-    let mut object_array_class_ids: Vec<(u32, u64)> = Vec::new();
+    let mut object_array_class_ids: Vec<(u32, u64)> = reserved_records(counts.object_arrays)?;
 
     // Counters
     let mut instance_count = 0u64;
@@ -931,7 +938,7 @@ pub fn parse_indexed_phase2(
     super::edge_extract::structural(&deferred, phase1, |src, dst, label| {
         builder.add_edge(src, dst, label); Ok(())
     })?;
-    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory(&deferred.deferred_instances)), edge_store: builder.build(phase1.node_store.len()), waste_raw: phase1.waste_raw.clone() })
+    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory(&deferred.deferred_instances)).transpose()?, edge_store: builder.build(phase1.node_store.len()), waste_raw: phase1.waste_raw.clone() })
 }
 
 /// Disk mode streams each resolved reference into a bounded sorted-run builder.
@@ -959,7 +966,11 @@ pub(crate) fn parse_indexed_phase2_disk_recorded(
     }
     super::edge_extract::structural(&deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
     let body_receipt = super::object_bodies::ObjectBodies::write_records(&mut deferred.deferred_instances,directory,cancel)?;
-    let bodies=super::object_bodies::ObjectBodies::map(directory,phase1.node_store.len(),deferred.mapping.as_ref().ok_or_else(||anyhow::anyhow!("Disk storage requires mapped input"))?.len())?;
+    let input_bytes = deferred.mapping.as_ref().ok_or_else(||anyhow::anyhow!("Disk storage requires mapped input"))?.len();
+    // References and body offsets are now persisted. Free parse-only records
+    // before reverse sorting, mapping and cache publication can overlap them.
+    drop(deferred);
+    let bodies=super::object_bodies::ObjectBodies::map(directory,phase1.node_store.len(),input_bytes)?;
     let (edge_store, mut receipts) = builder.build_recorded()?;
     receipts.push(body_receipt);
     Ok((Phase2Result { object_bodies: Some(bodies), edge_store, waste_raw: phase1.waste_raw.clone() }, receipts))
@@ -969,6 +980,31 @@ pub(crate) fn parse_indexed_phase2_disk_recorded(
 mod tests {
     use super::*;
     use jvm_hprof::heap_dump::FieldType;
+
+    #[test]
+    fn impossible_record_reservations_return_errors_without_panicking() {
+        assert!(reserved_records::<u64>(usize::MAX).is_err());
+        assert!(NodeStore::try_with_capacity(usize::MAX).is_err());
+        assert!(ClassIndex::try_with_capacity(usize::MAX).is_err());
+        assert!(StringTable::try_with_capacity(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn counted_reservations_keep_duplicate_roots_and_array_records() {
+        let bytes = crate::hprof_sizing::tests::count_fixture_32(0);
+        let (phase, deferred) = parse_indexed_phase1(&bytes).unwrap();
+        assert_eq!(phase.node_store.len(), 6);
+        assert_eq!(phase.gc_root_ids, vec![20, 20]);
+        assert_eq!(phase.summary.total_gc_roots, 2);
+        assert_eq!(phase.summary.total_instances, 1);
+        assert_eq!(phase.summary.total_arrays, 3);
+        assert_eq!(deferred.deferred_instances.len(), 1);
+        assert_eq!(deferred.deferred_arrays.len(), 1);
+        assert_eq!(deferred.deferred_class_edges.len(), 1);
+        assert_eq!(deferred.deferred_instances.capacity(), 1);
+        assert_eq!(deferred.deferred_arrays.capacity(), 1);
+        assert_eq!(deferred.deferred_class_edges.capacity(), 1);
+    }
 
     /// Verifies that `parse_indexed` doesn't panic on empty-ish input.
     #[test]

@@ -3,7 +3,7 @@
 use crate::object_layout::ObjectLayout;
 use anyhow::{bail, Result};
 use jvm_hprof::heap_dump::{FieldType, SubRecord};
-use jvm_hprof::{parse_hprof, IdSize};
+use jvm_hprof::{parse_hprof, IdSize, RecordTag};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -95,10 +95,49 @@ impl LayoutEvidence {
     }
 }
 
+/// Validated record counts from the existing sizing scan, not file-size guesses.
+/// Counts are reservation hints: duplicate objects/roots can share one node.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RecordCounts {
+    pub strings: usize,
+    pub load_classes: usize,
+    pub classes: usize,
+    pub instances: usize,
+    pub object_arrays: usize,
+    pub primitive_arrays: usize,
+    pub roots: usize,
+}
+impl RecordCounts {
+    fn increment(count: &mut usize) -> Result<()> {
+        *count = count.checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("HPROF record count overflow"))?;
+        Ok(())
+    }
+    pub fn node_capacity(&self) -> Result<usize> {
+        [self.classes, self.instances, self.object_arrays, self.primitive_arrays, self.roots]
+            .into_iter().try_fold(1usize, |sum, count| {
+                sum.checked_add(count).ok_or_else(|| anyhow::anyhow!("HPROF node capacity overflow"))
+            })
+    }
+    fn observe(&mut self, record: &SubRecord<'_>) -> Result<()> {
+        if crate::gc_roots::object_id(record).is_some() {
+            return Self::increment(&mut self.roots);
+        }
+        match record {
+            SubRecord::Class(_) => Self::increment(&mut self.classes),
+            SubRecord::Instance(_) => Self::increment(&mut self.instances),
+            SubRecord::ObjectArray(_) => Self::increment(&mut self.object_arrays),
+            SubRecord::PrimitiveArray(_) | SubRecord::PrimitiveArrayNoData(_) => Self::increment(&mut self.primitive_arrays),
+            _ => Ok(()),
+        }
+    }
+}
+
 pub(crate) struct HprofSizing {
     pub layout: ObjectLayout,
     pub class_sizes: HashMap<u64, u64>,
     pub metadata: crate::object_layout::SizeModel,
+    pub record_counts: RecordCounts,
     payload_only: bool,
 }
 impl HprofSizing {
@@ -127,11 +166,17 @@ impl HprofSizing {
         let payload_only =
             hprof.header().label().ok() == Some("JAVA PROFILE 1.0.3") && explicit.is_none();
         let mut declared_sizes = HashMap::new();
+        let mut record_counts = RecordCounts::default();
         for record in hprof.records_iter() {
             if cancelled() {
                 bail!("Sizing cancelled");
             }
             let record = record.map_err(|e| anyhow::anyhow!("Invalid sizing record: {e:?}"))?;
+            match record.tag() {
+                RecordTag::Utf8 => RecordCounts::increment(&mut record_counts.strings)?,
+                RecordTag::LoadClass => RecordCounts::increment(&mut record_counts.load_classes)?,
+                _ => {},
+            }
             if let Some(heap) = record.as_heap_dump_segment() {
                 for sub in heap
                     .map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?
@@ -140,7 +185,9 @@ impl HprofSizing {
                     if cancelled() {
                         bail!("Sizing cancelled");
                     }
-                    match sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))? {
+                    let sub = sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))?;
+                    record_counts.observe(&sub)?;
+                    match sub {
                         SubRecord::Class(class) => {
                             if payload_only {
                                 declared_sizes.insert(
@@ -218,6 +265,7 @@ impl HprofSizing {
             layout,
             class_sizes,
             metadata,
+            record_counts,
             payload_only,
         })
     }
@@ -328,8 +376,85 @@ pub(crate) fn primitive_bytes(kind: jvm_hprof::heap_dump::PrimitiveArrayType) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn record(data: &mut Vec<u8>, tag: u8, body: &[u8]) {
+        data.push(tag);
+        data.extend(0u32.to_be_bytes());
+        data.extend((body.len() as u32).to_be_bytes());
+        data.extend(body);
+    }
+
+    pub(crate) fn count_fixture_32(payload: u32) -> Vec<u8> {
+        let mut data = b"JAVA PROFILE 1.0.3\0".to_vec();
+        data.extend(4u32.to_be_bytes()); data.extend(0u64.to_be_bytes());
+        let mut name = 1u32.to_be_bytes().to_vec(); name.extend(b"Example");
+        record(&mut data, 1, &name);
+        let mut load = 1u32.to_be_bytes().to_vec(); load.extend(10u32.to_be_bytes());
+        load.extend(0u32.to_be_bytes()); load.extend(1u32.to_be_bytes());
+        record(&mut data, 2, &load);
+        let mut heap = Vec::new();
+        // Repeated roots reserve conservatively but still describe one node.
+        for _ in 0..2 { heap.push(0xff); heap.extend(20u32.to_be_bytes()); }
+        // A newly attached JNI thread may have no object ID.
+        heap.push(0x08); heap.extend(0u32.to_be_bytes()); heap.extend(1u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.push(0x20); heap.extend(10u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend([0u8; 24]); heap.extend(0u32.to_be_bytes()); heap.extend([0u8; 6]);
+        heap.push(0x21); heap.extend(20u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(10u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        record(&mut data, 0x1c, &heap);
+        // A separate segment exercises accumulative counts.
+        let mut heap = vec![0x22]; heap.extend(30u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(3u32.to_be_bytes()); heap.extend(10u32.to_be_bytes());
+        for id in [20u32, 0, 999] { heap.extend(id.to_be_bytes()); }
+        heap.push(0x23); heap.extend(40u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(payload.to_be_bytes()); heap.push(8); heap.resize(heap.len() + payload as usize, 0);
+        heap.push(0xc3); heap.extend(50u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(3u32.to_be_bytes()); heap.push(8);
+        heap.push(0xfe); heap.extend(0u32.to_be_bytes()); heap.extend(1u32.to_be_bytes());
+        record(&mut data, 0x1c, &heap); record(&mut data, 0x2c, &[]);
+        data
+    }
+
+    #[test]
+    fn counts_include_32_bit_arrays_segments_and_only_resolvable_roots() {
+        let sizing = HprofSizing::read(&count_fixture_32(0), None).unwrap();
+        let counts = sizing.record_counts;
+        assert_eq!(counts.strings, 1); assert_eq!(counts.load_classes, 1);
+        assert_eq!(counts.classes, 1); assert_eq!(counts.instances, 1);
+        assert_eq!(counts.object_arrays, 1); assert_eq!(counts.primitive_arrays, 2);
+        assert_eq!(counts.roots, 2); assert_eq!(counts.node_capacity().unwrap(), 8);
+    }
+
+    #[test]
+    fn counts_include_64_bit_records_without_treating_roots_as_unique_nodes() {
+        let sizing = HprofSizing::read(&crate::indexed::waste::tests::string_fixture(), None).unwrap();
+        let counts = sizing.record_counts;
+        assert_eq!(counts.strings, 2); assert_eq!(counts.load_classes, 1);
+        assert_eq!(counts.classes, 1); assert_eq!(counts.instances, 5);
+        assert_eq!(counts.object_arrays, 0); assert_eq!(counts.primitive_arrays, 5);
+        assert_eq!(counts.roots, 5); assert_eq!(counts.node_capacity().unwrap(), 17);
+    }
+
+    #[test]
+    fn capacity_hints_depend_on_records_not_primitive_payload_length() {
+        let small = HprofSizing::read(&count_fixture_32(0), None).unwrap().record_counts;
+        let large = HprofSizing::read(&count_fixture_32(8 * 1024 * 1024), None).unwrap().record_counts;
+        assert_eq!(small.node_capacity().unwrap(), large.node_capacity().unwrap());
+        assert_eq!(small.strings, large.strings); assert_eq!(small.classes, large.classes);
+        assert_eq!(small.instances, large.instances);
+    }
+
+    #[test]
+    fn record_count_overflow_and_truncated_inputs_fail_closed() {
+        let mut count = usize::MAX;
+        assert!(RecordCounts::increment(&mut count).is_err()); assert_eq!(count, usize::MAX);
+        assert!(RecordCounts { instances: usize::MAX, ..Default::default() }.node_capacity().is_err());
+        let bytes = count_fixture_32(0);
+        assert!(HprofSizing::read(&bytes[..bytes.len() - 1], None).is_err());
+        assert!(HprofSizing::read_cancellable(&bytes, None, &|| true).is_err());
+    }
     #[test]
     fn reference_and_class_pointer_evidence_are_independent() {
         let mut evidence = LayoutEvidence::new(8);

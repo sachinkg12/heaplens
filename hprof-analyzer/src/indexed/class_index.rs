@@ -61,6 +61,14 @@ mod field_type_codec {
 }
 
 impl ClassIndex {
+    pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
+        let mut index = Self::new();
+        index.inner.try_reserve(capacity)?;
+        index.layouts.try_reserve(capacity)?;
+        index.field_strengths.try_reserve(capacity)?;
+        Ok(index)
+    }
+
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&u64, &ClassInfo)> + Clone {
         self.inner.iter()
     }

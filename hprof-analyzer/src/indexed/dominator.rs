@@ -6,6 +6,7 @@
 
 use super::edge_store::EdgeStore;
 use super::node_store::NodeStore;
+pub use super::dominator_children::DominatorChildren;
 
 /// Result of dominator tree computation.
 pub struct DominatorResult {
@@ -14,7 +15,7 @@ pub struct DominatorResult {
     /// Parent in dominator tree per node index. `u32::MAX` means no parent.
     pub dominator_parent: Vec<u32>,
     /// Children in dominator tree per node index.
-    pub dominator_children: Vec<Vec<u32>>,
+    pub dominator_children: DominatorChildren,
     /// Total shallow size of unreachable nodes (not reachable from any GC root).
     pub unreachable_shallow_size: u64,
 }
@@ -41,7 +42,7 @@ pub fn compute_dominators(
         return DominatorResult {
             retained_sizes: Vec::new(),
             dominator_parent: Vec::new(),
-            dominator_children: Vec::new(),
+            dominator_children: DominatorChildren::empty(0),
             unreachable_shallow_size: 0,
         };
     }
@@ -60,28 +61,30 @@ pub fn compute_dominators(
 
     // Iterative DFS to avoid stack overflow on deep graphs
     {
-        let mut stack: Vec<(u32, bool)> = Vec::with_capacity(n.min(1024));
-        stack.push((root, false));
-
-        while let Some((v, visited)) = stack.pop() {
-            if visited {
-                continue;
-            }
-            if dfnum[v as usize] != u32::MAX {
-                continue;
-            }
-            dfnum[v as usize] = dfs_count;
-            semi[v as usize] = dfs_count;
-            vertex[dfs_count as usize] = v;
-            dfs_count += 1;
-
-            // Push successors in reverse order so they're visited in forward order
+        // Reuse semi as a successor cursor until a node's DFS frame finishes.
+        // The DFS parent column provides the return path, so neither deep
+        // chains nor shared-reference graphs allocate a pending-edge stack.
+        dfnum[root as usize] = 0;
+        vertex[0] = root;
+        dfs_count += 1;
+        let mut v = root;
+        loop {
             let neighbors = edge_store.neighbors(v);
-            for &w in neighbors.iter().rev() {
-                if (w as usize) < n && dfnum[w as usize] == u32::MAX {
-                    parent[w as usize] = v;
-                    stack.push((w, false));
-                }
+            let cursor = semi[v as usize] as usize;
+            if cursor == neighbors.len() {
+                semi[v as usize] = dfnum[v as usize];
+                if v == root { break; }
+                v = parent[v as usize];
+                continue;
+            }
+            let w = neighbors[cursor];
+            semi[v as usize] += 1;
+            if (w as usize) < n && dfnum[w as usize] == u32::MAX {
+                parent[w as usize] = v;
+                dfnum[w as usize] = dfs_count;
+                vertex[dfs_count as usize] = w;
+                dfs_count += 1;
+                v = w;
             }
         }
     }
@@ -96,7 +99,7 @@ pub fn compute_dominators(
             .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
             .collect();
         let dominator_parent = vec![u32::MAX; n];
-        let dominator_children = vec![Vec::new(); n];
+        let dominator_children = DominatorChildren::empty(n);
         let unreachable_shallow_size: u64 = retained_sizes.iter().sum();
         return DominatorResult {
             retained_sizes,
@@ -111,8 +114,8 @@ pub fn compute_dominators(
     let mut label: Vec<u32> = (0..n as u32).collect();   // label[v] = node with min semi on path
 
     // Implicit link: ancestor[w] = v means v is w's ancestor in the forest
-    fn compress(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32]) {
-        let mut stack = Vec::new();
+    fn compress(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], stack: &mut Vec<u32>) {
+        stack.clear();
         let mut cur = v;
         // Walk up to find the root of the tree
         while ancestor[ancestor[cur as usize] as usize] != u32::MAX {
@@ -129,16 +132,20 @@ pub fn compute_dominators(
         }
     }
 
-    fn eval(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32]) -> u32 {
+    fn eval(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], scratch: &mut Vec<u32>) -> u32 {
         if ancestor[v as usize] == u32::MAX {
             return v;
         }
-        compress(v, ancestor, semi, label);
+        compress(v, ancestor, semi, label, scratch);
         label[v as usize]
     }
 
     // Buckets: bucket[v] = set of nodes whose semidominator is v
-    let mut bucket: Vec<Vec<u32>> = vec![Vec::new(); n];
+    // Each non-root node enters exactly one bucket, so two flat link columns
+    // suffice instead of n vectors and their individually allocated contents.
+    let mut bucket_head = vec![u32::MAX; n];
+    let mut bucket_next = vec![u32::MAX; n];
+    let mut scratch = Vec::new();
     let mut idom: Vec<u32> = vec![u32::MAX; n];
 
     // Process nodes in reverse DFS order (skip root at DFS number 0)
@@ -148,7 +155,7 @@ pub fn compute_dominators(
         // Step 2: Compute semidominator
         for &v in edge_store.reverse_neighbors(w) {
             if (v as usize) < n && dfnum[v as usize] != u32::MAX {
-                let u = eval(v, &mut ancestor, &semi, &mut label);
+                let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch);
                 if semi[u as usize] < semi[w as usize] {
                     semi[w as usize] = semi[u as usize];
                 }
@@ -157,16 +164,18 @@ pub fn compute_dominators(
 
         // Add w to the bucket of its semidominator
         let semi_node = vertex[semi[w as usize] as usize];
-        bucket[semi_node as usize].push(w);
+        bucket_next[w as usize] = bucket_head[semi_node as usize];
+        bucket_head[semi_node as usize] = w;
 
         // Link w to its DFS tree parent
         let p = parent[w as usize];
         ancestor[w as usize] = p;
 
         // Step 3: Process bucket of parent
-        let bucket_entries: Vec<u32> = std::mem::take(&mut bucket[p as usize]);
-        for v in bucket_entries {
-            let u = eval(v, &mut ancestor, &semi, &mut label);
+        while bucket_head[p as usize] != u32::MAX {
+            let v = bucket_head[p as usize];
+            bucket_head[p as usize] = bucket_next[v as usize];
+            let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch);
             if semi[u as usize] < semi[v as usize] {
                 idom[v as usize] = u;
             } else {
@@ -189,8 +198,15 @@ pub fn compute_dominators(
 
     // --- Build dominator tree structure ---
 
-    let mut dominator_parent: Vec<u32> = vec![u32::MAX; n];
-    let mut dominator_children: Vec<Vec<u32>> = vec![Vec::new(); n];
+    // Reuse idom, release LT-only arrays before allocating the final child index.
+    let mut dominator_parent = idom;
+    drop(semi);
+    drop(parent);
+    drop(ancestor);
+    drop(label);
+    drop(bucket_head);
+    drop(bucket_next);
+    drop(scratch);
 
     for i in 0..n {
         let node = i as u32;
@@ -200,12 +216,9 @@ pub fn compute_dominators(
         if dfnum[i] == u32::MAX {
             // Unreachable node: attach to root
             dominator_parent[i] = root;
-            dominator_children[root as usize].push(node);
-        } else if idom[i] != u32::MAX {
-            dominator_parent[i] = idom[i];
-            dominator_children[idom[i] as usize].push(node);
         }
     }
+    let dominator_children = DominatorChildren::from_parents(&dominator_parent);
 
     // --- Compute retained sizes bottom-up ---
 
@@ -485,6 +498,11 @@ mod tests {
             actual.unreachable_shallow_size, oracle.unreachable_shallow_size,
             "unreachable-size mismatch for {case}; roots={gc_roots:?}; edges={edges:?}"
         );
+        for node in 0..node_count {
+            let expected: Vec<u32> = oracle.dominator_parent.iter().enumerate()
+                .filter_map(|(child, &parent)| (parent == node as u32).then_some(child as u32)).collect();
+            assert_eq!(&actual.dominator_children[node], expected, "child index mismatch for {case}");
+        }
     }
 
     #[derive(Clone, Copy)]
@@ -507,6 +525,21 @@ mod tests {
         let result = compute_dominators(&ns, &es, &[]);
         assert!(result.retained_sizes.is_empty());
         assert!(result.dominator_parent.is_empty());
+    }
+
+    #[test]
+    fn deep_chain_and_shared_fanout_remain_iterative_and_exact() {
+        let n = 100_000;
+        let mut edges: Vec<(u32,u32)> = (1..n - 1).map(|i| (i, i + 1)).collect();
+        // A second root path to the tail, many shared references and a cycle.
+        edges.extend((1..n - 1).map(|i| (i, n - 1)));
+        edges.push((n - 1, 1));
+        let actual = make_test(n as usize, &edges, &[1, n - 1], &vec![1; n as usize]);
+        assert_eq!(actual.dominator_parent[n as usize - 1], 0);
+        assert_eq!(actual.dominator_parent[1], 0);
+        for node in 2..n - 1 { assert_eq!(actual.dominator_parent[node as usize], node - 1); }
+        assert_eq!(actual.retained_sizes[0], n as u64);
+        assert_eq!(&actual.dominator_children[0], &[1, n - 1]);
     }
 
     #[test]

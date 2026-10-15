@@ -98,7 +98,7 @@ impl ClassloaderTree for IndexedClassloaderTree<'_> {
     }
 
     fn children(&self, node: Self::Node) -> Vec<Self::Node> {
-        self.dominator.dominator_children[node as usize].clone()
+        self.dominator.dominator_children[node as usize].to_vec()
     }
 }
 
@@ -1036,6 +1036,10 @@ impl IndexedAnalysisState {
     ///
     /// This is the two-phase counterpart of `from_parse_result`.
     pub fn from_phases(phase1: Phase1Result, phase2: Phase2Result) -> anyhow::Result<Self> {
+        // Phase 2 already owns these candidates. Do not retain a second copy
+        // (or the shallow histogram) through dominator computation.
+        drop(phase1.waste_raw);
+        drop(phase1.class_histogram);
         let object_bodies=phase2.object_bodies;
         let parse_result = ParseResult {
             node_store: phase1.node_store,

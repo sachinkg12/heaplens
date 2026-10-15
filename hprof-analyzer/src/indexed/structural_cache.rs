@@ -12,7 +12,7 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
-const ABI: &str = "structure-v3-columns-blake3-sizing-v1-strong-v1";
+const ABI: &str = "structure-v4-bodies-blake3-sizing-v1-strong-v1";
 const FILES: [&str; 8] = [
     "nodes.bin",
     "metadata.bin",

@@ -17,6 +17,12 @@ pub struct StringTable {
 }
 
 impl StringTable {
+    pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
+        let mut table = Self::new();
+        table.inner.try_reserve(capacity)?;
+        Ok(table)
+    }
+
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&u64, &Arc<str>)> + Clone { self.inner.iter() }
     pub(crate) fn insert_shared(&mut self, id: u64, text: Arc<str>) { self.inner.insert(id, text); }
     /// Creates an empty `StringTable`.

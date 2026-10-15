@@ -44,6 +44,13 @@ pub struct NodeStore {
 }
 
 impl NodeStore {
+    pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
+        let mut store = Self::new();
+        store.nodes.try_reserve_exact(capacity)?;
+        store.id_to_index.try_reserve(capacity)?;
+        Ok(store)
+    }
+
     /// Creates an empty `NodeStore`.
     pub fn new() -> Self {
         Self {

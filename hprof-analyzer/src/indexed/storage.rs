@@ -279,7 +279,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("structure-v3-columns-blake3-"));
+            .starts_with("structure-v4-bodies-blake3-"));
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();
@@ -327,6 +327,17 @@ mod tests {
         assert_eq!(std::fs::read(old.join("metadata.json")).unwrap(), b"preserved old metadata");
         let (_, report) = load(fixture(), &options(root.path()));
         assert_eq!(report.cache_status, "reused");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn previous_wide_body_namespace_is_preserved_and_not_reused() {
+        let root = private_root();
+        let old = root.path().join("structure-v3-columns-blake3-sizing-v1-strong-v1-old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("instance.bodies"), b"preserve wide records").unwrap();
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "built");
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "reused");
+        assert_eq!(std::fs::read(old.join("instance.bodies")).unwrap(), b"preserve wide records");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
     }
     #[test]

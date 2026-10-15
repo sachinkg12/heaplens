@@ -22,8 +22,29 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 const MAGIC: &[u8; 8] = b"HLMETA03";
-const MAX_BYTES: u64 = 512 * 1024 * 1024;
+const SMALL_INPUT_ALLOWANCE: u64 = 512 * 1024 * 1024;
 const MAX_SUMMARY: usize = 64 * 1024;
+
+// Coarse encoded-file admission, not a RAM budget. In this format a primitive
+// array can add 45 metadata bytes (range + count) for a minimum 14-byte HPROF
+// record. Allow four times the source bytes plus descriptor overhead, while
+// retaining the prior allowance for small inputs. Per-table validation below
+// still checks actual counts, lengths, names, IDs and mapped content ranges.
+fn metadata_length_limit(input_bytes: u64) -> Result<u64> {
+    Ok(input_bytes
+        .checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(MAX_SUMMARY as u64 + 256))
+        .ok_or_else(|| anyhow::anyhow!("Metadata admission length overflow"))?
+        .max(SMALL_INPUT_ALLOWANCE))
+}
+
+fn validate_metadata_length(bytes: u64, input_bytes: u64) -> Result<()> {
+    ensure!(
+        (16..=metadata_length_limit(input_bytes)?).contains(&bytes),
+        "Invalid metadata file length for source capture"
+    );
+    Ok(())
+}
 
 #[derive(Default)]
 struct Dictionary {
@@ -100,12 +121,12 @@ pub(crate) fn write(
         phase.waste_raw.backing_arrays.is_empty(),
         "Disk cache requires lazy content metadata"
     );
-    let ranges = &phase
+    let contents = phase
         .waste_raw
         .lazy_contents
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Missing mapped input"))?
-        .arrays;
+        .ok_or_else(|| anyhow::anyhow!("Missing mapped input"))?;
+    let ranges = &contents.arrays;
     let mut dict = Dictionary::default();
     for name in node_names {
         dict.intern(name)?;
@@ -232,10 +253,7 @@ pub(crate) fn write(
         [8, 8, 8, 8, 1],
     )?;
     let receipt = out.finish()?;
-    ensure!(
-        receipt.bytes <= MAX_BYTES,
-        "Cache metadata exceeds supported limit"
-    );
+    validate_metadata_length(receipt.bytes, contents.mapping.len() as u64)?;
     Ok(receipt)
 }
 
@@ -297,6 +315,7 @@ pub(crate) struct Metadata {
     pub nodes: usize,
 }
 fn decode(bytes: &[u8], mapping: Arc<memmap2::Mmap>, cancel: &AtomicBool) -> Result<Metadata> {
+    validate_metadata_length(bytes.len() as u64, mapping.len() as u64)?;
     let mut input = Cursor { bytes, cancel };
     ensure!(input.take(8)? == MAGIC, "Unsupported metadata format");
     let nodes = input.u32()?;
@@ -306,8 +325,11 @@ fn decode(bytes: &[u8], mapping: Arc<memmap2::Mmap>, cancel: &AtomicBool) -> Res
     let summary: HeapSummary = serde_json::from_slice(input.take(length)?)?;
     let count = input.u32()?;
     ensure!(count <= input.bytes.len() / 4, "Invalid dictionary count");
-    let mut names = Vec::with_capacity(count);
-    let mut unique = HashSet::with_capacity(count);
+    // A declared dictionary count is not evidence that its entries are valid.
+    // Grow only after validating each entry, rather than preallocating from an
+    // attacker-controlled count in a large but malformed mapped file.
+    let mut names = Vec::new();
+    let mut unique = HashSet::new();
     for _ in 0..count {
         let length = input.u32()?;
         let name: Arc<str> = Arc::from(std::str::from_utf8(input.take(length)?)?);
@@ -490,10 +512,8 @@ pub(crate) fn read(
     cancel: &AtomicBool,
 ) -> Result<Metadata> {
     let file = std::fs::File::open(directory.join("metadata.bin"))?;
-    ensure!(
-        file.metadata()?.len() >= 16 && file.metadata()?.len() <= MAX_BYTES,
-        "Invalid metadata file length"
-    );
+    validate_metadata_length(file.metadata()?.len(), mapping.len() as u64)?;
+    super::disk_edges::check(cancel)?;
     let bytes = unsafe { memmap2::Mmap::map(&file)? };
     decode(&bytes, mapping, cancel)
 }
@@ -501,6 +521,46 @@ pub(crate) fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_admission_scales_past_old_ceiling_and_checks_overflow() {
+        let old = SMALL_INPUT_ALLOWANCE;
+        assert_eq!(metadata_length_limit(0).unwrap(), old);
+        assert!(validate_metadata_length(old, 1).is_ok());
+        assert!(validate_metadata_length(old + 1, 1).is_err());
+        let source = 200 * 1024 * 1024;
+        assert!(validate_metadata_length(549_145_378, source).is_ok());
+        let limit = metadata_length_limit(source).unwrap();
+        assert!(validate_metadata_length(limit, source).is_ok());
+        assert!(validate_metadata_length(limit + 1, source).is_err());
+        assert!(validate_metadata_length(15, source).is_err());
+        assert!(metadata_length_limit(u64::MAX).is_err());
+        assert!(metadata_length_limit(u64::MAX / 4).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mapped_reader_accepts_large_admission_but_still_rejects_invalid_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("metadata.bin")).unwrap();
+        // Sparse files/mappings test the former ceiling without allocating or
+        // writing hundreds of MiB in the unit-test process.
+        file.set_len(SMALL_INPUT_ALLOWANCE + 4096).unwrap();
+        let source = memmap2::MmapMut::map_anon(200 * 1024 * 1024).unwrap();
+        let source = Arc::new(source.make_read_only().unwrap());
+        let error = read(dir.path(), source, &AtomicBool::new(false))
+            .err()
+            .unwrap();
+        assert_eq!(error.to_string(), "Unsupported metadata format");
+        let (_, small_source) = fixture();
+        let error = read(dir.path(), small_source, &AtomicBool::new(false))
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Invalid metadata file length for source capture"
+        );
+    }
+
     fn fixture() -> (Phase1Result, Arc<memmap2::Mmap>) {
         let bytes = super::super::waste::tests::string_fixture();
         let mut mapped = memmap2::MmapMut::map_anon(bytes.len()).unwrap();

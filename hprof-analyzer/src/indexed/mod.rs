@@ -24,6 +24,7 @@ mod structural_cache;
 mod object_bodies;
 pub mod parse;
 pub mod dominator;
+mod dominator_children;
 pub mod waste;
 pub mod analysis;
 
