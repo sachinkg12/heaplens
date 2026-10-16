@@ -63,12 +63,11 @@ pub fn compute_indexed_waste(raw: &WasteRawData, total_heap_size: u64) -> WasteA
     let Some(contents) = &raw.lazy_contents else {
         return compute_waste_analysis(raw, total_heap_size);
     };
-    let mut resolved = raw.clone();
-    resolved.lazy_contents = None;
+    let mut resolved = HashMap::new();
     // Repeated String instances can share one backing array. Hash it once.
     for string in &raw.string_instances {
         let id = string.value_array_id;
-        if resolved.backing_arrays.contains_key(&id) {
+        if raw.backing_arrays.contains_key(&id) || resolved.contains_key(&id) {
             continue;
         }
         if let Some(range) = contents.arrays.get(&id) {
@@ -78,12 +77,10 @@ pub fn compute_indexed_waste(raw: &WasteRawData, total_heap_size: u64) -> WasteA
             contents
                 .hashed_arrays
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            resolved
-                .backing_arrays
-                .insert(id, backing_array(data, range.shallow_size, range.is_char));
+            resolved.insert(id, backing_array(data, range.shallow_size, range.is_char));
         }
     }
-    compute_waste_analysis(&resolved, total_heap_size)
+    crate::waste::compute_waste_with_backings(raw, &resolved, total_heap_size)
 }
 
 #[cfg(test)]

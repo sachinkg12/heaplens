@@ -148,7 +148,7 @@ pub(crate) fn write(
         .chain(raw.over_allocated_collections.iter().map(|v| &v.class_name))
         .chain(raw.boxed_primitives.iter().map(|v| &v.class_name))
     {
-        dict.intern(Arc::from(name.as_str()))?;
+        dict.intern(name.clone())?;
     }
     let mut out = CacheWriter::new(directory, "metadata.bin", cancel)?;
     out.write_all(MAGIC)?;
@@ -427,7 +427,7 @@ fn decode(bytes: &[u8], mapping: Arc<memmap2::Mmap>, cancel: &AtomicBool) -> Res
     ensure!(empty.count <= nodes, "Invalid empty collection count");
     for row in 0..empty.count {
         raw.empty_collections.push(EmptyCollectionInfo {
-            class_name: name(empty.value(row, 0))?.to_string(),
+            class_name: name(empty.value(row, 0))?,
             shallow_size: empty.value(row, 1),
         });
     }
@@ -446,7 +446,7 @@ fn decode(bytes: &[u8], mapping: Arc<memmap2::Mmap>, cancel: &AtomicBool) -> Res
     for row in 0..over.count {
         raw.over_allocated_collections
             .push(OverAllocatedCollectionInfo {
-                class_name: name(over.value(row, 0))?.to_string(),
+                class_name: name(over.value(row, 0))?,
                 size: over.value(row, 1) as u32,
                 capacity: over.value(row, 2) as u32,
             });
@@ -455,7 +455,7 @@ fn decode(bytes: &[u8], mapping: Arc<memmap2::Mmap>, cancel: &AtomicBool) -> Res
     ensure!(boxed.count <= nodes, "Invalid boxed count");
     for row in 0..boxed.count {
         raw.boxed_primitives.push(BoxedPrimitiveInfo {
-            class_name: name(boxed.value(row, 0))?.to_string(),
+            class_name: name(boxed.value(row, 0))?,
             shallow_size: boxed.value(row, 1),
         });
     }
@@ -578,7 +578,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let mut names = vec![];
         for node in phase.node_store.iter() {
-            if !names.contains(&node.class_name) {
+            if !names.contains(node.class_name) {
                 names.push(node.class_name.clone());
             }
         }

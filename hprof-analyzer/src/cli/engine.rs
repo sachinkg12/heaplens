@@ -40,7 +40,9 @@ pub fn load(path: &Path, backend: Backend, quiet: bool, options: &hprof_analyzer
     match backend {
         Backend::Indexed => {
             let (phase1, phase2, storage) = hprof_analyzer::indexed::storage::load_structure(mmap.clone(), options, &std::sync::atomic::AtomicBool::new(false))
-                .map_err(|_| if options.mode == hprof_analyzer::indexed::storage::StorageMode::Memory { Failure::analysis() } else { Failure::new(4, "structural_storage", "Structural analysis or private index validation failed. Check free space and cache permissions; a corrupt entry is rejected, not reused. No memory-mode fallback was started.") })?;
+                .map_err(|error| if error.downcast_ref::<hprof_analyzer::indexed::storage::ResourceError>().is_some() {
+                    Failure::new(4, "resource_budget", "The estimated analysis working set exceeds available memory or the shared HeapLens budget. Close other dump editors/applications or use disk mode. No automatic memory-mode fallback was started.")
+                } else if options.mode == hprof_analyzer::indexed::storage::StorageMode::Memory { Failure::analysis() } else { Failure::new(4, "structural_storage", "Structural analysis or private index validation failed. Check free space and cache permissions; a corrupt entry is rejected, not reused. No memory-mode fallback was started.") })?;
             progress(quiet, &format!("Reference storage: {}; cache {}", storage.mode, storage.cache_status));
             let state =
                 IndexedAnalysisState::from_phases(phase1, phase2).map_err(|_| Failure::analysis())?.with_storage_report(storage);

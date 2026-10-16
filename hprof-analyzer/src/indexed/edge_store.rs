@@ -39,16 +39,17 @@ impl EdgeBuilder {
             edges: Vec::with_capacity(capacity),
         }
     }
+    pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
+        let mut edges = Vec::new(); edges.try_reserve_exact(capacity)?; Ok(Self { edges })
+    }
+    pub(crate) fn extend_bounded(&mut self, edges: &[(u32,u32,u8)], limit: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(self.edges.len().checked_add(edges.len()).is_some_and(|n| n <= limit), "Reference count exceeded validated reservation");
+        self.edges.extend_from_slice(edges); Ok(())
+    }
 
     /// Adds an edge from `src` to `dst` with the given label.
     pub fn add_edge(&mut self, src: u32, dst: u32, label: u8) {
         self.edges.push((src, dst, label));
-    }
-
-    pub(crate) fn extend_edges(&mut self, edges: &[(u32, u32, u8)]) -> anyhow::Result<()> {
-        self.edges.try_reserve(edges.len())?;
-        self.edges.extend_from_slice(edges);
-        Ok(())
     }
 
     /// Returns the number of collected edges.
@@ -90,9 +91,13 @@ impl EdgeBuilder {
             offsets[i] += offsets[i - 1];
         }
 
+        // Source/target triplets are no longer needed. Release them before
+        // reverse CSR allocation, instead of overlapping all three copies.
+        drop(self.edges);
+
         // Build reverse CSR
         let mut reverse_offsets = vec![0u32; node_count + 1];
-        for &(_, dst, _) in &self.edges {
+        for &dst in &targets {
             reverse_offsets[dst as usize + 1] += 1;
         }
         for i in 1..=node_count {
@@ -100,12 +105,15 @@ impl EdgeBuilder {
         }
 
         let mut reverse_targets = vec![0u32; edge_count];
-        let mut write_pos = reverse_offsets.clone();
-        for &(src, dst, _) in &self.edges {
-            let pos = write_pos[dst as usize] as usize;
-            reverse_targets[pos] = src;
-            write_pos[dst as usize] += 1;
+        // Prefix ends are insertion cursors; reverse insertion preserves the
+        // existing ascending source order without another per-node column.
+        for src in (0..node_count).rev() {
+            for &dst in &targets[offsets[src] as usize..offsets[src+1] as usize] {
+                let cursor = &mut reverse_offsets[dst as usize + 1]; *cursor -= 1;
+                reverse_targets[*cursor as usize] = src as u32;
+            }
         }
+        reverse_offsets.copy_within(1..,0); reverse_offsets[node_count] = edge_count as u32;
 
         EdgeStore {
             offsets: offsets.into(),
@@ -127,15 +135,15 @@ impl Default for EdgeBuilder {
 #[derive(Debug, Clone)]
 pub struct EdgeStore {
     /// Forward offsets: `offsets[i]..offsets[i+1]` indexes into `targets` / `labels`.
-    offsets: Column<u32>,
+    pub(super) offsets: Column<u32>,
     /// Forward edge targets, packed.
-    targets: Column<u32>,
+    pub(super) targets: Column<u32>,
     /// Forward edge labels, parallel to `targets`.
-    labels: Column<u8>,
+    pub(super) labels: Column<u8>,
     /// Reverse offsets: `reverse_offsets[i]..reverse_offsets[i+1]` indexes into `reverse_targets`.
-    reverse_offsets: Column<u32>,
+    pub(super) reverse_offsets: Column<u32>,
     /// Reverse edge sources, packed (for backward traversal).
-    reverse_targets: Column<u32>,
+    pub(super) reverse_targets: Column<u32>,
 }
 
 impl EdgeStore {

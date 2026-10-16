@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::{atomic::AtomicBool, Arc},
 };
+pub use super::resource_lease::ResourceError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageMode {
@@ -96,9 +97,9 @@ pub fn load_structure(
 ) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
     super::disk_edges::check(cancel)?;
     if options.mode == StorageMode::Memory {
-        let (phase1, deferred) = super::parse::parse_indexed_phase1_mapped(mapping, None)?;
+        let (phase1, deferred) = super::parse::parse_indexed_phase1_mapped_cancellable(mapping, None, cancel)?;
         super::disk_edges::check(cancel)?;
-        let phase2 = super::parse::parse_indexed_phase2(&phase1, deferred)?;
+        let phase2 = super::parse::parse_indexed_phase2_cancellable(&phase1, deferred, cancel)?;
         return Ok((
             phase1,
             phase2,
@@ -141,6 +142,27 @@ mod tests {
     }
     fn fixture() -> Arc<memmap2::Mmap> {
         mapping(&super::super::waste::tests::string_fixture())
+    }
+    #[test]
+    fn phases_share_immutable_waste_candidates_without_copying() {
+        let (one, deferred) = super::super::parse::parse_indexed_phase1_mapped(fixture(), None).unwrap();
+        let two = super::super::parse::parse_indexed_phase2(&one, deferred).unwrap();
+        assert!(Arc::ptr_eq(&one.waste_raw, &two.waste_raw));
+        assert!(!one.waste_raw.string_instances.is_empty());
+    }
+    #[test]
+    fn bounded_single_pass_and_large_graph_replay_have_identical_csr_and_labels() {
+        let input = fixture();
+        let (one, deferred) = super::super::parse::parse_indexed_phase1_mapped(input.clone(), None).unwrap();
+        assert!(super::super::memory_edges::single_pass(deferred.max_references));
+        let fast = super::super::parse::parse_indexed_phase2(&one, deferred).unwrap();
+        let (other, mut deferred) = super::super::parse::parse_indexed_phase1_mapped(input, None).unwrap();
+        deferred.max_references = usize::MAX;
+        let replay = super::super::parse::parse_indexed_phase2(&other, deferred).unwrap();
+        for node in 0..one.node_store.len() as u32 {
+            assert_eq!(fast.edge_store.neighbor_labels(node), replay.edge_store.neighbor_labels(node));
+            assert_eq!(fast.edge_store.reverse_neighbors(node), replay.edge_store.reverse_neighbors(node));
+        }
     }
     fn options(root: &std::path::Path) -> StorageOptions {
         StorageOptions {
@@ -469,7 +491,7 @@ mod tests {
                 super::super::parse::parse_indexed_phase1_mapped(input.clone(), None).unwrap();
             assert_eq!(deferred.deferred_arrays.len(), 1);
             assert!(
-                matches!(deferred.deferred_arrays[0].element_refs,super::super::parse::DeferredBytes::Mapped{length,..} if length==width as usize*4)
+                matches!(deferred.deferred_arrays.iter().next().unwrap().field_bytes,super::super::parse::DeferredBytes::Mapped{length,..} if length==width as usize*4)
             );
             let two = super::super::parse::parse_indexed_phase2(&one, deferred).unwrap();
             let memory = IndexedAnalysisState::from_phases(one, two).unwrap();

@@ -95,15 +95,15 @@ export class FakeServer {
     public onProcessExit?: RustClient['onProcessExit'];
     public onProcessError?: (error: Error) => void;
     public onStderr?: RustClient['onStderr'];
-    public requests: Array<{ method: string; params: any }> = [];
+    public requests: Array<{ method: string; params: any; timeoutMs?: number }> = [];
     public handlers = new Map<string, (params: any) => void>();
     public autoComplete = true;
     private requestId = 0;
     public operation = 'analyze_heap';
 
-    public async sendRequest(method: string, params?: any): Promise<any> {
+    public async sendRequest(method: string, params?: any, timeoutMs?: number): Promise<any> {
         if (this.isDisposed) { throw new Error('Client is shutdown'); }
-        this.requests.push({ method, params });
+        this.requests.push({ method, params, timeoutMs });
         if (method === 'analyze_heap' || method === 'scan_heap') {
             this.operation = method;
             const id = ++this.requestId;

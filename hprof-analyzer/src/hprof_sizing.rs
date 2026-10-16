@@ -100,6 +100,9 @@ impl LayoutEvidence {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RecordCounts {
     pub strings: usize,
+    pub string_bytes: usize,
+    /// Upper bound: object-array slots, instance bytes / HPROF ID width, statics.
+    pub reference_slots: usize,
     pub load_classes: usize,
     pub classes: usize,
     pub instances: usize,
@@ -118,6 +121,12 @@ impl RecordCounts {
             .into_iter().try_fold(1usize, |sum, count| {
                 sum.checked_add(count).ok_or_else(|| anyhow::anyhow!("HPROF node capacity overflow"))
             })
+    }
+    pub fn reference_capacity(&self) -> Result<usize> {
+        self.reference_slots.checked_add(self.node_capacity()?)
+            .and_then(|n| n.checked_add(self.load_classes))
+            .and_then(|n| self.classes.checked_mul(8).and_then(|k| n.checked_add(k)))
+            .ok_or_else(|| anyhow::anyhow!("Reference capacity overflow"))
     }
     fn observe(&mut self, record: &SubRecord<'_>) -> Result<()> {
         if crate::gc_roots::object_id(record).is_some() {
@@ -149,6 +158,16 @@ impl HprofSizing {
         explicit: Option<ObjectLayout>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self> {
+        Self::read_observed(data, explicit, cancelled, None)
+    }
+    pub(crate) fn read_catalog(
+        data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        observe: &mut dyn FnMut(u64) -> Result<()>,
+    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, Some(observe)) }
+    fn read_observed(
+        data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        mut observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
+    ) -> Result<Self> {
         if cancelled() {
             bail!("Sizing cancelled");
         }
@@ -173,9 +192,20 @@ impl HprofSizing {
                 bail!("Sizing cancelled");
             }
             let record = record.map_err(|e| anyhow::anyhow!("Invalid sizing record: {e:?}"))?;
+            if let Some(observe) = observe.as_mut() {
+                if let Some(class) = record.as_load_class() {
+                    let class = class.map_err(|e| anyhow::anyhow!("Invalid sizing class: {e:?}"))?;
+                    observe(class.class_obj_id().id())?;
+                }
+            }
             if !payload_only { producer.record(&record)?; }
             match record.tag() {
-                RecordTag::Utf8 => RecordCounts::increment(&mut record_counts.strings)?,
+                RecordTag::Utf8 => {
+                    RecordCounts::increment(&mut record_counts.strings)?;
+                    let string = record.as_utf_8().unwrap().map_err(|e| anyhow::anyhow!("Invalid sizing string: {e:?}"))?;
+                    record_counts.string_bytes = record_counts.string_bytes.checked_add(string.text().len())
+                        .ok_or_else(|| anyhow::anyhow!("String extent overflow"))?;
+                }
                 RecordTag::LoadClass => RecordCounts::increment(&mut record_counts.load_classes)?,
                 _ => {},
             }
@@ -192,8 +222,23 @@ impl HprofSizing {
                     if !payload_only { producer.observe(&sub); }
                     page_records = (page_records + 1) % crate::hprof_producer::Metadata::page_records();
                     record_counts.observe(&sub)?;
+                    if let Some(observe) = observe.as_mut() {
+                        let id = crate::gc_roots::object_id(&sub).or_else(|| match &sub {
+                            SubRecord::Class(v) => Some(v.obj_id().id()),
+                            SubRecord::Instance(v) => Some(v.obj_id().id()),
+                            SubRecord::ObjectArray(v) => Some(v.obj_id().id()),
+                            SubRecord::PrimitiveArray(v) => Some(v.obj_id().id()),
+                            SubRecord::PrimitiveArrayNoData(v) => Some(v.obj_id().id()),
+                            _ => None,
+                        });
+                        if let Some(id) = id { observe(id)?; }
+                    }
                     match sub {
                         SubRecord::Class(class) => {
+                            for field in class.static_fields() {
+                                field.map_err(|e| anyhow::anyhow!("Invalid static field: {e:?}"))?;
+                                RecordCounts::increment(&mut record_counts.reference_slots)?;
+                            }
                             if payload_only {
                                 declared_sizes.insert(
                                     class.obj_id().id(),
@@ -220,8 +265,14 @@ impl HprofSizing {
                             evidence.observe(class.obj_id().id(), None)?;
                             if !payload_only { producer.class(class); }
                         }
-                        SubRecord::Instance(o) => evidence.observe(o.obj_id().id(), None)?,
+                        SubRecord::Instance(o) => {
+                            record_counts.reference_slots = record_counts.reference_slots.checked_add(o.fields().len() / id_bytes as usize)
+                                .ok_or_else(|| anyhow::anyhow!("Reference extent overflow"))?;
+                            evidence.observe(o.obj_id().id(), None)?;
+                        }
                         SubRecord::ObjectArray(a) => {
+                            record_counts.reference_slots = record_counts.reference_slots.checked_add(a.num_elements() as usize)
+                                .ok_or_else(|| anyhow::anyhow!("Reference extent overflow"))?;
                             evidence.observe(a.obj_id().id(), Some((a.num_elements(), None)))?
                         }
                         SubRecord::PrimitiveArray(a) => evidence.observe(

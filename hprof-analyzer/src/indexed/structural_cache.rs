@@ -183,7 +183,7 @@ pub(crate) fn load(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(stage.path(), std::fs::Permissions::from_mode(0o700))?;
     }
-    let (phase1, deferred) = super::parse::parse_indexed_phase1_mapped(mapping.clone(), None)?;
+    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel)?;
     super::disk_edges::check(cancel)?;
     let (phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
         &phase1,
@@ -192,7 +192,7 @@ pub(crate) fn load(
         bytes,
         cancel,
     )?;
-    receipts.extend(super::cache_format::write(&phase1, stage.path(), cancel)?);
+    receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)?);
     let mut files = Vec::new();
     for name in FILES {
         let position = receipts

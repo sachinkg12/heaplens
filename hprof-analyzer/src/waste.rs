@@ -40,14 +40,14 @@ pub(crate) struct BackingArrayInfo {
 /// Info about an empty collection instance.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EmptyCollectionInfo {
-    pub class_name: String,
+    pub class_name: std::sync::Arc<str>,
     pub shallow_size: u64,
 }
 
 /// Info about an over-allocated collection instance.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OverAllocatedCollectionInfo {
-    pub class_name: String,
+    pub class_name: std::sync::Arc<str>,
     pub size: u32,
     pub capacity: u32,
 }
@@ -55,7 +55,7 @@ pub(crate) struct OverAllocatedCollectionInfo {
 /// Info about a boxed primitive instance.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct BoxedPrimitiveInfo {
-    pub class_name: String,
+    pub class_name: std::sync::Arc<str>,
     pub shallow_size: u64,
 }
 
@@ -233,13 +233,24 @@ pub fn compute_waste_analysis(
     waste_data: &WasteRawData,
     total_heap_size: u64,
 ) -> WasteAnalysis {
+    compute_waste_with_backings(waste_data, &HashMap::new(), total_heap_size)
+}
+
+/// Additional resolved content is owned by the caller; structural candidates
+/// remain borrowed instead of cloning their large vectors and maps for Waste.
+pub(crate) fn compute_waste_with_backings(
+    waste_data: &WasteRawData,
+    additional: &HashMap<u64, BackingArrayInfo>,
+    total_heap_size: u64,
+) -> WasteAnalysis {
     // --- Duplicate strings ---
     let mut string_groups: HashMap<u64, (u64, u64, String)> = HashMap::new();
     for si in &waste_data.string_instances {
-        if let Some(array_info) = waste_data.backing_arrays.get(&si.value_array_id) {
+        if let Some(array_info) = waste_data.backing_arrays.get(&si.value_array_id)
+            .or_else(|| additional.get(&si.value_array_id)) {
             let per_copy_size = si.shallow_size as u64 + array_info.size as u64;
             let entry = string_groups.entry(array_info.content_hash)
-                .or_insert((0, per_copy_size, array_info.preview.clone()));
+                .or_insert_with(|| (0, per_copy_size, array_info.preview.clone()));
             entry.0 += 1;
         }
     }
@@ -263,9 +274,9 @@ pub fn compute_waste_analysis(
     let duplicate_string_wasted_bytes: u64 = dup_groups.iter().map(|g| g.wasted_bytes).sum();
 
     // --- Empty collections ---
-    let mut collection_groups: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut collection_groups: HashMap<&str, (u64, u64)> = HashMap::new();
     for ec in &waste_data.empty_collections {
-        let entry = collection_groups.entry(ec.class_name.clone()).or_insert((0, 0));
+        let entry = collection_groups.entry(ec.class_name.as_ref()).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += ec.shallow_size as u64;
     }
@@ -273,7 +284,7 @@ pub fn compute_waste_analysis(
     let mut empty_cols: Vec<EmptyCollectionGroup> = collection_groups
         .into_iter()
         .map(|(class_name, (count, wasted_bytes))| {
-            EmptyCollectionGroup { class_name, count, wasted_bytes }
+            EmptyCollectionGroup { class_name: class_name.into(), count, wasted_bytes }
         })
         .collect();
     empty_cols.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
@@ -282,11 +293,11 @@ pub fn compute_waste_analysis(
 
     // --- Over-allocated collections ---
     let ref_size = waste_data.reference_bytes;
-    let mut overalloc_groups: HashMap<String, (u64, u64, f64)> = HashMap::new();
+    let mut overalloc_groups: HashMap<&str, (u64, u64, f64)> = HashMap::new();
     for oa in &waste_data.over_allocated_collections {
         let wasted = (oa.capacity as u64 - oa.size as u64) * ref_size;
         let fill_ratio = if oa.capacity > 0 { oa.size as f64 / oa.capacity as f64 } else { 0.0 };
-        let entry = overalloc_groups.entry(oa.class_name.clone()).or_insert((0, 0, 0.0));
+        let entry = overalloc_groups.entry(oa.class_name.as_ref()).or_insert((0, 0, 0.0));
         entry.0 += 1;
         entry.1 += wasted;
         entry.2 += fill_ratio;
@@ -296,7 +307,7 @@ pub fn compute_waste_analysis(
         .into_iter()
         .map(|(class_name, (count, wasted_bytes, sum_fill))| {
             let avg_fill_ratio = if count > 0 { (sum_fill / count as f64) * 100.0 } else { 0.0 };
-            OverAllocatedGroup { class_name, count, wasted_bytes, avg_fill_ratio }
+            OverAllocatedGroup { class_name: class_name.into(), count, wasted_bytes, avg_fill_ratio }
         })
         .collect();
     over_allocated_cols.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));
@@ -311,9 +322,9 @@ pub fn compute_waste_analysis(
         ("java.lang.Long", 8), ("java.lang.Double", 8),
     ].into_iter().collect();
 
-    let mut boxed_groups: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut boxed_groups: HashMap<&str, (u64, u64)> = HashMap::new();
     for bp in &waste_data.boxed_primitives {
-        let entry = boxed_groups.entry(bp.class_name.clone()).or_insert((0, 0));
+        let entry = boxed_groups.entry(bp.class_name.as_ref()).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += bp.shallow_size as u64;
     }
@@ -321,10 +332,10 @@ pub fn compute_waste_analysis(
     let mut boxed_prim_cols: Vec<BoxedPrimitiveGroup> = boxed_groups
         .into_iter()
         .map(|(class_name, (count, total_shallow))| {
-            let prim_size = boxed_prim_sizes.get(class_name.as_str()).copied().unwrap_or(4) as u64;
+            let prim_size = boxed_prim_sizes.get(class_name).copied().unwrap_or(4) as u64;
             let unboxed_size = count * prim_size;
             let wasted_bytes = if total_shallow > unboxed_size { total_shallow - unboxed_size } else { 0 };
-            BoxedPrimitiveGroup { class_name, count, wasted_bytes, unboxed_size }
+            BoxedPrimitiveGroup { class_name: class_name.into(), count, wasted_bytes, unboxed_size }
         })
         .collect();
     boxed_prim_cols.sort_by(|a, b| b.wasted_bytes.cmp(&a.wasted_bytes));

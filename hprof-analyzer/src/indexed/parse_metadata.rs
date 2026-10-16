@@ -10,6 +10,49 @@ use jvm_hprof::{
 use super::node_store::{NodeStore, NodeType};
 use crate::ClassHistogramEntry;
 
+/// Resolve only class-name strings using top-level record headers. Heap payloads
+/// are skipped, not parsed again. Keep field-string processing in source order
+/// so this optimization does not silently change graph policy or the cache ABI.
+pub(super) fn prepare_class_names(
+    data: &[u8],
+    entries: &mut Vec<(u64, u64)>,
+    cancelled: impl Fn() -> bool,
+) -> anyhow::Result<HashMap<u64, Arc<str>>> {
+    let hprof = jvm_hprof::parse_hprof(data)
+        .map_err(|e| anyhow::anyhow!("Invalid metadata header: {e:?}"))?;
+    let mut names: HashMap<u64, Option<Arc<str>>> = HashMap::new();
+    for record in hprof.records_iter() {
+        anyhow::ensure!(!cancelled(), "Analysis cancelled");
+        let record = record.map_err(|e| anyhow::anyhow!("Invalid metadata record: {e:?}"))?;
+        if let Some(class) = record.as_load_class() {
+            let class = class.map_err(|e| anyhow::anyhow!("Invalid metadata class: {e:?}"))?;
+            let (id, name) = (class.class_obj_id().id(), class.class_name_id().id());
+            entries.push((id, name));
+            names.entry(name).or_insert(None);
+        }
+    }
+    for record in hprof.records_iter() {
+        anyhow::ensure!(!cancelled(), "Analysis cancelled");
+        let record = record.map_err(|e| anyhow::anyhow!("Invalid metadata record: {e:?}"))?;
+        if let Some(text) = record.as_utf_8() {
+            let text = text.map_err(|e| anyhow::anyhow!("Invalid metadata string: {e:?}"))?;
+            if let Some(name) = names.get_mut(&text.name_id().id()) {
+                *name = Some(Arc::from(crate::graph_builder::convert_jvm_class_name(
+                    &String::from_utf8_lossy(text.text()),
+                )));
+            }
+        }
+    }
+    let mut result = HashMap::new();
+    result.try_reserve(entries.len())?;
+    for &(id, name) in entries.iter() {
+        if let Some(Some(name)) = names.get(&name) {
+            result.insert(id, name.clone());
+        }
+    }
+    Ok(result)
+}
+
 pub(super) struct ParseNames {
     unknown: HashMap<u64, Arc<str>>,
     primitive: [Arc<str>; 8],
@@ -169,6 +212,44 @@ impl CandidateFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn class_headers_resolve_forward_strings_and_repeated_names_without_heap_scans() {
+        fn record(data: &mut Vec<u8>, tag: u8, body: &[u8]) {
+            data.push(tag);
+            data.extend(0u32.to_be_bytes());
+            data.extend((body.len() as u32).to_be_bytes());
+            data.extend(body);
+        }
+        fn loaded(data: &mut Vec<u8>, class: u64, name: u64) {
+            let mut body = Vec::new();
+            body.extend(1u32.to_be_bytes());
+            body.extend(class.to_be_bytes());
+            body.extend(0u32.to_be_bytes());
+            body.extend(name.to_be_bytes());
+            record(data, 2, &body);
+        }
+        fn text(data: &mut Vec<u8>, id: u64, text: &[u8]) {
+            let mut body = id.to_be_bytes().to_vec();
+            body.extend(text);
+            record(data, 1, &body);
+        }
+        let mut data = b"JAVA PROFILE 1.0.2\0".to_vec();
+        data.extend(8u32.to_be_bytes());
+        data.extend(0u64.to_be_bytes());
+        loaded(&mut data, u64::MAX - 1, 10);
+        loaded(&mut data, 42, 11);
+        loaded(&mut data, 42, 10);
+        text(&mut data, 10, b"old/Name");
+        text(&mut data, 11, b"other/Name");
+        text(&mut data, 10, b"final/Name");
+        let mut entries = Vec::new();
+        let names = prepare_class_names(&data, &mut entries, || false).unwrap();
+        assert_eq!(entries, vec![(u64::MAX - 1, 10), (42, 11), (42, 10)]);
+        assert_eq!(names[&(u64::MAX - 1)].as_ref(), "final.Name");
+        assert_eq!(names[&42].as_ref(), "final.Name");
+        assert!(Arc::ptr_eq(&names[&42], &names[&(u64::MAX - 1)]));
+        assert!(prepare_class_names(&data, &mut Vec::new(), || true).is_err());
+    }
 
     #[test]
     fn names_share_allocations_without_truncating_class_ids() {

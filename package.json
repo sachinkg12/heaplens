@@ -272,7 +272,7 @@
     "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisStorage.test.js ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
+    "test": "node --test ./out/test/analysisStorage.test.js ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./out/test/dominatorPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
     "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
     "test:histogram:matrix": "npm run compile && node --test ./out/test/histogramPercentage.integration.test.js",
     "test:privacy:matrix": "npm run compile && node --test ./out/test/llmPrivacy.integration.test.js"

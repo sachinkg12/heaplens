@@ -1345,11 +1345,11 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                             jvm_hprof::heap_dump::FieldType::Int, 0,
                                         ) {
                                             let cname = class_name_map.get(&class_obj_id)
-                                                .map(|s| s.to_string()).unwrap_or_default();
+                                                .cloned().unwrap_or_default();
                                             let shallow = sizing.instance(class_obj_id, fields.len())?;
                                             if size_val == 0 {
                                                 waste_data.empty_collections.push(EmptyCollectionInfo {
-                                                    class_name: cname,
+                                                    class_name: cname.into(),
                                                     shallow_size: shallow,
                                                 });
                                             } else if let Some(backing_array_id) = extract_nth_field_of_type(
@@ -1360,7 +1360,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                                     let size_u32 = size_val as u32;
                                                     if capacity > 4 * size_u32 && capacity > 16 {
                                                         waste_data.over_allocated_collections.push(OverAllocatedCollectionInfo {
-                                                            class_name: cname,
+                                                            class_name: cname.into(),
                                                             size: size_u32,
                                                             capacity,
                                                         });
@@ -1374,7 +1374,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                     if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
                                         let shallow = sizing.instance(class_obj_id, fields.len())?;
                                         waste_data.boxed_primitives.push(BoxedPrimitiveInfo {
-                                            class_name: bp_name.to_string(),
+                                            class_name: Arc::from(bp_name),
                                             shallow_size: shallow,
                                         });
                                     }

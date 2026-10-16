@@ -132,10 +132,10 @@ mod tests {
     }
 }
 impl ObjectBodies {
-    fn classes(records: &[DeferredInstance]) -> Result<(Vec<u64>, HashMap<u64, u32>)> {
+    fn classes(records: &super::deferred_records::DeferredRecords) -> Result<(Vec<u64>, HashMap<u64, u32>)> {
         let mut ids = Vec::new();
         let mut slots = HashMap::new();
-        for record in records {
+        for record in records.iter() {
             ensure!(
                 matches!(record.field_bytes, DeferredBytes::Mapped { .. }),
                 "Body records require mapped input"
@@ -165,7 +165,11 @@ impl ObjectBodies {
             anyhow::bail!("Body records require mapped input");
         }
     }
-    pub(crate) fn memory(records: &[DeferredInstance]) -> Result<Self> {
+    #[cfg(test)]
+    fn memory(records: &[DeferredInstance]) -> Result<Self> {
+        Self::memory_catalog(&records.to_vec().into())
+    }
+    pub(crate) fn memory_catalog(records: &super::deferred_records::DeferredRecords) -> Result<Self> {
         let (ids, slots) = Self::classes(records)?;
         let rows_start = HEADER_WORDS + ids.len() * 2;
         let mut values = Vec::with_capacity(
@@ -189,8 +193,8 @@ impl ObjectBodies {
         for id in ids {
             values.extend([id as u32, (id >> 32) as u32]);
         }
-        for record in records {
-            values.extend(Self::row(record, &slots)?);
+        for record in records.iter() {
+            values.extend(Self::row(&record, &slots)?);
         }
         // Input records are usually in node order, but roots may create nodes first.
         values[rows_start..]
@@ -202,12 +206,21 @@ impl ObjectBodies {
             rows_start,
         })
     }
-    pub(crate) fn write_records(
+    #[cfg(test)]
+    fn write_records(
         records: &mut [DeferredInstance],
         directory: &Path,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<super::cache_writer::Receipt> {
-        records.sort_unstable_by_key(|record| record.node_idx);
+        Self::write_catalog(&mut records.to_vec().into(), directory, 1024 * 1024, cancel)
+    }
+    pub(crate) fn write_catalog(
+        records: &mut super::deferred_records::DeferredRecords,
+        directory: &Path,
+        sort_bytes: usize,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<super::cache_writer::Receipt> {
+        records.sort_by_node(directory, sort_bytes, cancel)?;
         let (ids, slots) = Self::classes(records)?;
         let mut writer =
             super::cache_writer::CacheWriter::new(directory, "instance.bodies", cancel)?;
@@ -217,9 +230,9 @@ impl ObjectBodies {
         for id in ids {
             writer.write_all(&id.to_le_bytes())?;
         }
-        for record in records {
+        for record in records.iter() {
             let mut bytes = [0u8; ROW_WORDS * 4];
-            for (word, value) in bytes.chunks_exact_mut(4).zip(Self::row(record, &slots)?) {
+            for (word, value) in bytes.chunks_exact_mut(4).zip(Self::row(&record, &slots)?) {
                 word.copy_from_slice(&value.to_le_bytes());
             }
             writer.write_all(&bytes)?;

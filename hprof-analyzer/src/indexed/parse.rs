@@ -19,13 +19,16 @@ use crate::waste::{
 use crate::HeapSummary;
 
 use super::class_index::{ClassIndex, ClassInfo, FieldDescriptor};
-use super::edge_store::{EdgeBuilder, EdgeStore};
+use super::edge_store::EdgeStore;
+#[cfg(test)]
+use super::edge_store::EdgeBuilder;
 use super::node_store::{NodeStore, NodeType};
 use super::parse_metadata::{CandidateFields, ParseNames, shallow_histogram};
 use super::string_table::StringTable;
 use super::waste::{backing_array, ArrayContentRange, LazyStringContents};
 
 /// Cached instance record for deferred edge extraction.
+#[derive(Clone)]
 pub struct DeferredInstance {
     /// Index of this instance in the NodeStore.
     pub node_idx: u32,
@@ -35,6 +38,7 @@ pub struct DeferredInstance {
     pub field_bytes: DeferredBytes,
 }
 
+#[derive(Clone)]
 pub enum DeferredBytes {
     Owned(Vec<u8>),
     Mapped { offset: usize, length: usize },
@@ -57,14 +61,7 @@ impl DeferredBytes {
 }
 
 /// Cached object array element references for deferred edge extraction.
-pub struct DeferredObjectArray {
-    /// Index of the array node in the NodeStore.
-    pub node_idx: u32,
-    /// Runtime array class, including for empty arrays.
-    pub class_obj_id: u64,
-    /// Encoded array IDs; nulls are skipped during edge extraction.
-    pub element_refs: DeferredBytes,
-}
+pub type DeferredObjectArray = DeferredInstance;
 
 /// Cached class structural edges for deferred edge extraction.
 pub struct DeferredClassEdge {
@@ -90,7 +87,7 @@ pub struct ParseResult {
     /// Object IDs used as classloaders by one or more class definitions.
     pub classloader_ids: std::collections::HashSet<u64>,
     pub summary: HeapSummary,
-    pub waste_raw: WasteRawData,
+    pub waste_raw: Arc<WasteRawData>,
 }
 
 /// Result of Phase 1 parsing (nodes only, ~1.4s on 14 GB dumps).
@@ -105,21 +102,22 @@ pub struct Phase1Result {
     /// Object IDs used as classloaders by one or more class definitions.
     pub classloader_ids: std::collections::HashSet<u64>,
     pub summary: HeapSummary,
-    pub waste_raw: WasteRawData,
+    pub waste_raw: Arc<WasteRawData>,
     /// Class histogram computed from shallow sizes only.
     pub class_histogram: Vec<crate::ClassHistogramEntry>,
 }
 
 /// Data deferred from Phase 1 that Phase 2 needs for edge extraction.
 pub struct DeferredEdgeData {
+    /// Validated upper bound used only to select bounded in-memory staging.
+    pub max_references: usize,
     pub mapping: Option<Arc<memmap2::Mmap>>,
-    pub deferred_instances: Vec<DeferredInstance>,
-    pub deferred_arrays: Vec<DeferredObjectArray>,
+    pub deferred_instances: super::deferred_records::DeferredRecords,
+    pub deferred_arrays: super::deferred_records::DeferredRecords,
     pub deferred_class_edges: Vec<DeferredClassEdge>,
     pub class_name_map: HashMap<u64, Arc<str>>,
     pub class_instance_sizes: HashMap<u64, u64>,
     pub id_size: jvm_hprof::IdSize,
-    pub array_element_counts: HashMap<u64, u32>,
 }
 
 /// Result of Phase 2 parsing (edges + CSR).
@@ -130,7 +128,7 @@ pub struct Phase2Result {
     pub edge_store: EdgeStore,
     /// Waste data (backing array content hashing is unavailable without file rescan;
     /// string instance counts, empty collections, and boxed primitives are still present).
-    pub waste_raw: WasteRawData,
+    pub waste_raw: Arc<WasteRawData>,
 }
 
 fn reserved_records<T>(capacity: usize) -> Result<Vec<T>> {
@@ -189,18 +187,36 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
 }
 
 pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(data, layout, None)
+    parse_phase1(data, layout, None, None, None)
 }
 
 /// File-backed entry point: preserve the mapping for on-demand content analysis.
 /// As with HprofLoader, the input file must remain immutable while it is mapped.
 pub fn parse_indexed_phase1_mapped(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, layout, Some(mapping.clone()))
+    parse_phase1(&mapping, layout, Some(mapping.clone()), None, None)
+}
+pub fn parse_indexed_phase1_mapped_cancellable(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>,
+    cancel: &std::sync::atomic::AtomicBool) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(&mapping, layout, Some(mapping.clone()), None, Some((0, cancel)))
 }
 
-fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>) -> Result<(Phase1Result, DeferredEdgeData)> {
+pub(crate) fn parse_indexed_phase1_disk(mapping: Arc<memmap2::Mmap>, directory: &std::path::Path,
+    sort_bytes: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(&mapping, None, Some(mapping.clone()), Some(directory), Some((sort_bytes, cancel)))
+}
+
+fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>, directory: Option<&std::path::Path>, construction: Option<(usize, &std::sync::atomic::AtomicBool)>) -> Result<(Phase1Result, DeferredEdgeData)> {
     let mut content_ranges = HashMap::new();
-    let sizing = crate::hprof_sizing::HprofSizing::read(data, layout)?;
+    let mut ids = if let (Some(directory), Some((bytes, cancel))) = (directory, construction) {
+        let mut sorter = super::sorted_runs::Sorter::<u64>::new(directory, bytes.min(16 * 1024 * 1024), true, cancel)?;
+        sorter.push(0)?; Some(sorter)
+    } else { None };
+    let sizing = if let Some(ids) = ids.as_mut() {
+        let cancel = construction.unwrap().1;
+        crate::hprof_sizing::HprofSizing::read_catalog(data, layout,
+            &|| cancel.load(std::sync::atomic::Ordering::Relaxed), &mut |id| ids.push(id))?
+    } else { crate::hprof_sizing::HprofSizing::read_cancellable(data, layout,
+        &|| construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))? };
     let hprof = parse_hprof(data)
         .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
 
@@ -215,19 +231,30 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // rather than reserving object/class/string tables from payload byte size.
     // Record multiplicity is preserved; this is not a total process RAM limit.
     let counts = sizing.record_counts;
+    // Admit before count-sized tables are allocated. Retain the lease with the
+    // final state, including while its dump editor is open but idle.
+    let resource = if mapping.is_some() {
+        Some(super::resource_lease::Lease::acquire(super::resource_plan::Plan::from_counts(
+            counts, directory.is_some(), construction.map_or(0, |(bytes, _)| bytes))?)?)
+    } else { None };
     let mut string_table = StringTable::try_with_capacity(counts.strings)?;
     let mut load_class_entries: Vec<(u64, u64)> = reserved_records(counts.load_classes)?;
     let mut class_index = ClassIndex::try_with_capacity(counts.classes)?;
-    let mut node_store = NodeStore::try_with_capacity(counts.node_capacity()?)?;
+    let mut node_store = if let Some(ids) = ids {
+        NodeStore::construction(ids.finish()?, directory.unwrap(), construction.unwrap().1)?
+    } else { NodeStore::try_with_capacity(counts.node_capacity()?)? };
+    node_store.set_resource(resource);
     let mut gc_root_ids: Vec<u64> = reserved_records(counts.roots)?;
-    let mut deferred_instances: Vec<DeferredInstance> = reserved_records(counts.instances)?;
-    let mut deferred_arrays: Vec<DeferredObjectArray> = reserved_records(counts.object_arrays)?;
+    let mut deferred_instances = super::deferred_records::DeferredRecords::new(counts.instances, mapping.is_some(), directory)?;
+    let mut deferred_arrays = super::deferred_records::DeferredRecords::new(counts.object_arrays, mapping.is_some(), directory)?;
     let mut deferred_class_edges: Vec<DeferredClassEdge> = reserved_records(counts.classes)?;
     let mut heap_types: Vec<String> = Vec::new();
 
     // Class name map: class_obj_id -> human-readable name
-    let mut class_name_map: HashMap<u64, Arc<str>> = HashMap::new();
-    class_name_map.try_reserve(counts.load_classes)?;
+    let mut class_name_map = super::parse_metadata::prepare_class_names(data, &mut load_class_entries,
+        || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))?;
+    let mut missing_instance_names = false;
+    let mut missing_array_names = false;
     let mut names = ParseNames::new();
     // Instance sizes from ClassDump records
     let class_instance_sizes = sizing.class_sizes.clone();
@@ -242,7 +269,6 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     let mut backing_arrays: HashMap<u64, BackingArrayInfo> = HashMap::new();
 
     // Track object array node indices to their array_class_obj_id for deferred name fixup
-    let mut object_array_class_ids: Vec<(u32, u64)> = reserved_records(counts.object_arrays)?;
 
     // Counters
     let mut instance_count = 0u64;
@@ -275,12 +301,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                 }
             }
             RecordTag::LoadClass => {
-                if let Some(lc_result) = record.as_load_class() {
-                    let lc = lc_result
-                        .map_err(|e| anyhow::anyhow!("Failed to parse LoadClass: {:?}", e))?;
-                    load_class_entries
-                        .push((lc.class_obj_id().id(), lc.class_name_id().id()));
-                }
+                // Class-name headers were collected without scanning heap bodies.
             }
             RecordTag::HeapDump | RecordTag::HeapDumpSegment => {
                 if let Some(hd_result) = record.as_heap_dump_segment() {
@@ -289,6 +310,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                     })?;
 
                     for sub_result in heap_dump.sub_records() {
+                        if let Some((_, cancel)) = construction { super::disk_edges::check(cancel)?; }
                         let sub = sub_result.map_err(|e| {
                             anyhow::anyhow!("Failed to parse sub-record: {:?}", e)
                         })?;
@@ -354,7 +376,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
                                 // A root record may precede the class definition.
                                 if let Some(index) = node_store.index_of(obj_id) {
-                                    let node = node_store.get_by_index_mut(index);
+                                    let mut node = node_store.get_by_index_mut(index);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::Class;
                                         node.class_name = Arc::from("Class");
@@ -417,12 +439,12 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let class_name = class_name_map
                                     .get(&class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| names.unknown(class_obj_id));
+                                    .unwrap_or_else(|| { missing_instance_names = true; names.unknown(class_obj_id) });
 
                                 let existing = node_store.index_of(obj_id);
                                 let node_idx = if let Some(idx) = existing {
                                     // Upgrade GcRoot -> Instance
-                                    let node = node_store.get_by_index_mut(idx);
+                                    let mut node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::Instance;
                                         node.shallow_size = size;
@@ -449,7 +471,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                     node_idx,
                                     class_obj_id,
                                     field_bytes: DeferredBytes::capture(instance.fields(), data, mapping.is_some())?,
-                                });
+                                })?;
                             }
 
                             // ---- Object Array ----
@@ -469,12 +491,12 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let class_name = class_name_map
                                     .get(&array_class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| names.object_array());
+                                    .unwrap_or_else(|| { missing_array_names = true; names.object_array() });
                                 array_element_counts.insert(obj_id, element_count);
 
                                 let existing = node_store.index_of(obj_id);
                                 let node_idx = if let Some(idx) = existing {
-                                    let node = node_store.get_by_index_mut(idx);
+                                    let mut node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::ObjectArray;
                                         node.shallow_size = size;
@@ -497,14 +519,13 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 };
 
                                 // Track for deferred class name fixup
-                                object_array_class_ids.push((node_idx, array_class_obj_id));
 
                                 // Store element refs for deferred edge extraction in Phase 2
                                 deferred_arrays.push(DeferredObjectArray {
                                     node_idx,
                                     class_obj_id: array_class_obj_id,
-                                    element_refs,
-                                });
+                                    field_bytes: element_refs,
+                                })?;
                             }
 
                             // ---- Primitive Array ----
@@ -545,7 +566,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
                                 let existing = node_store.index_of(obj_id);
                                 if let Some(idx) = existing {
-                                    let node = node_store.get_by_index_mut(idx);
+                                    let mut node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::PrimitiveArray;
                                         node.shallow_size = size;
@@ -574,7 +595,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
                                 let existing = node_store.index_of(obj_id);
                                 if let Some(idx) = existing {
-                                    let node = node_store.get_by_index_mut(idx);
+                                    let mut node = node_store.get_by_index_mut(idx);
                                     if node.node_type == NodeType::GcRoot {
                                         node.node_type = NodeType::PrimitiveArray;
                                         node.shallow_size = 0;
@@ -620,7 +641,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     for &(class_obj_id, class_name_id) in &load_class_entries {
         if let Some(name) = string_table.get(class_name_id) {
             let java_name = convert_jvm_class_name(name);
-            let arc_name: Arc<str> = Arc::from(java_name.as_str());
+            let arc_name: Arc<str> = class_name_map.get(&class_obj_id).filter(|name| name.as_ref() == java_name)
+                .cloned().unwrap_or_else(|| Arc::from(java_name.as_str()));
             class_name_map.insert(class_obj_id, arc_name.clone());
 
             // Fix up ClassInfo class_name
@@ -642,13 +664,19 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         }
     }
 
+    deferred_instances.finish()?;
+    deferred_arrays.finish()?;
+
+    node_store.validate_construction()?;
+
     // Fix up Class node names (they were stored as "Class" placeholder
     // because LoadClass may not have been processed yet)
-    for i in 0..node_store.len() {
-        let node = node_store.get_by_index(i as u32);
+    for &(id, _) in &load_class_entries {
+        let Some(index) = node_store.index_of(id) else { continue; };
+        let node = node_store.get_by_index(index);
         if matches!(node.node_type, NodeType::Class) && node.class_name.as_ref() == "Class" {
             if let Some(name) = class_name_map.get(&node.id) {
-                let node_mut = node_store.get_by_index_mut(i as u32);
+                let mut node_mut = node_store.get_by_index_mut(index);
                 node_mut.class_name = Arc::from(format!("class {}", name.as_ref()));
             }
         }
@@ -656,27 +684,28 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
     // Fix up deferred instance class names (instances whose class was Unknown
     // because LoadClass hadn't been processed yet)
-    for di in &deferred_instances {
+    if missing_instance_names { for di in deferred_instances.iter() {
         if let Some(name) = class_name_map.get(&di.class_obj_id) {
             let node = node_store.get_by_index(di.node_idx);
             if node.class_name.starts_with("Unknown(") {
-                let node_mut = node_store.get_by_index_mut(di.node_idx);
+                let mut node_mut = node_store.get_by_index_mut(di.node_idx);
                 node_mut.class_name = name.clone();
             }
         }
-    }
+    } }
 
     // Fix up object array class names (arrays whose class name defaulted to
     // "Object[]" because LoadClass hadn't been processed yet)
-    for &(node_idx, array_class_obj_id) in &object_array_class_ids {
+    if missing_array_names { for array in deferred_arrays.iter() {
+        let (node_idx, array_class_obj_id) = (array.node_idx, array.class_obj_id);
         if let Some(name) = class_name_map.get(&array_class_obj_id) {
             let node = node_store.get_by_index(node_idx);
             if node.class_name.as_ref() == "Object[]" {
-                let node_mut = node_store.get_by_index_mut(node_idx);
+                let mut node_mut = node_store.get_by_index_mut(node_idx);
                 node_mut.class_name = name.clone();
             }
         }
-    }
+    } }
 
     // ========================================================================
     // Resolve class field layouts
@@ -746,9 +775,9 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
             class_index.field_layout(id).map(|layout| (id, CandidateFields::new(layout, id_size)))
         }).collect();
 
-        waste_raw.array_element_counts = array_element_counts.clone();
+        waste_raw.array_element_counts = array_element_counts;
 
-        for di in &deferred_instances {
+        for di in deferred_instances.iter() {
             let class_obj_id = di.class_obj_id;
 
             if let Some(plan) = candidate_fields.get(&class_obj_id) {
@@ -775,7 +804,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                     if let Some(size_val) = plan.int(fields) {
                         let cname = class_name_map
                             .get(&class_obj_id)
-                            .map(|s| s.to_string())
+                            .cloned()
                             .unwrap_or_default();
                         let shallow = sizing.instance(class_obj_id, fields.len())?;
                         if size_val == 0 {
@@ -810,7 +839,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                 let fields = di.field_bytes.bytes(Some(data))?;
                 let shallow = sizing.instance(class_obj_id, fields.len())?;
                 waste_raw.boxed_primitives.push(BoxedPrimitiveInfo {
-                    class_name: bp_name.to_string(),
+                    class_name: Arc::from(bp_name),
                     shallow_size: shallow,
                 });
             }
@@ -830,6 +859,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     };
 
     let deferred = DeferredEdgeData {
+        max_references: counts.reference_capacity()?,
         mapping,
         deferred_instances,
         deferred_arrays,
@@ -837,7 +867,6 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         class_name_map,
         class_instance_sizes,
         id_size,
-        array_element_counts,
     };
 
     let phase1 = Phase1Result {
@@ -847,7 +876,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         gc_root_ids,
         classloader_ids,
         summary,
-        waste_raw,
+        waste_raw: Arc::new(waste_raw),
         class_histogram,
     };
 
@@ -867,14 +896,12 @@ pub fn parse_indexed_phase2(
     phase1: &Phase1Result,
     deferred: DeferredEdgeData,
 ) -> Result<Phase2Result> {
-    let mut builder = EdgeBuilder::with_capacity(phase1.node_store.len() * 2);
-    super::bounded_edges::extract(&deferred.deferred_instances, |instance, emit| {
-        super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| emit((src, dst, label)))
-    }, |batch| builder.extend_edges(batch))?;
-    super::edge_extract::structural(&deferred, phase1, |src, dst, label| {
-        builder.add_edge(src, dst, label); Ok(())
-    })?;
-    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory(&deferred.deferred_instances)).transpose()?, edge_store: builder.build(phase1.node_store.len()), waste_raw: phase1.waste_raw.clone() })
+    parse_indexed_phase2_cancellable(phase1, deferred, &std::sync::atomic::AtomicBool::new(false))
+}
+pub fn parse_indexed_phase2_cancellable(phase1: &Phase1Result, deferred: DeferredEdgeData,
+    cancel: &std::sync::atomic::AtomicBool) -> Result<Phase2Result> {
+    let edges = super::memory_edges::build(phase1, &deferred, cancel)?;
+    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory_catalog(&deferred.deferred_instances)).transpose()?, edge_store: edges, waste_raw: phase1.waste_raw.clone() })
 }
 
 /// Disk mode streams each resolved reference into a bounded sorted-run builder.
@@ -896,12 +923,12 @@ pub(crate) fn parse_indexed_phase2_disk_recorded(
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<(Phase2Result, Vec<super::cache_writer::Receipt>)> {
     let mut builder = super::disk_edges::DiskEdgeBuilder::new(directory, phase1.node_store.len(), edge_buffer_bytes, cancel)?;
-    for instance in &deferred.deferred_instances {
+    for instance in deferred.deferred_instances.iter() {
         super::disk_edges::check(cancel)?;
-        super::edge_extract::instance(instance, &deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
+        super::edge_extract::instance(&instance, &deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
     }
     super::edge_extract::structural(&deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
-    let body_receipt = super::object_bodies::ObjectBodies::write_records(&mut deferred.deferred_instances,directory,cancel)?;
+    let body_receipt = super::object_bodies::ObjectBodies::write_catalog(&mut deferred.deferred_instances,directory,edge_buffer_bytes.min(16 * 1024 * 1024),cancel)?;
     let input_bytes = deferred.mapping.as_ref().ok_or_else(||anyhow::anyhow!("Disk storage requires mapped input"))?.len();
     // References and body offsets are now persisted. Free parse-only records
     // before reverse sorting, mapping and cache publication can overlap them.
@@ -976,7 +1003,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         };
 
         assert_eq!(pr.node_store.len(), 0);
@@ -1019,7 +1046,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: Vec::new(),
         };
 
@@ -1116,22 +1143,22 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: Vec::new(),
         };
         let deferred = DeferredEdgeData {
+            max_references: usize::MAX,
             mapping: None,
             deferred_instances: vec![DeferredInstance {
                 node_idx: reference_idx,
                 class_obj_id: 11,
                 field_bytes: DeferredBytes::Owned(200u64.to_be_bytes().to_vec()),
-            }],
-            deferred_arrays: Vec::new(),
+            }].into(),
+            deferred_arrays: Vec::new().into(),
             deferred_class_edges: Vec::new(),
             class_name_map: HashMap::new(),
             class_instance_sizes: HashMap::new(),
             id_size: jvm_hprof::IdSize::U64,
-            array_element_counts: HashMap::new(),
         };
 
         let phase2 = parse_indexed_phase2(&phase1, deferred).unwrap();

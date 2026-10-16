@@ -218,7 +218,9 @@ fn analyze_heap_blocking(
                     error: None,
                 };
             }
-            let error_msg = format!("Heap analysis failed: {}", e);
+            let error_msg = if let Some(resource) = e.downcast_ref::<hprof_analyzer::indexed::storage::ResourceError>() {
+                format!("Heap analysis failed: {resource}")
+            } else { format!("Heap analysis failed: {}", e) };
             log::error!("{} (request_id: {})", error_msg, request_id);
             AnalyzeHeapResult {
                 storage: None,
@@ -474,7 +476,7 @@ fn analyze_heap_internal(
                 .context("Disk structural index validation or construction failed; check private cache permissions and free space")?;
             (phase1, None, Some(phase2), report)
         } else {
-            let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1_mapped(mmap.clone(), None)
+            let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1_mapped_cancellable(mmap.clone(), None, cancel_token)
                 .context("Indexed Phase 1 parse failed")?;
             (phase1, Some(deferred), None, hprof_analyzer::indexed::storage::StorageReport { mode: "memory", cache_status: "disabled", edge_buffer_bytes: 0 })
         };
@@ -506,7 +508,7 @@ fn analyze_heap_internal(
         }));
 
         let phase_start = Instant::now();
-        let phase2 = match cached_phase2 { Some(phase2) => phase2, None => hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred.expect("memory mode deferred data"))
+        let phase2 = match cached_phase2 { Some(phase2) => phase2, None => hprof_analyzer::indexed::parse::parse_indexed_phase2_cancellable(&phase1, deferred.expect("memory mode deferred data"), cancel_token)
             .context("Indexed Phase 2 failed")? };
         if cancel_token.load(Ordering::Relaxed) {
             anyhow::bail!("Analysis cancelled");

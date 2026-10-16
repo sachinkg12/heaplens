@@ -10,7 +10,10 @@ export const wasteHandlers: MessageHandler[] = [{
         const active = () => ctx.state.client === ctx.client && ctx.state.analysisData === original;
         try {
             if (!original || ctx.state.analysisMode === 'shallow') { throw new Error('unavailable'); }
-            const waste = await ctx.client.sendRequest('get_waste_analysis', { path: ctx.hprofPath });
+            // Like retained analysis, content scanning may legitimately exceed
+            // 30 seconds. Closing/replacing the editor disposes its client and
+            // rejects the pending request; a timer must not report a false failure.
+            const waste = await ctx.client.sendRequest('get_waste_analysis', { path: ctx.hprofPath }, 0);
             if (!active()) { return; }
             original.wasteAnalysis = waste;
             ctx.webviewPanel.webview.postMessage({ command: 'wasteResult', requestId: id, wasteAnalysis: waste });

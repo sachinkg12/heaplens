@@ -7,32 +7,48 @@ use std::{
 };
 
 pub(crate) fn write(
-    phase: &Phase1Result,
+    phase: &mut Phase1Result,
     directory: &Path,
     cancel: &AtomicBool,
 ) -> Result<Vec<super::cache_writer::Receipt>> {
     let (receipt, names) = super::compact_nodes::write(&phase.node_store, directory, cancel)?;
-    Ok(vec![
+    let receipts = vec![
         receipt,
-        super::cache_metadata::write(phase, names, directory, cancel)?,
-    ])
+        super::cache_metadata::write(phase, names.clone(), directory, cancel)?,
+    ];
+    // Release mutable construction files and their private temporary directories
+    // before publication. The first analysis uses the same compact reader as reuse.
+    let mut frozen = NodeStore::mapped(super::compact_nodes::MappedNodes::map(
+        directory, names, phase.node_store.len(), cancel)?);
+    phase.node_store.transfer_resource_to(&mut frozen);
+    phase.node_store = frozen;
+    Ok(receipts)
 }
 pub(crate) fn read(
     directory: &Path,
     mapping: Arc<memmap2::Mmap>,
     cancel: &AtomicBool,
 ) -> Result<Phase1Result> {
+    // Header inspection precedes metadata expansion. Full persisted-byte
+    // verification has already run in structural_cache::read.
+    use std::io::Read;
+    let mut file = std::fs::File::open(directory.join("metadata.bin"))?;
+    let mut header = [0; 12]; file.read_exact(&mut header)?;
+    ensure!(&header[..8] == b"HLMETA03", "Unsupported metadata format");
+    let count = u32::from_le_bytes(header[8..].try_into()?) as usize;
+    let resource = super::resource_lease::Lease::acquire(super::resource_plan::Plan::reopen(count, file.metadata()?.len())?)?;
     let mut metadata = super::cache_metadata::read(directory, mapping, cancel)?;
     ensure!(
         metadata.nodes > 0 && metadata.nodes < u32::MAX as usize,
         "Invalid node count"
     );
-    let nodes = NodeStore::mapped(super::compact_nodes::MappedNodes::map(
+    let mut nodes = NodeStore::mapped(super::compact_nodes::MappedNodes::map(
         directory,
         metadata.names,
         metadata.nodes,
         cancel,
     )?);
+    nodes.set_resource(Some(resource));
     nodes.validate_ids(
         metadata
             .gc_root_ids
@@ -66,7 +82,7 @@ pub(crate) fn read(
         gc_root_ids: metadata.gc_root_ids,
         classloader_ids: metadata.classloader_ids,
         summary: metadata.summary,
-        waste_raw: metadata.waste_raw,
+        waste_raw: Arc::new(metadata.waste_raw),
         class_histogram: Vec::new(),
     })
 }

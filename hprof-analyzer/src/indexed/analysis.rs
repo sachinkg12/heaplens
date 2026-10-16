@@ -5,7 +5,7 @@
 //! `AnalysisState`, built from a `ParseResult` rather than a petgraph.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use petgraph::graph::NodeIndex;
 
@@ -122,7 +122,7 @@ pub struct IndexedAnalysisState {
     leak_suspects: Vec<LeakSuspect>,
     object_leak_suspects: Vec<LeakSuspect>,
     waste: OnceLock<WasteAnalysis>,
-    waste_raw: WasteRawData,
+    waste_raw: Arc<WasteRawData>,
     top_objects: Vec<ObjectReport>,
 }
 
@@ -1078,7 +1078,7 @@ pub struct Phase1AnalysisState {
     string_table: StringTable,
     summary: HeapSummary,
     class_histogram: Vec<ClassHistogramEntry>,
-    waste_raw: WasteRawData,
+    waste_raw: Arc<WasteRawData>,
     waste: OnceLock<WasteAnalysis>,
     top_objects: Vec<ObjectReport>,
 }
@@ -1324,7 +1324,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         }
     }
 
@@ -1358,7 +1358,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         }
     }
 
@@ -1584,7 +1584,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         };
 
         let state = IndexedAnalysisState::from_parse_result(pr).unwrap();
@@ -1688,13 +1688,13 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: Vec::new(),
         };
         let phase2 = Phase2Result {
             object_bodies: None,
             edge_store: edges.build(6),
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         };
 
         (phase1, phase2)
@@ -1732,7 +1732,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: vec![
                 crate::ClassHistogramEntry {
                     class_name: "byte[]".to_string(),

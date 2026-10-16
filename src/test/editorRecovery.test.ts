@@ -34,6 +34,17 @@ test('a retired Waste response cannot overwrite a replacement analysis', async (
     } finally {host.provider.dispose();}
 });
 
+test('Waste waits for content analysis instead of inheriting the short RPC timeout', async () => {
+    const client = new FakeServer(), host = editorHarness(() => client), view = host.panel();
+    try {
+        await host.open('/tmp/waste-timeout.hprof', view); await view.send({ command: 'ready' });
+        await view.send({ command: 'calculateWaste', requestId: 'long-waste' });
+        const request = client.requests.find(r => r.method === 'get_waste_analysis');
+        assert.equal(request?.timeoutMs, 0);
+        assert.equal(view.messages.at(-1).command, 'wasteResult');
+    } finally { host.provider.dispose(); }
+});
+
 test('Quick Scan initial mode gates graph actions; only explicit escalation runs full analysis', async () => {
     const clients:FakeServer[]=[];
     const host=editorHarness(()=>{const c=new FakeServer();clients.push(c);return c;},'shallow');

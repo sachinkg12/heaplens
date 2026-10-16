@@ -3,8 +3,10 @@
 use super::{
     cache_writer::{CacheWriter, Receipt},
     column::Column,
-    node_store::{NodeRecord, NodeStore, NodeType},
+    node_store::{NodeStore, NodeType},
 };
+#[cfg(test)]
+use super::node_store::NodeRecord;
 use anyhow::{ensure, Result};
 use std::{
     collections::HashMap,
@@ -97,15 +99,17 @@ pub(crate) fn write(
         if row % 4096 == 0 {
             super::disk_edges::check(cancel)?;
         }
-        if !slots.contains_key(&node.class_name) {
+        if !slots.contains_key(node.class_name.as_ref()) {
             let slot = u32::try_from(names.len())?;
             names.push(node.class_name.clone());
-            slots.insert(node.class_name, slot);
+            slots.insert(node.class_name.clone(), slot);
         }
     }
     let mut sorted = Vec::new();
-    sorted.try_reserve_exact(nodes.len())?;
-    sorted.extend(0..u32::try_from(nodes.len())?);
+    if !nodes.has_construction_lookup() {
+        sorted.try_reserve_exact(nodes.len())?;
+        sorted.extend(0..u32::try_from(nodes.len())?);
+    }
     use rayon::prelude::*;
     sorted.par_sort_unstable_by_key(|&i| nodes.id_at(i));
     super::disk_edges::check(cancel)?;
@@ -118,7 +122,7 @@ pub(crate) fn write(
             nodes.len(),
             |i| {
                 if column == 5 {
-                    return u64::from(sorted[i]);
+                    return if nodes.has_construction_lookup() { u64::from(nodes.lookup_order_at(i as u32)) } else { u64::from(sorted[i]) };
                 }
                 let row = i as u32;
                 match column {
@@ -176,6 +180,7 @@ impl MappedNodes {
     pub fn kind_at(&self, row: u32) -> NodeType {
         kind(self.value(4, row as usize)).unwrap()
     }
+    #[cfg(test)]
     pub fn get(&self, row: u32) -> NodeRecord {
         let i = row as usize;
         NodeRecord {
@@ -398,7 +403,7 @@ mod tests {
                     old.shallow_size,
                     old.class_index,
                     old.node_type,
-                    &old.class_name
+                    old.class_name
                 )
             );
             assert_eq!(mapped.index_of(old.id), Some(i as u32));

@@ -10,11 +10,53 @@ pub(crate) fn instance(
     di: &DeferredInstance,
     deferred: &DeferredEdgeData,
     phase: &Phase1Result,
+    emit: impl FnMut(u32, u32, u8) -> Result<()>,
+) -> Result<()> {
+    instance_with_lookup(
+        di,
+        deferred,
+        phase,
+        |id| phase.node_store.index_of(id),
+        emit,
+    )
+}
+pub(crate) fn count_instance(
+    di: &DeferredInstance,
+    deferred: &DeferredEdgeData,
+    phase: &Phase1Result,
+    mut emit: impl FnMut(u32, u32, u8) -> Result<()>,
+) -> Result<()> {
+    // Count potential references without resolving every ID twice. Missing
+    // targets leave unused slots that the CSR builder compacts away.
+    let mut degree = 0u32;
+    instance_with_lookup(
+        di,
+        deferred,
+        phase,
+        |_| Some(0),
+        |_, _, _| {
+            degree = degree
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Reference degree overflow"))?;
+            Ok(())
+        },
+    )?;
+    // One bounded-queue item per object, not one per potential reference.
+    if degree > 0 {
+        emit(di.node_idx, degree, label::UNKNOWN)?;
+    }
+    Ok(())
+}
+fn instance_with_lookup(
+    di: &DeferredInstance,
+    deferred: &DeferredEdgeData,
+    phase: &Phase1Result,
+    lookup: impl Fn(u64) -> Option<u32>,
     mut emit: impl FnMut(u32, u32, u8) -> Result<()>,
 ) -> Result<()> {
     // The VM keeps an object's runtime class alive independently of its fields.
     // Omitting this edge can make shared class statics appear exclusively owned.
-    if let Some(class) = phase.node_store.index_of(di.class_obj_id) {
+    if let Some(class) = lookup(di.class_obj_id) {
         emit(di.node_idx, class, label::RUNTIME_CLASS)?;
     }
     let fields = di
@@ -25,7 +67,7 @@ pub(crate) fn instance(
         if failure.is_some() {
             return;
         }
-        if let Some(target) = phase.node_store.index_of(ref_id) {
+        if let Some(target) = lookup(ref_id) {
             if let Err(error) = emit(di.node_idx, target, label) {
                 failure = Some(error);
             }
@@ -50,10 +92,30 @@ pub(crate) fn instance(
 pub(crate) fn structural(
     deferred: &DeferredEdgeData,
     phase: &Phase1Result,
+    emit: impl FnMut(u32, u32, u8) -> Result<()>,
+) -> Result<()> {
+    structural_with_lookup(deferred, phase, |id| phase.node_store.index_of(id), emit)
+}
+pub(crate) fn count_structural(
+    deferred: &DeferredEdgeData,
+    phase: &Phase1Result,
+    mut emit: impl FnMut(u32, u32, u8) -> Result<()>,
+) -> Result<()> {
+    structural_with_lookup(
+        deferred,
+        phase,
+        |_| Some(0),
+        |src, _, label| emit(src, 1, label),
+    )
+}
+fn structural_with_lookup(
+    deferred: &DeferredEdgeData,
+    phase: &Phase1Result,
+    lookup: impl Fn(u64) -> Option<u32>,
     mut emit: impl FnMut(u32, u32, u8) -> Result<()>,
 ) -> Result<()> {
     for &id in &phase.gc_root_ids {
-        if let Some(node) = phase.node_store.index_of(id) {
+        if let Some(node) = lookup(id) {
             emit(0, node, label::GC_ROOT)?;
         }
     }
@@ -61,12 +123,12 @@ pub(crate) fn structural(
         jvm_hprof::IdSize::U32 => 4,
         jvm_hprof::IdSize::U64 => 8,
     };
-    for array in &deferred.deferred_arrays {
-        if let Some(class) = phase.node_store.index_of(array.class_obj_id) {
+    for array in deferred.deferred_arrays.iter() {
+        if let Some(class) = lookup(array.class_obj_id) {
             emit(array.node_idx, class, label::RUNTIME_CLASS)?;
         }
         for bytes in array
-            .element_refs
+            .field_bytes
             .bytes(deferred.mapping.as_deref().map(|map| &map[..]))?
             .chunks_exact(width)
         {
@@ -76,7 +138,7 @@ pub(crate) fn structural(
                 u64::from_be_bytes(bytes.try_into()?)
             };
             if id != 0 {
-                if let Some(node) = phase.node_store.index_of(id) {
+                if let Some(node) = lookup(id) {
                     emit(array.node_idx, node, label::ARRAY_ELEMENT)?;
                 }
             }
@@ -100,18 +162,13 @@ pub(crate) fn structural(
                     | "double[]"
             )
         })
-        .filter_map(|(&id, name)| {
-            phase
-                .node_store
-                .index_of(id)
-                .map(|node| (name.as_ref(), node))
-        })
+        .filter_map(|(&id, name)| lookup(id).map(|node| (name.as_ref(), node)))
         .collect();
     let mirror = deferred
         .class_name_map
         .iter()
         .find(|(_, name)| name.as_ref() == "java.lang.Class")
-        .and_then(|(&id, _)| phase.node_store.index_of(id));
+        .and_then(|(&id, _)| lookup(id));
     for (index, node) in phase.node_store.iter().enumerate() {
         let class = match node.node_type {
             super::node_store::NodeType::PrimitiveArray => {
@@ -131,12 +188,12 @@ pub(crate) fn structural(
             (class.signers_id, label::CLASS_SIGNERS),
             (class.protection_domain_id, label::PROTECTION_DOMAIN),
         ] {
-            if let Some(node) = id.and_then(|id| phase.node_store.index_of(id)) {
+            if let Some(node) = id.and_then(&lookup) {
                 emit(class.class_node_idx, node, label)?;
             }
         }
         for &id in &class.static_field_refs {
-            if let Some(node) = phase.node_store.index_of(id) {
+            if let Some(node) = lookup(id) {
                 emit(class.class_node_idx, node, label::CLASS_STATIC)?;
             }
         }
