@@ -2,19 +2,22 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { editorHarness, FakeServer, settle } from './editorHarness';
 
-test('editor resolves before analysis, coalesces early snapshots, and rejects stale progress', async () => {
+test('editor paints before its one analysis, streams snapshots, and rejects stale progress', async () => {
     const client=new FakeServer();client.autoComplete=false;
     const host=editorHarness(()=>client), view=host.panel();
     try {
         await host.open('/tmp/staged.hprof',view);
+        assert.deepEqual(view.events, ['receiver','html'], 'Ready receiver must precede HTML loading');
         assert.equal(host.provider.getAnalysisData(),null);
+        assert.equal(client.requests.length,0,'CPU work must wait for the painted webview');
+        await view.send({command:'ready'});
+        await view.send({command:'ready'});
         const progress=client.handlers.get('heap_analysis_progress');
         assert.ok(progress);
         progress({request_id:1,stage:'shallow_ready',snapshot:{kind:'shallow',summary:{reachable_heap_size:null},class_histogram:[]}});
         progress({request_id:1,stage:'edges'});
-        await view.send({command:'ready'});
         assert.equal(view.messages.at(-1).stage,'edges');
-        assert.equal(view.messages.at(-1).snapshot.kind,'shallow');
+        assert.equal(view.messages.find(m=>m.stage==='shallow_ready').snapshot.kind,'shallow');
         await view.send({command:'executeQuery',query:'SELECT * FROM instances'});
         assert.equal(client.requests.filter(r=>r.method==='execute_query').length,0);
         const count=view.messages.length;
@@ -24,6 +27,15 @@ test('editor resolves before analysis, coalesces early snapshots, and rejects st
         assert.equal(view.messages.at(-1).command,'analysisComplete');
         assert.equal(client.requests.filter(r=>r.method==='scan_heap').length,0);
         assert.equal(client.requests.filter(r=>r.method==='analyze_heap').length,1);
+    } finally {host.provider.dispose();}
+});
+
+test('initial server startup failure has visible fallback content instead of a blank editor', async () => {
+    const host=editorHarness(()=>{throw new Error('fixture spawn failure');}), view=host.panel();
+    try {
+        await host.open('/tmp/startup-failure.hprof',view);
+        assert.match(view.value.webview.html,/could not start the analysis server/);
+        assert.match(view.value.webview.html,/role="alert"/);
     } finally {host.provider.dispose();}
 });
 
@@ -164,14 +176,16 @@ test('rapid Retry clicks create one replacement and one analysis', async () => {
 
 test('late exit, progress and query error from the old process cannot overwrite recovery', async () => {
     const clients: FakeServer[] = [];
-    const host = editorHarness(() => { const c = new FakeServer(); clients.push(c); return c; });
+    const host = editorHarness(() => { const c = new FakeServer(); c.autoComplete = clients.length > 0; clients.push(c); return c; });
     const view = host.panel();
     try {
         clients.length = 0;
         const opening = host.open('/tmp/stale.hprof', view);
+        await view.send({ command: 'ready' });
         const oldProgress = clients[0].handlers.get('heap_analysis_progress');
         const oldExit = clients[0].onProcessExit;
         assert.ok(oldProgress); assert.ok(oldExit);
+        clients[0].complete(); await settle();
         await opening;
         await view.send({ command: 'ready' });
         let rejectQuery!: (error: Error) => void;
@@ -189,7 +203,7 @@ test('late exit, progress and query error from the old process cannot overwrite 
     } finally { host.provider.dispose(); }
 });
 
-test('crash before ready replaces buffered success with a recoverable crash message', async () => {
+test('crash before ready prevents initial analysis and delivers a recoverable crash message', async () => {
     const clients: FakeServer[] = [];
     const host = editorHarness(() => { const c = new FakeServer(); clients.push(c); return c; });
     const view = host.panel();
@@ -197,6 +211,7 @@ test('crash before ready replaces buffered success with a recoverable crash mess
         await host.open('/tmp/buffer.hprof', view);
         clients[0].die();
         await view.send({ command: 'ready' });
+        assert.equal(clients[0].requests.length, 0);
         assert.equal(view.messages.filter(m => m.command === 'analysisComplete').length, 0);
         assert.equal(view.messages.at(-1).command, 'serverCrashed');
         await view.send({ command: 'retryAnalysis' });

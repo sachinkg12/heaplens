@@ -158,17 +158,25 @@ impl HprofSizing {
         explicit: Option<ObjectLayout>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self> {
-        Self::read_observed(data, explicit, cancelled, None, None)
+        Self::read_observed(data, explicit, cancelled, None, None, None)
     }
     pub(crate) fn read_tracked(
         data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
         observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
         progress: &mut dyn FnMut(RecordCounts),
-    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, observe, Some(progress)) }
+    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, observe, Some(progress), None) }
+    pub(crate) fn read_mapped_tracked(
+        mapping: &memmap2::Mmap, explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        observe: Option<&mut dyn FnMut(u64) -> Result<()>>, progress: &mut dyn FnMut(RecordCounts),
+    ) -> Result<Self> {
+        let mut ahead = crate::indexed::read_ahead::ReadAhead::new(Some(mapping));
+        Self::read_observed(mapping, explicit, cancelled, observe, Some(progress), Some(&mut |offset| ahead.observe(offset)))
+    }
     fn read_observed(
         data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
         mut observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
         mut progress: Option<&mut dyn FnMut(RecordCounts)>,
+        mut read_ahead: Option<&mut dyn FnMut(usize)>,
     ) -> Result<Self> {
         if cancelled() {
             bail!("Sizing cancelled");
@@ -227,6 +235,24 @@ impl HprofSizing {
                     page_records = (page_records + 1) % crate::hprof_producer::Metadata::page_records();
                     record_counts.observe(&sub)?;
                     observed += 1;
+                    if observed % 8192 == 0 {
+                        if let Some(hint) = read_ahead.as_mut() {
+                            let bytes = match &sub {
+                                SubRecord::Instance(v) => Some(*v.fields()),
+                                SubRecord::ObjectArray(v) => Some(v.raw_contents()),
+                                SubRecord::PrimitiveArray(v) => Some(v.contents()),
+                                _ => None,
+                            };
+                            if let Some(bytes) = bytes {
+                                // The parser skips array payloads. Hint at their end,
+                                // not at the start of bytes the structural scan skips.
+                                if let Some(position) = (bytes.as_ptr() as usize).checked_sub(data.as_ptr() as usize)
+                                    .and_then(|start| start.checked_add(bytes.len())) {
+                                    if position <= data.len() { hint(position); }
+                                }
+                            }
+                        }
+                    }
                     // Clock and serialization overhead are outside the per-object hot path.
                     if observed % 65536 == 0 && last_progress.elapsed().as_secs() >= 1 {
                         if let Some(progress) = progress.as_mut() { progress(record_counts); }

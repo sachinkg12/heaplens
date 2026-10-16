@@ -216,13 +216,17 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     } else { None };
     let mut catalog = |id| ids.as_mut().expect("catalog enabled").push(id);
     let has_catalog = directory.is_some();
-    let sizing = crate::hprof_sizing::HprofSizing::read_tracked(data, layout,
-        &|| construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)),
-        if has_catalog { Some(&mut catalog) } else { None },
-        &mut |counts| progress(super::progress::Observation::Records {
+    let cancelled = || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed));
+    let catalog = if has_catalog { Some(&mut catalog as &mut dyn FnMut(u64) -> Result<()>) } else { None };
+    let mut counts_progress = |counts: crate::hprof_sizing::RecordCounts| progress(super::progress::Observation::Records {
             instances:counts.instances, arrays:counts.object_arrays + counts.primitive_arrays,
             classes:counts.classes, roots:counts.roots
-        }))?;
+        });
+    let sizing = if let Some(mapping) = mapping.as_deref() {
+        crate::hprof_sizing::HprofSizing::read_mapped_tracked(mapping, layout, &cancelled, catalog, &mut counts_progress)?
+    } else {
+        crate::hprof_sizing::HprofSizing::read_tracked(data, layout, &cancelled, catalog, &mut counts_progress)?
+    };
     drop(sizing_timer);
     let catalog_timer = super::stage_timer::StageTimer::start("parse.catalog_and_names");
     progress(super::progress::Observation::Stage("catalog_building"));

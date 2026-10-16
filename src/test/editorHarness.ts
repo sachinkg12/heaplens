@@ -70,17 +70,21 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
     );
     function panel() {
         const messages: any[] = [];
+        const events: string[] = [];
+        let html = '';
         let receive: (message: any) => Promise<void> = async () => undefined;
         let close = () => undefined;
         const value = {
             webview: {
-                options: {}, html: '',
+                options: {},
+                get html() { return html; },
+                set html(value: string) { events.push('html'); html = value; },
                 postMessage: (message: any) => { messages.push(message); return Promise.resolve(true); },
-                onDidReceiveMessage: (callback: typeof receive) => { receive = callback; }
+                onDidReceiveMessage: (callback: typeof receive) => { events.push('receiver'); receive = callback; }
             },
             onDidDispose: (callback: typeof close) => { close = callback; }
         };
-        return { value, messages, send: (message: any) => receive(message), close: () => close() };
+        return { value, messages, events, send: async (message: any) => { await receive(message); await settle(); }, close: () => close() };
     }
     return {
         provider, panel, logs, errors, cancellations,

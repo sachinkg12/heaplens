@@ -204,6 +204,16 @@ mod tests {
         let path = std::env::var_os("HEAPLENS_ORACLE_DUMP").expect("HEAPLENS_ORACLE_DUMP");
         let mapping = crate::HprofLoader::new(path.into()).map_file().unwrap();
         let (phase, deferred) = super::super::parse::parse_indexed_phase1_mapped(Arc::new(mapping), None).unwrap();
+        // The compact body index is also used by inspection/queries, not just
+        // retained reports. Compare every class ID and raw field slice.
+        {
+            let bodies = super::super::object_bodies::ObjectBodies::memory_catalog(&deferred.deferred_instances).unwrap();
+            let input = &deferred.mapping.as_ref().unwrap()[..];
+            for record in deferred.deferred_instances.iter() {
+                assert_eq!(bodies.fields(record.node_idx, input),
+                    Some((record.class_obj_id, record.field_bytes.bytes(Some(input)).unwrap())));
+            }
+        }
         let mut oracle = super::super::edge_store::EdgeBuilder::new();
         for di in deferred.deferred_instances.iter() {
             if let Some(class) = phase.node_store.index_of(di.class_obj_id) { oracle.add_edge(di.node_idx, class, label::RUNTIME_CLASS); }

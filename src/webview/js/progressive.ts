@@ -2,20 +2,25 @@
 export function getProgressiveJs(): string {
     return `
         (function() {
-            var shallow = null, busy = false, scope = 'full', page = 0;
+            var shallow = null, busy = false, scope = 'full', page = 0, unavailable = false;
             var scan = document.getElementById('quick-scan-btn');
             var retained = document.getElementById('analyze-retained-btn');
             var status = document.getElementById('analysis-mode-status');
             var panel = document.getElementById('shallow-histogram');
             var search = document.getElementById('histogram-search');
+            // These screens can show loading/recovery and AI configuration;
+            // their adapters still gate data reads and AI requests on readiness.
+            var loadingTabs = ['overview','histogram'].concat(
+                typeof loadingConfigurationTabs === 'undefined' ? [] : loadingConfigurationTabs);
             function controls() { scan.disabled = busy; retained.disabled = busy || scope === 'full'; search.disabled = (busy || scope==='shallow') && !shallow; }
             function gate() {
+                var allowed = scope === 'shallow' && !unavailable ? ['overview','histogram'] : loadingTabs;
                 document.querySelectorAll('.tab-btn').forEach(function(b) {
-                    b.disabled = (scope === 'shallow' || busy) && !['overview','histogram'].includes(b.dataset.tab);
+                    b.disabled = (scope === 'shallow' || busy) && !allowed.includes(b.dataset.tab);
                     if (b.disabled) b.title = busy ? 'Waiting for retained analysis to complete.' : 'Choose Analyze Retained to calculate this view.';
                     else b.removeAttribute('title');
                 });
-                if ((scope === 'shallow' || busy) && !['overview','histogram'].includes(_activeTab)) document.getElementById('tabBtn-overview').click();
+                if ((scope === 'shallow' || busy) && !allowed.includes(_activeTab)) document.getElementById('tabBtn-overview').click();
                 document.body.classList.toggle('shallow-analysis', scope === 'shallow' || !!shallow || busy);
                 controls();
             }
@@ -33,7 +38,7 @@ export function getProgressiveJs(): string {
                 panel.textContent = '';
             }
             function begin(next) {
-                busy = true; scope = next; reset(); gate();
+                busy = true; scope = next; unavailable = false; reset(); gate();
                 status.textContent = next === 'shallow' ? 'Quick Scan: retained memory, references and Waste are not calculated.' : 'Full retained analysis running…';
             }
             scan.addEventListener('click', function() { if(busy)return; begin('shallow'); vscode.postMessage({command:'quickScan'}); });
@@ -89,7 +94,7 @@ export function getProgressiveJs(): string {
                 gate();
             });
             onMessage('shallowScanComplete',function(m){
-                reset(); shallow=m; scope='shallow';busy=false;gate();
+                reset(); shallow=m; scope='shallow';busy=false;unavailable=false;gate();
                 var s=m.summary;
                 document.getElementById('stats-bar').innerHTML=[
                     ['Reachable heap','Not calculated'],['Shallow allocation total',fmt(s.total_heap_size)],
@@ -100,14 +105,15 @@ export function getProgressiveJs(): string {
                 document.getElementById('progress-bar').style.display='none'; render();
             });
             onMessage('analysisComplete',function(m){
-                scope='full';busy=false;shallow=null;gate();panel.textContent='';status.textContent='Full analysis ready.';
+                scope='full';busy=false;shallow=null;unavailable=false;gate();panel.textContent='';status.textContent='Full analysis ready.';
                 var storage=m.storage;
                 if(storage && storage.mode==='memory' && storage.cache_status==='disabled')status.textContent+=' References: memory.';
                 else if(storage && storage.mode==='disk' && ['built','reused'].includes(storage.cache_status))status.textContent+=' References: disk · Index '+storage.cache_status+'.';
             });
-            ['analysisCancelled','analysisFailed','serverCrashed'].forEach(function(command){onMessage(command,function(){busy=false;scope='shallow';gate();status.textContent=(shallow?'Shallow results only · retained analysis did not complete. ':'')+'Analysis unavailable. Retry repeats the selected mode, or choose Quick Scan.';});});
+            ['analysisCancelled','analysisFailed','serverCrashed'].forEach(function(command){onMessage(command,function(){busy=false;scope='shallow';unavailable=true;gate();status.textContent=(shallow?'Shallow results only · retained analysis did not complete. ':'')+'Analysis unavailable. Retry repeats the selected mode, or choose Quick Scan.';});});
             onMessage('analysisModeStatus',function(m){status.textContent=m.message;});
-            controls();
+            // First paint is a waiting state, not permission to run graph actions.
+            busy = true; gate();
         })();
     `;
 }

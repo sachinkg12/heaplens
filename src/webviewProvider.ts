@@ -93,7 +93,11 @@ ${getProgressiveJs()}
             analysisData = msg;
         });
 
-        vscode.postMessage({ command: 'ready' });
+        // Yield a visible frame before asking the host to begin heavy analysis.
+        // A hidden editor has no visible frame to wait for.
+        function announceReady() { vscode.postMessage({ command: 'ready' }); }
+        if (document.visibilityState === 'hidden') setTimeout(announceReady, 0);
+        else requestAnimationFrame(function() { requestAnimationFrame(announceReady); });
     })();
     </script>
 </body>

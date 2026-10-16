@@ -21,6 +21,7 @@ mod parse_metadata;
 pub mod storage;
 pub mod progress;
 mod stage_timer;
+pub(crate) mod read_ahead;
 mod cache_format;
 mod compact_nodes;
 mod sorted_runs;

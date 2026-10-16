@@ -152,7 +152,9 @@ function harness() {
   };
   const scripts = [...html.matchAll(/<script nonce="__NONCE__">([\s\S]*?)<\/script>/g)];
   const context = vm.createContext({
-    window, document, messages, setTimeout, clearTimeout, console
+    window, document, messages, setTimeout, clearTimeout, console,
+    // Clock lifecycle has dedicated tests; this DOM contract does not run time.
+    setInterval: () => 1, clearInterval: () => {}
   });
   vm.runInContext(scripts.at(-1)[1].replace('__BRIDGE__','messages.push(message)')
     .replace('function dispatchHost(message)', 'window.testDispatch = dispatchHost; function dispatchHost(message)'), context);

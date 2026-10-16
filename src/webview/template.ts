@@ -3,7 +3,8 @@ export function getHtmlTemplate(): string {
     <div class="analysis-mode-bar">
         <button class="btn" id="quick-scan-btn">Quick Scan</button>
         <button class="btn" id="analyze-retained-btn" disabled>Analyze Retained</button>
-        <span id="analysis-mode-status" role="status" aria-live="polite">Full analysis is the default; Quick Scan is available after Cancel or completion.</span>
+        <span id="analysis-mode-status" role="status" aria-live="polite">Preparing analysis…</span>
+        <span id="analysis-elapsed" class="file-meta-item" aria-label="Analysis elapsed time"></span>
     </div>
     <div class="tab-bar" role="tablist" aria-label="Analysis tabs">
         <button class="tab-btn active" data-tab="overview" role="tab" aria-selected="true" aria-controls="tab-overview" id="tabBtn-overview" tabindex="0">Overview</button>
@@ -22,7 +23,7 @@ export function getHtmlTemplate(): string {
     <!-- Tab 1: Overview -->
     <div id="tab-overview" class="tab-content active" role="tabpanel" aria-labelledby="tabBtn-overview">
         <div id="file-metadata" class="file-metadata" style="display:none;"></div>
-        <div id="progress-bar" class="progress-bar-container" role="status" aria-live="polite" style="display:none;"></div>
+        <div id="progress-bar" class="progress-bar-container" role="status" aria-live="polite"><div class="progress-message">Opening heap dump…</div></div>
         <div class="stats-bar" id="stats-bar">
             <div class="loading">Waiting for analysis...</div>
         </div>

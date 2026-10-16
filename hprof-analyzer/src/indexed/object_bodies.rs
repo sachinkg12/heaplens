@@ -60,6 +60,19 @@ mod tests {
     }
 
     #[test]
+    fn reuse_class_slots_matches_owned_catalog_for_root_order_and_full_width_ids() {
+        let records=vec![record(8,u64::MAX,4,3),record(2,0x100000002,0,0),record(5,u64::MAX,1,2)];
+        let owned=ObjectBodies::memory(&records).unwrap();
+        let mut compact=super::super::deferred_records::DeferredRecords::new(records.len(),true,None).unwrap();
+        for record in records {compact.push(record).unwrap();}
+        let indexed=ObjectBodies::memory_catalog(&compact).unwrap();
+        for node in 0..9 {assert_eq!(owned.fields(node,b"abcdefg"),indexed.fields(node,b"abcdefg"));}
+        let mut invalid=super::super::deferred_records::DeferredRecords::new(1,true,None).unwrap();
+        invalid.push(record(1,2,0,u32::MAX as usize+1)).unwrap();
+        assert!(ObjectBodies::memory_catalog(&invalid).is_err());
+    }
+
+    #[test]
     fn body_offsets_above_four_gib_and_u32_lengths_are_not_truncated() {
         let offset = u32::MAX as usize + 100;
         let mut records = vec![record(1, u64::MAX, offset, 12)];
@@ -170,7 +183,10 @@ impl ObjectBodies {
         Self::memory_catalog(&records.to_vec().into())
     }
     pub(crate) fn memory_catalog(records: &super::deferred_records::DeferredRecords) -> Result<Self> {
-        let (ids, slots) = Self::classes(records)?;
+        let compact = records.locations();
+        let (ids, slots) = if let Some((ids, _)) = &compact {
+            (ids.to_vec(), HashMap::new())
+        } else { Self::classes(records)? };
         let rows_start = HEADER_WORDS + ids.len() * 2;
         let mut values = Vec::with_capacity(
             rows_start
@@ -193,8 +209,12 @@ impl ObjectBodies {
         for id in ids {
             values.extend([id as u32, (id >> 32) as u32]);
         }
-        for record in records.iter() {
-            values.extend(Self::row(&record, &slots)?);
+        if let Some((_, rows)) = compact {
+            for (node, class, offset, length) in rows {
+                values.extend([node, class, offset as u32, (offset >> 32) as u32, u32::try_from(length)?]);
+            }
+        } else {
+            for record in records.iter() { values.extend(Self::row(&record, &slots)?); }
         }
         // Input records are usually in node order, but roots may create nodes first.
         values[rows_start..]

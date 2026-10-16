@@ -176,6 +176,19 @@ impl DeferredRecords {
             Backing::Writing { .. } => panic!("Construction catalog not finalized"),
         })
     }
+    /// Reuse exact, already-interned class slots instead of hashing each class
+    /// twice again when materializing the on-demand body index.
+    pub(crate) fn locations(&self) -> Option<(&[u64], impl Iterator<Item = (u32, u32, u64, u64)> + '_)> {
+        if !matches!(&self.backing, Backing::Compact(_) | Backing::Mapped(_)) { return None; }
+        Some((&self.classes, (0..self.len()).map(|i| {
+            let row = match &self.backing {
+                Backing::Compact(rows) => rows[i],
+                Backing::Mapped(rows) => rows.get(i),
+                _ => unreachable!("validated mapped catalog"),
+            };
+            (row.node, row.class, row.offset, row.length)
+        })))
+    }
     pub(crate) fn sort_by_node(
         &mut self,
         parent: &Path,

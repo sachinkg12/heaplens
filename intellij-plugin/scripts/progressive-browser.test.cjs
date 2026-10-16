@@ -103,7 +103,7 @@ test('shared status exposes only fixed storage labels and clears them on reset',
 });
 test('full-to-shallow clears stale retained results and Cancel allows Retry without auto escalation',async()=>{
     const page=await browser.newPage();try {
-        await page.setContent(html);await send(page,{command:'analysisComplete',summary:{total_heap_size:1024,reachable_heap_size:512},classHistogram:[],topObjects:[],leakSuspects:[]});
+        await page.setContent(html);await send(page,{command:'analysisComplete',summary:{total_heap_size:1024,reachable_heap_size:512,total_instances:1,total_classes:1,total_arrays:0,total_gc_roots:1},classHistogram:[],topObjects:[],topLayers:[],leakSuspects:[]});
         await page.locator('#quick-scan-btn').click();assert.equal((await page.evaluate(()=>window.sent)).at(-1).command,'quickScan');
         await send(page,{command:'analysisProgress',stage:'quick_scan',phase:1,totalPhases:1});await page.locator('#progress-cancel-btn').click();
         await send(page,{command:'analysisCancelled'});assert.equal(await page.locator('#quick-scan-btn').isEnabled(),true);

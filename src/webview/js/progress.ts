@@ -5,6 +5,7 @@ export function getProgressJs(): string {
         // cancel button, and crash/cancel recovery UI.
 
         var _progressPhaseLabels = {
+            starting: 'Starting analysis',
             quick_scan: 'Scanning shallow allocations',
             loading: 'Loading file',
             graph_building: 'Building graph',
@@ -18,11 +19,27 @@ export function getProgressJs(): string {
             dominators: 'Computing dominators'
         };
         var _progressActive = false;
+        var _progressClock = null, _progressStartedAt = 0;
+        function updateElapsed() {
+            var el = document.getElementById('analysis-elapsed');
+            if (el) el.textContent = Math.floor((Date.now() - _progressStartedAt) / 1000) + 's elapsed';
+        }
+        function beginProgress() {
+            if (_progressActive) return;
+            _progressActive = true; _progressStartedAt = Date.now();
+            updateElapsed(); _progressClock = setInterval(updateElapsed, 1000);
+        }
+        function finishProgress() {
+            if (_progressActive) updateElapsed();
+            _progressActive = false;
+            if (_progressClock !== null) clearInterval(_progressClock);
+            _progressClock = null;
+        }
 
         function renderProgressBar(stage, phase, totalPhases) {
             var bar = document.getElementById('progress-bar');
             if (!bar) return;
-            _progressActive = true;
+            beginProgress();
             var html = '<div class="progress-steps">';
             for (var i = 1; i <= totalPhases; i++) {
                 var cls = 'progress-step';
@@ -78,9 +95,10 @@ export function getProgressJs(): string {
             bar.style.display = 'block';
         }
 
+        onMessage('analysisStarting', function() { finishProgress(); renderProgressBar('starting', 1, 1); });
         onMessage('analysisProgress', function(msg) {
             if (msg.stage === 'cancelled') {
-                _progressActive = false;
+                finishProgress();
                 showProgressMessage(
                     '<span style="opacity:0.7;">Analysis cancelled.</span> ' +
                     '<button class="btn" id="progress-retry-btn" style="font-size:11px;padding:4px 10px;">Retry</button>'
@@ -103,7 +121,7 @@ export function getProgressJs(): string {
         });
 
         onMessage('analysisCancelled', function() {
-            _progressActive = false;
+            finishProgress();
             showProgressMessage(
                 '<span style="opacity:0.7;">Analysis cancelled.</span> ' +
                 '<button class="btn" id="progress-retry-btn" style="font-size:11px;padding:4px 10px;">Retry</button>'
@@ -113,7 +131,7 @@ export function getProgressJs(): string {
         });
 
         onMessage('serverCrashed', function() {
-            _progressActive = false;
+            finishProgress();
             showProgressMessage(
                 '<span style="color:var(--vscode-editorError-foreground);">Analysis server crashed.</span> ' +
                 '<button class="btn" id="progress-retry-btn" style="font-size:11px;padding:4px 10px;">Retry</button>'
@@ -123,11 +141,12 @@ export function getProgressJs(): string {
         });
 
         onMessage('analysisRetrying', function() {
+            finishProgress(); beginProgress();
             showProgressMessage('<span style="opacity:0.7;">Retrying analysis...</span>');
         });
 
         onMessage('analysisFailed', function(msg) {
-            _progressActive = false;
+            finishProgress();
             showProgressMessage(
                 '<span style="color:var(--vscode-editorError-foreground);">' + escapeHtml(msg.message || 'Analysis failed.') + '</span> ' +
                 '<button class="btn" id="progress-retry-btn" style="font-size:11px;padding:4px 10px;">Retry</button>'
@@ -137,11 +156,11 @@ export function getProgressJs(): string {
         });
 
         onMessage('shallowScanComplete', function() {
-            _progressActive = false;
+            finishProgress();
             document.getElementById('progress-bar').style.display = 'none';
         });
         onMessage('analysisComplete', function() {
-            _progressActive = false;
+            finishProgress();
             var bar = document.getElementById('progress-bar');
             if (bar) bar.style.display = 'none';
         });

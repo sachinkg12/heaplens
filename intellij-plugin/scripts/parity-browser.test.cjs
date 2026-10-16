@@ -18,7 +18,9 @@ async function run(body){const page=await browser.newPage({viewport:{width:1100,
 test('early summary, Why alive and shared incident report work without a network call',()=>run(async page=>{
   const network=[];page.on('request',r=>network.push(r.url()));
   await send(page,{command:'analysisProgress',stage:'graph_built',phase:3,totalPhases:4,summary:analysis.summary});
-  assert.match(await page.locator('#stats-bar').textContent(),/1 KB/);
+  assert.match(await page.locator('#stats-bar').textContent(),/Not calculated/);
+  assert.doesNotMatch(await page.locator('#stats-bar').textContent(),/Reachable Heap1 KB/,
+    'A pre-dominator summary must not claim final reachability');
   await send(page,analysis);
   await page.locator('#top-objects-table .why-alive-btn').click();const request=await latest(page);
   assert.equal(request.command,'gcRootPath');assert.equal(request.objectId,42);
