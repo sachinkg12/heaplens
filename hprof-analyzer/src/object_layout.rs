@@ -24,19 +24,28 @@ pub struct SizeModel {
     /// Historical reports omit it, so comparisons can detect the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_size_policy: Option<String>,
+    /// Optional, evidence-selected VM additions; the overall model is still estimated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_layout_policy: Option<String>,
+    /// Static detection category only, not property values, paths or other heap strings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer_detection: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for SizeModel {
     fn deserialize<D: serde::Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         struct Owned { name: String, estimated: bool, layout: ObjectLayout, layout_source: String, incomplete_classes: usize,
-            #[serde(default)] retained_size_policy: Option<String> }
+            #[serde(default)] retained_size_policy: Option<String>,
+            #[serde(default)] instance_layout_policy: Option<String>,
+            #[serde(default)] producer_detection: Option<String> }
         let value = <Owned as serde::Deserialize>::deserialize(input)?;
-        let name = match value.name.as_str() { "legacy-payload-v0" => "legacy-payload-v0", "conventional-jvm-v1" => "conventional-jvm-v1", _ => return Err(serde::de::Error::custom("Unknown size model")) };
+        let name = match value.name.as_str() { "legacy-payload-v0" => "legacy-payload-v0", "conventional-jvm-v1" => "conventional-jvm-v1", "conventional-jvm-v2" => "conventional-jvm-v2", _ => return Err(serde::de::Error::custom("Unknown size model")) };
         let layout_source = match value.layout_source.as_str() { "legacy-payload" => "legacy-payload", "explicit" => "explicit", "address-inference-with-defaults" => "address-inference-with-defaults", _ => return Err(serde::de::Error::custom("Unknown layout source")) };
         let layout = ObjectLayout::new(value.layout.word_bytes, value.layout.reference_bytes, value.layout.class_pointer_bytes, value.layout.alignment).map_err(serde::de::Error::custom)?;
         Ok(Self { name, estimated: value.estimated, layout, layout_source, incomplete_classes: value.incomplete_classes,
-            retained_size_policy: value.retained_size_policy })
+            retained_size_policy: value.retained_size_policy,
+            instance_layout_policy: value.instance_layout_policy, producer_detection: value.producer_detection })
     }
 }
 

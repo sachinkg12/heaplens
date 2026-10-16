@@ -68,7 +68,7 @@ pub(super) fn shallow_histogram(nodes: &NodeStore) -> Vec<ClassHistogramEntry> {
     const MAX_IDENTITY_SLOTS: usize = 65_536;
     let mut identities = HashMap::new();
     let mut names = HashMap::new();
-    let mut totals: Vec<(&str, u64, u64)> = Vec::new();
+    let mut totals: Vec<(Arc<str>, u64, u64)> = Vec::new();
     for node in nodes.iter() {
         if !matches!(
             node.node_type,
@@ -81,9 +81,9 @@ pub(super) fn shallow_histogram(nodes: &NodeStore) -> Vec<ClassHistogramEntry> {
         let slot = if let Some(&slot) = identities.get(&identity) {
             slot
         } else {
-            let slot = *names.entry(name).or_insert_with(|| {
+            let slot = *names.entry(node.class_name.clone()).or_insert_with(|| {
                 let slot = totals.len();
-                totals.push((name, 0, 0));
+                totals.push((node.class_name.clone(), 0, 0));
                 slot
             });
             if identities.len() < MAX_IDENTITY_SLOTS {
@@ -98,7 +98,7 @@ pub(super) fn shallow_histogram(nodes: &NodeStore) -> Vec<ClassHistogramEntry> {
     let mut result: Vec<_> = totals
         .into_iter()
         .map(|(name, count, size)| ClassHistogramEntry {
-            class_name: name.to_owned(),
+            class_name: name.to_string(),
             instance_count: count,
             shallow_size: size,
             retained_size: 0,

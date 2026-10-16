@@ -96,10 +96,10 @@ pub fn compute_dominators(
         use rayon::prelude::*;
         let unreachable_shallow_size: u64 = (1..n)
             .into_par_iter()
-            .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
+            .map(|i| node_store.shallow_at(i as u32))
             .sum();
         let mut retained_sizes = vec![0; n];
-        retained_sizes[0] = node_store.get_by_index(0).shallow_size;
+        retained_sizes[0] = node_store.shallow_at(0);
         let mut dominator_parent = vec![root; n];
         dominator_parent[0] = u32::MAX;
         let dominator_children = DominatorChildren::from_parents(&dominator_parent);
@@ -228,7 +228,7 @@ pub fn compute_dominators(
     use rayon::prelude::*;
     let mut retained_sizes: Vec<u64> = (0..n)
         .into_par_iter()
-        .map(|i| node_store.get_by_index(i as u32).shallow_size as u64)
+        .map(|i| node_store.shallow_at(i as u32))
         .collect();
 
     // Process in reverse DFS order: children before parents.
@@ -248,7 +248,7 @@ pub fn compute_dominators(
     let mut unreachable_shallow_size: u64 = 0;
     for i in 0..n {
         if dfnum[i] == u32::MAX && (i as u32) != root {
-            unreachable_shallow_size += node_store.get_by_index(i as u32).shallow_size as u64;
+            unreachable_shallow_size += node_store.shallow_at(i as u32);
             retained_sizes[i] = 0;
         }
     }

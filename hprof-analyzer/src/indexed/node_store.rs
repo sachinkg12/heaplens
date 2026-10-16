@@ -41,9 +41,13 @@ pub struct NodeRecord {
 pub struct NodeStore {
     nodes: Vec<NodeRecord>,
     id_to_index: HashMap<u64, u32>,
+    mapped: Option<super::compact_nodes::MappedNodes>,
 }
 
 impl NodeStore {
+    pub fn nodes_are_mapped(&self) -> bool {
+        self.mapped.is_some()
+    }
     pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
         let mut store = Self::new();
         store.nodes.try_reserve_exact(capacity)?;
@@ -56,6 +60,7 @@ impl NodeStore {
         Self {
             nodes: Vec::new(),
             id_to_index: HashMap::new(),
+            mapped: None,
         }
     }
 
@@ -64,6 +69,7 @@ impl NodeStore {
         Self {
             nodes: Vec::with_capacity(capacity),
             id_to_index: HashMap::with_capacity(capacity),
+            mapped: None,
         }
     }
 
@@ -79,6 +85,7 @@ impl NodeStore {
         node_type: NodeType,
         class_name: Arc<str>,
     ) -> u32 {
+        assert!(self.mapped.is_none(), "Mapped node storage is immutable");
         if let Some(&existing) = self.id_to_index.get(&id) {
             return existing;
         }
@@ -95,15 +102,16 @@ impl NodeStore {
     }
 
     /// Looks up a node by HPROF object ID.
-    pub fn get_by_id(&self, id: u64) -> Option<&NodeRecord> {
-        self.id_to_index
-            .get(&id)
-            .map(|&idx| &self.nodes[idx as usize])
+    pub fn get_by_id(&self, id: u64) -> Option<NodeRecord> {
+        self.index_of(id).map(|idx| self.get_by_index(idx))
     }
 
     /// Returns the index for a given HPROF object ID, if present.
     pub fn index_of(&self, id: u64) -> Option<u32> {
-        self.id_to_index.get(&id).copied()
+        match &self.mapped {
+            Some(nodes) => nodes.index_of(id),
+            None => self.id_to_index.get(&id).copied(),
+        }
     }
 
     /// Returns a node by its flat index.
@@ -111,8 +119,11 @@ impl NodeStore {
     /// # Panics
     ///
     /// Panics if `index` is out of bounds.
-    pub fn get_by_index(&self, index: u32) -> &NodeRecord {
-        &self.nodes[index as usize]
+    pub fn get_by_index(&self, index: u32) -> NodeRecord {
+        match &self.mapped {
+            Some(nodes) => nodes.get(index),
+            None => self.nodes[index as usize].clone(),
+        }
     }
 
     /// Returns a mutable reference to a node by its flat index.
@@ -121,22 +132,79 @@ impl NodeStore {
     ///
     /// Panics if `index` is out of bounds.
     pub fn get_by_index_mut(&mut self, index: u32) -> &mut NodeRecord {
+        assert!(self.mapped.is_none(), "Mapped node storage is immutable");
         &mut self.nodes[index as usize]
     }
 
     /// Returns the number of nodes.
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.mapped
+            .as_ref()
+            .map_or(self.nodes.len(), |nodes| nodes.len())
     }
 
     /// Returns `true` if no nodes have been added.
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.len() == 0
     }
 
     /// Returns an iterator over all node records.
-    pub fn iter(&self) -> impl Iterator<Item = &NodeRecord> {
-        self.nodes.iter()
+    pub fn iter(&self) -> impl Iterator<Item = NodeRecord> + '_ {
+        (0..self.len()).map(|i| self.get_by_index(i as u32))
+    }
+    pub fn id_at(&self, index: u32) -> u64 {
+        match &self.mapped {
+            Some(nodes) => nodes.id_at(index),
+            None => self.nodes[index as usize].id,
+        }
+    }
+    pub fn shallow_at(&self, index: u32) -> u64 {
+        match &self.mapped {
+            Some(nodes) => nodes.shallow_at(index),
+            None => self.nodes[index as usize].shallow_size,
+        }
+    }
+    pub fn class_at(&self, index: u32) -> u32 {
+        match &self.mapped {
+            Some(nodes) => nodes.class_at(index),
+            None => self.nodes[index as usize].class_index,
+        }
+    }
+    pub fn name_at(&self, index: u32) -> &Arc<str> {
+        match &self.mapped {
+            Some(nodes) => nodes.name_at(index),
+            None => &self.nodes[index as usize].class_name,
+        }
+    }
+    pub fn kind_at(&self, index: u32) -> NodeType {
+        match &self.mapped {
+            Some(nodes) => nodes.kind_at(index),
+            None => self.nodes[index as usize].node_type,
+        }
+    }
+    pub(crate) fn mapped(nodes: super::compact_nodes::MappedNodes) -> Self {
+        Self {
+            nodes: Vec::new(),
+            id_to_index: HashMap::new(),
+            mapped: Some(nodes),
+        }
+    }
+    pub(crate) fn validate_ids(
+        &self,
+        ids: impl Iterator<Item = u64>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> anyhow::Result<()> {
+        if let Some(nodes) = &self.mapped {
+            return nodes.validate_ids(ids, cancel);
+        }
+        for id in ids {
+            super::disk_edges::check(cancel)?;
+            anyhow::ensure!(
+                self.index_of(id).is_some(),
+                "Invalid cached object metadata ID"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -153,7 +221,13 @@ mod tests {
     #[test]
     fn add_and_get_by_index() {
         let mut store = NodeStore::new();
-        let idx = store.add_node(100, 0, 64, NodeType::Instance, Arc::from("java.lang.String"));
+        let idx = store.add_node(
+            100,
+            0,
+            64,
+            NodeType::Instance,
+            Arc::from("java.lang.String"),
+        );
         assert_eq!(idx, 0);
 
         let node = store.get_by_index(idx);

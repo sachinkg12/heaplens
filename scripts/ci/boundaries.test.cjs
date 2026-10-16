@@ -8,6 +8,13 @@ const workflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci
 const jobs = workflow.jobs;
 const runs = job => job.steps.filter(step => step.run).map(step => step.run).join('\n');
 
+test('Rust accuracy gate discovers every maintained integration suite and doctest', () => {
+  const step = jobs['test-rust'].steps.find(candidate => candidate.name === 'Run Rust tests');
+  assert.equal(step['working-directory'], 'hprof-analyzer');
+  assert.equal(step.run, 'cargo test --locked --release');
+  assert.doesNotMatch(step.run, /--test\s|--lib\b|--bins\b/);
+});
+
 test('release selection is explicit, and all required checks precede versioning', () => {
   assert.ok(jobs.changes, 'CI needs a changed-path routing job');
   assert.deepEqual(jobs['auto-version'].needs, ['changes', 'checks']);

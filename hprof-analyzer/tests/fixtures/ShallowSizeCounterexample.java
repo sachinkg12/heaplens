@@ -28,6 +28,10 @@ public final class ShallowSizeCounterexample {
     static final class WideReferenceChild extends ReferenceParent { long wide; }
     static class TwoBytesParent { byte a; byte b; }
     static final class WideTwoReferencesChild extends TwoBytesParent { long wide; Object a; Object b; }
+    static class PackedLoader extends ClassLoader { byte small; Object ref; long wide; double number; int integer; }
+    static final class LoaderChild extends PackedLoader { boolean flag; Object second; long another; }
+    static class PackedThread extends Thread { byte small; Object ref; long wide; double number; int integer; }
+    static final class ThreadChild extends PackedThread { boolean flag; Object second; long another; }
     static final class Sample {
         final Object value;
         final long expectedSize;
@@ -39,8 +43,16 @@ public final class ShallowSizeCounterexample {
     private static void add(Object value) { samples.add(new Sample(value)); }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 1 || instrumentation == null)
+        if (args.length < 1 || args.length > 2 || instrumentation == null)
             throw new IllegalArgumentException("Use -javaagent:oracle.jar ShallowSizeCounterexample output.hprof");
+        if (args.length == 2) {
+            switch (args[1]) {
+                case "unsupported-producer": System.setProperty("java.vm.vendor", "Unverified test producer"); break;
+                case "missing-producer": System.getProperties().remove("java.vm.vendor"); break;
+                case "heldout": break;
+                default: throw new IllegalArgumentException("Unknown oracle control");
+            }
+        }
         add(new Empty());
         add(new OneReference());
         add(new TwoReferences());
@@ -66,6 +78,10 @@ public final class ShallowSizeCounterexample {
             new java.util.concurrent.ScheduledThreadPoolExecutor(1);
         add(executor.getQueue());
         executor.shutdown();
+        if (args.length == 2 && args[1].equals("heldout")) {
+            add(new PackedLoader()); add(new LoaderChild());
+            add(new PackedThread()); add(new ThreadChild());
+        }
         Class<?>[] types = {Object.class, boolean.class, byte.class, char.class, short.class,
                            int.class, float.class, long.class, double.class};
         for (Class<?> type : types)

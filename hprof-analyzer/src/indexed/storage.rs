@@ -279,7 +279,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("structure-v6-bodies-blake3-"));
+            .starts_with("structure-v9-bodies-blake3-"));
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();

@@ -25,13 +25,13 @@ fn main() -> Result<()> {
         edge_buffer_bytes: 64 * 1024 * 1024,
     };
     let (one, two, storage) = load_structure(mapping, &options, &AtomicBool::new(false))?;
-    let mut sizes: HashMap<&str, u64> = HashMap::new();
+    let mut sizes: HashMap<std::sync::Arc<str>, u64> = HashMap::new();
     for node in one
         .node_store
         .iter()
         .filter(|node| node.node_type == NodeType::Instance)
     {
-        if let Some(previous) = sizes.insert(&node.class_name, node.shallow_size) {
+        if let Some(previous) = sizes.insert(node.class_name.clone(), node.shallow_size) {
             ensure!(
                 previous == node.shallow_size,
                 "Different layouts share class name {}",

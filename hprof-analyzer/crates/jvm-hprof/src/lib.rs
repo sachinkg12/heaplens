@@ -598,6 +598,7 @@ impl<'a> HeapDumpSegment<'a> {
 }
 
 /// Iterator over [heap_dump::SubRecord] data.
+#[derive(Clone)]
 pub struct SubRecords<'a> {
     id_size: IdSize,
     remaining: &'a [u8],

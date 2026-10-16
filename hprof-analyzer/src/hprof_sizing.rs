@@ -167,25 +167,30 @@ impl HprofSizing {
             hprof.header().label().ok() == Some("JAVA PROFILE 1.0.3") && explicit.is_none();
         let mut declared_sizes = HashMap::new();
         let mut record_counts = RecordCounts::default();
+        let mut producer = crate::hprof_producer::Metadata::default();
         for record in hprof.records_iter() {
             if cancelled() {
                 bail!("Sizing cancelled");
             }
             let record = record.map_err(|e| anyhow::anyhow!("Invalid sizing record: {e:?}"))?;
+            if !payload_only { producer.record(&record)?; }
             match record.tag() {
                 RecordTag::Utf8 => RecordCounts::increment(&mut record_counts.strings)?,
                 RecordTag::LoadClass => RecordCounts::increment(&mut record_counts.load_classes)?,
                 _ => {},
             }
             if let Some(heap) = record.as_heap_dump_segment() {
-                for sub in heap
-                    .map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?
-                    .sub_records()
-                {
+                let mut subs = heap.map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?.sub_records();
+                let mut page_records = 0;
+                loop {
+                    if !payload_only && page_records == 0 { producer.checkpoint(subs.clone()); }
+                    let Some(sub) = subs.next() else { break; };
                     if cancelled() {
                         bail!("Sizing cancelled");
                     }
                     let sub = sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))?;
+                    if !payload_only { producer.observe(&sub); }
+                    page_records = (page_records + 1) % crate::hprof_producer::Metadata::page_records();
                     record_counts.observe(&sub)?;
                     match sub {
                         SubRecord::Class(class) => {
@@ -213,6 +218,7 @@ impl HprofSizing {
                             }
                             classes.insert(class.obj_id().id(), shape);
                             evidence.observe(class.obj_id().id(), None)?;
+                            if !payload_only { producer.class(class); }
                         }
                         SubRecord::Instance(o) => evidence.observe(o.obj_id().id(), None)?,
                         SubRecord::ObjectArray(a) => {
@@ -232,6 +238,20 @@ impl HprofSizing {
         } else {
             explicit.unwrap_or_else(|| evidence.finish())
         };
+        let detection = if payload_only || layout.word_bytes != 8 {
+            None
+        } else {
+            Some(producer.detect(data, hprof.header().id_size(), cancelled)?)
+        };
+        if let Some(detection) = &detection {
+            for (&class, &injected) in &detection.injected {
+                let shape = classes.get_mut(&class)
+                    .ok_or_else(|| anyhow::anyhow!("Missing profiled class"))?;
+                shape.primitive_bytes = shape.primitive_bytes.checked_add(injected.bytes(layout)?)
+                    .ok_or_else(|| anyhow::anyhow!("Profiled field extent overflow"))?;
+            }
+        }
+        drop(producer);
         let class_sizes = if payload_only {
             declared_sizes
         } else {
@@ -240,7 +260,7 @@ impl HprofSizing {
         if payload_only {
             log::info!("Shallow sizes: legacy Android payload-only estimate; headers and alignment excluded.");
         } else {
-            log::info!("Shallow sizes: estimated conventional JVM layout; word={} reference={} class_pointer={} alignment={} bytes; {}. Class metadata/hidden fields excluded.",
+            log::info!("Shallow sizes: estimated conventional JVM layout; word={} reference={} class_pointer={} alignment={} bytes; {}. Class metadata excluded; VM additions require a matched producer profile.",
             layout.word_bytes,layout.reference_bytes,layout.class_pointer_bytes,layout.alignment,
             if explicit.is_some() {"explicit widths"} else {"inferred widths, ambiguous layouts use larger feasible widths"});
         }
@@ -248,7 +268,7 @@ impl HprofSizing {
             name: if payload_only {
                 "legacy-payload-v0"
             } else {
-                "conventional-jvm-v1"
+                "conventional-jvm-v2"
             },
             estimated: true,
             layout,
@@ -261,6 +281,8 @@ impl HprofSizing {
             },
             incomplete_classes: classes.len() - class_sizes.len(),
             retained_size_policy: Some(crate::reference_strength::RETAINED_SIZE_POLICY.into()),
+            instance_layout_policy: detection.as_ref().map(|d| d.profile.unwrap_or("java-fields-only-v1").to_owned()),
+            producer_detection: detection.as_ref().map(|d| d.status.to_owned()),
         };
         Ok(Self {
             layout,
@@ -357,7 +379,7 @@ fn resolve_classes_cancellable(
         .collect()
 }
 
-fn field_bytes(kind: FieldType) -> u64 {
+pub(crate) fn field_bytes(kind: FieldType) -> u64 {
     match kind {
         FieldType::Boolean | FieldType::Byte => 1,
         FieldType::Char | FieldType::Short => 2,

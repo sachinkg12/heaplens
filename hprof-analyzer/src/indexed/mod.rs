@@ -19,6 +19,7 @@ mod bounded_edges;
 mod parse_metadata;
 pub mod storage;
 mod cache_format;
+mod compact_nodes;
 mod cache_metadata;
 mod cache_writer;
 mod cache_digest;

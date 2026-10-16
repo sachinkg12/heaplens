@@ -16,6 +16,8 @@ pub(crate) mod gc_roots;
 pub mod object_layout;
 pub mod quick_scan;
 mod hprof_sizing;
+mod hprof_producer;
+mod jvm_layout_profile;
 #[cfg(test)]
 mod gc_root_regression;
 pub mod dominator;
