@@ -26,6 +26,8 @@ public final class WebviewEvents {
         Map.of("stage", "stage", "phase", "phase", "total_phases", "totalPhases")
             .forEach((from, to) -> { if (params.has(from)) value.add(to, params.get(from)); });
         if (params.has("summary") && params.get("summary").isJsonObject()) value.add("summary",params.get("summary"));
+        if (params.has("snapshot") && params.get("snapshot").isJsonObject()) value.add("snapshot",params.get("snapshot"));
+        if (params.has("file_metadata") && params.get("file_metadata").isJsonObject()) value.add("fileMetadata",params.get("file_metadata"));
         return value;
     }
     public static JsonObject scan(JsonObject result) {

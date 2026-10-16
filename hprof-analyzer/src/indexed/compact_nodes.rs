@@ -175,8 +175,11 @@ impl MappedNodes {
         self.value(2, row as usize) as u32
     }
     pub fn name_at(&self, row: u32) -> &Arc<str> {
-        &self.names[self.value(3, row as usize) as usize]
+        &self.names[self.name_slot_at(row) as usize]
     }
+    pub fn name_slot_at(&self, row: u32) -> u32 { self.value(3, row as usize) as u32 }
+    pub fn name_count(&self) -> usize { self.names.len() }
+    pub fn dictionary_name(&self, slot: u32) -> &Arc<str> { &self.names[slot as usize] }
     pub fn kind_at(&self, row: u32) -> NodeType {
         kind(self.value(4, row as usize)).unwrap()
     }

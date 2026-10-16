@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 mod scan_server;
 mod waste_server;
+mod read_jobs;
 use clap::Parser;
 use hprof_analyzer::{build_graph, calculate_dominators_with_state, compare_heaps, FieldInfo, HprofLoader, WasteAnalysis};
 use hprof_analyzer::indexed::types::HeapAnalysis;
@@ -153,15 +154,14 @@ impl FileAnalysisState {
 /// This function is meant to be called from `tokio::task::spawn_blocking`
 /// to avoid blocking the async runtime.
 ///
-/// For the indexed backend, this uses a two-phase approach:
-/// 1. Phase 1 (~1.4s): sends initial results immediately via `result_tx`
-/// 2. Phase 2 (~38s): runs in the same task, then sends `heap_analysis_phase2_complete`
+/// The indexed path emits borrowed staged observations during this same job;
+/// the returned terminal result contains only completed retained analysis.
 fn analyze_heap_blocking(
     path: PathBuf,
     request_id: u64,
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: Arc<AtomicBool>,
-    result_tx: mpsc::UnboundedSender<AnalyzeHeapResult>,
+    _result_tx: mpsc::UnboundedSender<AnalyzeHeapResult>,
 ) -> AnalyzeHeapResult {
     log::info!("Starting heap analysis for: {:?} (request_id: {})", path, request_id);
 
@@ -471,12 +471,18 @@ fn analyze_heap_internal(
 
         let phase_start = Instant::now();
         let options = STORAGE.get().cloned().unwrap_or_default();
+        let mut observe = |event: hprof_analyzer::indexed::progress::Observation<'_>| {
+            if cancel_token.load(Ordering::Relaxed) { return; }
+            let mut params = event.payload();
+            params["request_id"] = serde_json::json!(request_id);
+            let _ = send_stdout(&serde_json::json!({"jsonrpc":"2.0","method":"heap_analysis_progress","params":params}));
+        };
         let (phase1, deferred, cached_phase2, storage_report) = if options.mode == hprof_analyzer::indexed::storage::StorageMode::Disk {
-            let (phase1, phase2, report) = hprof_analyzer::indexed::storage::load_structure(mmap.clone(), &options, cancel_token)
+            let (phase1, phase2, report) = hprof_analyzer::indexed::storage::load_structure_observed(mmap.clone(), &options, cancel_token, &mut observe)
                 .context("Disk structural index validation or construction failed; check private cache permissions and free space")?;
             (phase1, None, Some(phase2), report)
         } else {
-            let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1_mapped_cancellable(mmap.clone(), None, cancel_token)
+            let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1_observed(mmap.clone(), None, cancel_token, &mut observe)
                 .context("Indexed Phase 1 parse failed")?;
             (phase1, Some(deferred), None, hprof_analyzer::indexed::storage::StorageReport { mode: "memory", cache_status: "disabled", edge_buffer_bytes: 0 })
         };
@@ -489,8 +495,7 @@ fn analyze_heap_internal(
             "method": "heap_analysis_progress",
             "params": {
                 "request_id": request_id,
-                "stage": "graph_built", "phase": 3, "total_phases": 4,
-                "summary": phase1.summary
+                "stage": "edges", "phase": 3, "total_phases": 4
             }
         }));
 
@@ -498,18 +503,10 @@ fn analyze_heap_internal(
 
         // Phase 2: edges + dominators (~1s after file rescan elimination)
         eprintln!("[Progress] Step 3/4: Extracting edges + computing dominators...");
-        let _ = send_stdout(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "heap_analysis_progress",
-            "params": {
-                "request_id": request_id,
-                "stage": "dominators", "phase": 4, "total_phases": 4
-            }
-        }));
-
         let phase_start = Instant::now();
         let phase2 = match cached_phase2 { Some(phase2) => phase2, None => hprof_analyzer::indexed::parse::parse_indexed_phase2_cancellable(&phase1, deferred.expect("memory mode deferred data"), cancel_token)
             .context("Indexed Phase 2 failed")? };
+        observe(hprof_analyzer::indexed::progress::Observation::Stage("dominators"));
         if cancel_token.load(Ordering::Relaxed) {
             anyhow::bail!("Analysis cancelled");
         }
@@ -1471,6 +1468,7 @@ fn run_mcp_server() -> Result<()> {
 /// Runs the JSON-RPC server for VS Code extension communication.
 async fn run_jsonrpc_server() -> Result<()> {
     let scan_readiness = scan_server::Readiness::default();
+    let read_jobs = read_jobs::ReadJobs::default();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<AnalyzeHeapResult>();
     let request_id_counter = Arc::new(AtomicU64::new(1));
     let analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>> =
@@ -1557,10 +1555,14 @@ async fn run_jsonrpc_server() -> Result<()> {
                     Ok(false) => {}
                 }
                 let method = request.method.clone();
+                if read_jobs::handles(&method) {
+                    read_jobs.start(request, &analysis_states, &cancel_tokens);
+                    continue;
+                }
                 let result = match method.as_str() {
-                    "scan_heap" => scan_server::start(request, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness),
+                    "scan_heap" => scan_server::start(request, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness, read_jobs.engine_gate()),
                     "analyze_heap" => handle_analyze_heap_request(
-                        request, &result_tx, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness,
+                        request, &result_tx, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness, read_jobs.engine_gate(),
                     ).await,
                     "cancel_analysis" => handle_cancel_analysis_request(request, &cancel_tokens).await,
                     "ping" => {
@@ -1571,27 +1573,7 @@ async fn run_jsonrpc_server() -> Result<()> {
                             send_stdout(&response).map_err(|e| e.into())
                         } else { Ok(()) }
                     }
-                    "get_children" => handle_get_children_request(request, &analysis_states).await,
-                    "get_referrers" => handle_get_referrers_request(request, &analysis_states).await,
-                    "get_waste_analysis" => waste_server::start(request, &analysis_states),
-                    "export_json" => handle_export_json_request(request, &analysis_states).await,
-                    "gc_root_path" => handle_gc_root_path_request(request, &analysis_states).await,
-                    "inspect_object" => handle_inspect_object_request(request, &analysis_states).await,
-                    "execute_query" => handle_execute_query_request(request, &analysis_states).await,
                     "list_analyzed_files" => handle_list_analyzed_files_request(request, &analysis_states).await,
-                    "compare_heaps" => handle_compare_heaps_request(request, &analysis_states).await,
-                    "compare_snapshots" => {
-                        if let Some(id) = request.id {
-                            let response = match hprof_analyzer::comparison::compare_snapshot_request(
-                                request.params.unwrap_or(serde_json::Value::Null)) {
-                                Ok(result) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
-                                Err(message) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}),
-                            };
-                            send_stdout(&response).map_err(|e| e.into())
-                        } else { Ok(()) }
-                    }
-                    "get_dominator_subtree" => handle_get_dominator_subtree_request(request, &analysis_states).await,
-                    "get_timeline_data" => handle_get_timeline_data_request(request, &analysis_states).await,
                     _ => {
                         if let Some(id) = request.id {
                             let error_response = serde_json::json!({
@@ -1646,6 +1628,7 @@ async fn handle_analyze_heap_request(
     analysis_states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_tokens: &Arc<RwLock<HashMap<String, AnalysisControl>>>,
     scan_readiness: &scan_server::Readiness,
+    engine_gate: Arc<tokio::sync::RwLock<()>>,
 ) -> Result<()> {
     // Extract parameters
     let params = request.params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
@@ -1663,6 +1646,10 @@ async fn handle_analyze_heap_request(
     // Create cancel token for this analysis
     let cancel_token = Arc::new(AtomicBool::new(false));
     if !scan_server::claim(cancel_tokens, &path_key, request_id, cancel_token.clone())? { return Ok(()); }
+    // A failed/cancelled reanalysis must not expose a previous snapshot as if
+    // it belonged to the new job. Queued readers pin and check identity.
+    scan_readiness.scan(&path_key);
+    analysis_states.write().map_err(|_|anyhow::anyhow!("Analysis registry unavailable"))?.remove(&path_buf);
 
     // Respond immediately with processing status
     let processing_response = serde_json::json!({
@@ -1683,6 +1670,7 @@ async fn handle_analyze_heap_request(
 
     // Spawn blocking task for CPU-intensive work
     task::spawn_blocking(move || {
+        let _engine = engine_gate.blocking_write();
         let result = analyze_heap_blocking(path_buf, request_id, analysis_states, cancel_token, result_tx.clone());
         if result.status == "completed" { scan_readiness.full(&path_key); }
 
@@ -1975,15 +1963,15 @@ async fn handle_inspect_object_request(
     };
     let path_owned = path.to_string();
 
-    // Run in blocking task since inspect_object_bytes scans the full HPROF file
-    let fields = task::spawn_blocking(move || {
+    // Already running on a bounded read worker; do not spawn a second pool.
+    let fields = {
         if let Some(ref cached_mmap) = mmap_clone {
             analysis_state.inspect_object_bytes(&cached_mmap[..], object_id)
         } else {
             let hprof_path = std::path::Path::new(&path_owned);
             analysis_state.inspect_object(hprof_path, object_id)
         }
-    }).await.map_err(|e| anyhow::anyhow!("Inspect task failed: {}", e))?;
+    };
 
     let response = serde_json::json!({
         "jsonrpc": "2.0",

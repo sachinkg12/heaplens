@@ -23,7 +23,7 @@ use super::edge_store::EdgeStore;
 #[cfg(test)]
 use super::edge_store::EdgeBuilder;
 use super::node_store::{NodeStore, NodeType};
-use super::parse_metadata::{CandidateFields, ParseNames, shallow_histogram};
+use super::parse_metadata::{CandidateFields, ParseNames};
 use super::string_table::StringTable;
 use super::waste::{backing_array, ArrayContentRange, LazyStringContents};
 
@@ -146,10 +146,7 @@ fn add_gc_root(
 ) {
     gc_root_ids.push(obj_id);
     *gc_root_count += 1;
-    if node_store.index_of(obj_id).is_none() {
-        let rn: Arc<str> = Arc::from("GcRoot");
-        node_store.add_node(obj_id, 0, 0, NodeType::GcRoot, rn);
-    }
+    node_store.add_node(obj_id, 0, 0, NodeType::GcRoot, Arc::from("GcRoot"));
 }
 
 /// Parses an HPROF file into indexed data structures.
@@ -187,36 +184,48 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
 }
 
 pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(data, layout, None, None, None)
+    parse_phase1(data, layout, None, None, None, &mut |_| {})
 }
 
 /// File-backed entry point: preserve the mapping for on-demand content analysis.
 /// As with HprofLoader, the input file must remain immutable while it is mapped.
 pub fn parse_indexed_phase1_mapped(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, layout, Some(mapping.clone()), None, None)
+    parse_phase1(&mapping, layout, Some(mapping.clone()), None, None, &mut |_| {})
 }
 pub fn parse_indexed_phase1_mapped_cancellable(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>,
     cancel: &std::sync::atomic::AtomicBool) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, layout, Some(mapping.clone()), None, Some((0, cancel)))
+    parse_indexed_phase1_observed(mapping, layout, cancel, &mut |_| {})
+}
+
+pub fn parse_indexed_phase1_observed(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>,
+    cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(&mapping, layout, Some(mapping.clone()), None, Some((0, cancel)), progress)
 }
 
 pub(crate) fn parse_indexed_phase1_disk(mapping: Arc<memmap2::Mmap>, directory: &std::path::Path,
-    sort_bytes: usize, cancel: &std::sync::atomic::AtomicBool) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, None, Some(mapping.clone()), Some(directory), Some((sort_bytes, cancel)))
+    sort_bytes: usize, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(&mapping, None, Some(mapping.clone()), Some(directory), Some((sort_bytes, cancel)), progress)
 }
 
-fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>, directory: Option<&std::path::Path>, construction: Option<(usize, &std::sync::atomic::AtomicBool)>) -> Result<(Phase1Result, DeferredEdgeData)> {
+fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>, directory: Option<&std::path::Path>, construction: Option<(usize, &std::sync::atomic::AtomicBool)>, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
+    let sizing_timer = super::stage_timer::StageTimer::start("parse.sizing_and_producer");
     let mut content_ranges = HashMap::new();
     let mut ids = if let (Some(directory), Some((bytes, cancel))) = (directory, construction) {
         let mut sorter = super::sorted_runs::Sorter::<u64>::new(directory, bytes.min(16 * 1024 * 1024), true, cancel)?;
         sorter.push(0)?; Some(sorter)
     } else { None };
-    let sizing = if let Some(ids) = ids.as_mut() {
-        let cancel = construction.unwrap().1;
-        crate::hprof_sizing::HprofSizing::read_catalog(data, layout,
-            &|| cancel.load(std::sync::atomic::Ordering::Relaxed), &mut |id| ids.push(id))?
-    } else { crate::hprof_sizing::HprofSizing::read_cancellable(data, layout,
-        &|| construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))? };
+    let mut catalog = |id| ids.as_mut().expect("catalog enabled").push(id);
+    let has_catalog = directory.is_some();
+    let sizing = crate::hprof_sizing::HprofSizing::read_tracked(data, layout,
+        &|| construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)),
+        if has_catalog { Some(&mut catalog) } else { None },
+        &mut |counts| progress(super::progress::Observation::Records {
+            instances:counts.instances, arrays:counts.object_arrays + counts.primitive_arrays,
+            classes:counts.classes, roots:counts.roots
+        }))?;
+    drop(sizing_timer);
+    let catalog_timer = super::stage_timer::StageTimer::start("parse.catalog_and_names");
+    progress(super::progress::Observation::Stage("catalog_building"));
     let hprof = parse_hprof(data)
         .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
 
@@ -253,6 +262,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // Class name map: class_obj_id -> human-readable name
     let mut class_name_map = super::parse_metadata::prepare_class_names(data, &mut load_class_entries,
         || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))?;
+    drop(catalog_timer);
+    let records_timer = super::stage_timer::StageTimer::start("parse.node_records");
     let mut missing_instance_names = false;
     let mut missing_array_names = false;
     let mut names = ParseNames::new();
@@ -375,28 +386,12 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 );
 
                                 // A root record may precede the class definition.
-                                if let Some(index) = node_store.index_of(obj_id) {
-                                    let mut node = node_store.get_by_index_mut(index);
-                                    if node.node_type == NodeType::GcRoot {
-                                        node.node_type = NodeType::Class;
-                                        node.class_name = Arc::from("Class");
-                                        class_count += 1;
-                                    }
-                                } else {
-                                    let cn: Arc<str> = Arc::from("Class");
-                                    node_store.add_node(
-                                        obj_id,
-                                        0,
-                                        0,
-                                        NodeType::Class,
-                                        cn,
-                                    );
-                                    class_count += 1;
-                                }
+                                let (class_idx, defined) = node_store.define_node(obj_id, 0, NodeType::Class, Arc::from("Class"));
+                                class_count += u64::from(defined);
 
                                 // Collect class structural edges for Phase 2
                                 // (target nodes may not exist yet during Phase 1)
-                                if let Some(class_idx) = node_store.index_of(obj_id) {
+                                {
                                     let super_class_id = class.super_class_obj_id().map(|id| id.id()).filter(|&id| id != 0);
                                     let classloader_id = class.class_loader_obj_id().map(|id| id.id()).filter(|&id| id != 0);
 
@@ -441,30 +436,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                     .cloned()
                                     .unwrap_or_else(|| { missing_instance_names = true; names.unknown(class_obj_id) });
 
-                                let existing = node_store.index_of(obj_id);
-                                let node_idx = if let Some(idx) = existing {
-                                    // Upgrade GcRoot -> Instance
-                                    let mut node = node_store.get_by_index_mut(idx);
-                                    if node.node_type == NodeType::GcRoot {
-                                        node.node_type = NodeType::Instance;
-                                        node.shallow_size = size;
-                                        node.class_name = class_name.clone();
-                                        instance_count += 1;
-                                        total_shallow_size += size as u64;
-                                    }
-                                    idx
-                                } else {
-                                    let idx = node_store.add_node(
-                                        obj_id,
-                                        0,
-                                        size,
-                                        NodeType::Instance,
-                                        class_name.clone(),
-                                    );
+                                let (node_idx, defined) = node_store.define_node(obj_id, size, NodeType::Instance, class_name);
+                                if defined {
                                     instance_count += 1;
                                     total_shallow_size += size as u64;
-                                    idx
-                                };
+                                }
 
                                 // Cache field bytes for deferred edge extraction
                                 deferred_instances.push(DeferredInstance {
@@ -494,29 +470,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                     .unwrap_or_else(|| { missing_array_names = true; names.object_array() });
                                 array_element_counts.insert(obj_id, element_count);
 
-                                let existing = node_store.index_of(obj_id);
-                                let node_idx = if let Some(idx) = existing {
-                                    let mut node = node_store.get_by_index_mut(idx);
-                                    if node.node_type == NodeType::GcRoot {
-                                        node.node_type = NodeType::ObjectArray;
-                                        node.shallow_size = size;
-                                        node.class_name = class_name;
-                                        array_count += 1;
-                                        total_shallow_size += size as u64;
-                                    }
-                                    idx
-                                } else {
-                                    let idx = node_store.add_node(
-                                        obj_id,
-                                        0,
-                                        size,
-                                        NodeType::ObjectArray,
-                                        class_name,
-                                    );
+                                let (node_idx, defined) = node_store.define_node(obj_id, size, NodeType::ObjectArray, class_name);
+                                if defined {
                                     array_count += 1;
                                     total_shallow_size += size as u64;
-                                    idx
-                                };
+                                }
 
                                 // Track for deferred class name fixup
 
@@ -564,24 +522,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                     }
                                 }
 
-                                let existing = node_store.index_of(obj_id);
-                                if let Some(idx) = existing {
-                                    let mut node = node_store.get_by_index_mut(idx);
-                                    if node.node_type == NodeType::GcRoot {
-                                        node.node_type = NodeType::PrimitiveArray;
-                                        node.shallow_size = size;
-                                        node.class_name = class_name;
-                                        array_count += 1;
-                                        total_shallow_size += size as u64;
-                                    }
-                                } else {
-                                    node_store.add_node(
-                                        obj_id,
-                                        0,
-                                        size,
-                                        NodeType::PrimitiveArray,
-                                        class_name,
-                                    );
+                                let (_, defined) = node_store.define_node(obj_id, size, NodeType::PrimitiveArray, class_name);
+                                if defined {
                                     array_count += 1;
                                     total_shallow_size += size as u64;
                                 }
@@ -593,23 +535,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let prim_type = array.primitive_type();
                                 let (_, class_name) = names.primitive(prim_type);
 
-                                let existing = node_store.index_of(obj_id);
-                                if let Some(idx) = existing {
-                                    let mut node = node_store.get_by_index_mut(idx);
-                                    if node.node_type == NodeType::GcRoot {
-                                        node.node_type = NodeType::PrimitiveArray;
-                                        node.shallow_size = 0;
-                                        node.class_name = class_name;
-                                        array_count += 1;
-                                    }
-                                } else {
-                                    node_store.add_node(
-                                        obj_id,
-                                        0,
-                                        0,
-                                        NodeType::PrimitiveArray,
-                                        class_name,
-                                    );
+                                let (_, defined) = node_store.define_node(obj_id, 0, NodeType::PrimitiveArray, class_name);
+                                if defined {
                                     array_count += 1;
                                 }
                             }
@@ -638,6 +565,8 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // Resolve class names from LoadClass entries
     // ========================================================================
 
+    drop(records_timer);
+    let metadata_timer = super::stage_timer::StageTimer::start("parse.metadata_fixups");
     for &(class_obj_id, class_name_id) in &load_class_entries {
         if let Some(name) = string_table.get(class_name_id) {
             let java_name = convert_jvm_class_name(name);
@@ -714,12 +643,30 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     class_index.resolve_field_layouts();
     drop(field_name_intern);
     drop(names);
+    drop(metadata_timer);
 
     // ========================================================================
     // Build class histogram from shallow sizes (no retained sizes yet)
     // ========================================================================
 
-    let class_histogram = shallow_histogram(&node_store);
+    let histogram_timer = super::stage_timer::StageTimer::start("parse.shallow_histogram");
+    let class_histogram = super::parse_metadata::shallow_histogram_cancellable(&node_store,
+        &mut || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))?;
+    drop(histogram_timer);
+
+    let summary = HeapSummary {
+        size_model: Some(sizing.metadata.clone()),
+        total_heap_size: total_shallow_size,
+        reachable_heap_size: total_shallow_size,
+        total_instances: instance_count,
+        total_classes: class_count,
+        total_arrays: array_count,
+        total_gc_roots: gc_root_count,
+        hprof_version,
+        heap_types,
+    };
+    progress(super::progress::Observation::Shallow { summary:&summary, histogram:&class_histogram });
+    let waste_timer = super::stage_timer::StageTimer::start("parse.waste_candidates");
 
     // ========================================================================
     // Build waste_raw with array_element_counts (Phase 1 portion)
@@ -846,18 +793,7 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         }
     }
 
-    let summary = HeapSummary {
-        size_model: Some(sizing.metadata.clone()),
-        total_heap_size: total_shallow_size,
-        reachable_heap_size: total_shallow_size,
-        total_instances: instance_count,
-        total_classes: class_count,
-        total_arrays: array_count,
-        total_gc_roots: gc_root_count,
-        hprof_version,
-        heap_types,
-    };
-
+    drop(waste_timer);
     let deferred = DeferredEdgeData {
         max_references: counts.reference_capacity()?,
         mapping,

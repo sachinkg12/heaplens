@@ -120,7 +120,7 @@ class Session {
                     return;
                 const p = message.params;
                 if (message.method === (shallow ? 'heap_scan_progress' : 'heap_analysis_progress'))
-                    this.emit('analysisProgress', { stage: p.stage, phase: p.phase, totalPhases: p.total_phases, summary: p.summary });
+                    this.emit('analysisProgress', { stage: p.stage, phase: p.phase, totalPhases: p.total_phases, summary: p.summary, snapshot: p.snapshot, fileMetadata: p.file_metadata });
                 if (message.method === (shallow ? 'heap_scan_complete' : 'heap_analysis_complete')) {
                     if (p.status === 'completed') {
                         this.raw = p;

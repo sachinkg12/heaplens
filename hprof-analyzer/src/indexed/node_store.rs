@@ -116,23 +116,35 @@ impl NodeStore {
         node_type: NodeType,
         class_name: Arc<str>,
     ) -> u32 {
+        self.insert_record(NodeRecord { id, class_index, shallow_size, node_type, class_name }, false).0
+    }
+
+    /// One exact ID lookup. Only a preceding root placeholder may be upgraded;
+    /// repeated definitions preserve the first record and its count/size.
+    pub(crate) fn define_node(&mut self, id: u64, shallow_size: u64, node_type: NodeType, class_name: Arc<str>) -> (u32, bool) {
+        self.insert_record(NodeRecord { id, class_index: 0, shallow_size, node_type, class_name }, true)
+    }
+
+    fn insert_record(&mut self, record: NodeRecord, upgrade_root: bool) -> (u32, bool) {
         assert!(self.mapped.is_none(), "Mapped node storage is immutable");
         if let Some(nodes) = &mut self.construction {
-            return nodes.add(&NodeRecord { id, class_index, shallow_size, node_type, class_name });
+            return nodes.insert(&record, upgrade_root);
         }
-        if let Some(&existing) = self.id_to_index.get(&id) {
-            return existing;
+        match self.id_to_index.entry(record.id) {
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let index = *entry.get();
+                if upgrade_root && self.nodes.kind_at(index) == NodeType::GcRoot {
+                    self.nodes.set(index, &record);
+                    (index, true)
+                } else { (index, false) }
+            },
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let index = self.nodes.len() as u32;
+                self.nodes.push(record);
+                entry.insert(index);
+                (index, true)
+            }
         }
-        let idx = self.nodes.len() as u32;
-        self.nodes.push(NodeRecord {
-            id,
-            class_index,
-            shallow_size,
-            node_type,
-            class_name,
-        });
-        self.id_to_index.insert(id, idx);
-        idx
     }
 
     /// Looks up a node by HPROF object ID.
@@ -216,6 +228,18 @@ impl NodeStore {
             None => self.nodes.name_at(index),
         }
     }
+    pub(crate) fn name_slot_at(&self, index: u32) -> u32 {
+        if let Some(nodes) = &self.construction { return nodes.name_slot_at(index); }
+        self.mapped.as_ref().map_or_else(|| self.nodes.name_slot_at(index), |nodes| nodes.name_slot_at(index))
+    }
+    pub(crate) fn name_count(&self) -> usize {
+        if let Some(nodes) = &self.construction { return nodes.name_count(); }
+        self.mapped.as_ref().map_or_else(|| self.nodes.name_count(), |nodes| nodes.name_count())
+    }
+    pub(crate) fn dictionary_name(&self, slot: u32) -> &Arc<str> {
+        if let Some(nodes) = &self.construction { return nodes.dictionary_name(slot); }
+        self.mapped.as_ref().map_or_else(|| self.nodes.dictionary_name(slot), |nodes| nodes.dictionary_name(slot))
+    }
     pub fn kind_at(&self, index: u32) -> NodeType {
         if let Some(nodes) = &self.construction { return nodes.kind_at(index); }
         match &self.mapped {
@@ -282,6 +306,18 @@ impl Clone for NodeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_lookup_definition_only_upgrades_root_placeholders() {
+        let mut store = NodeStore::new();
+        store.add_node(7, 0, 0, NodeType::GcRoot, Arc::from("root"));
+        assert_eq!(store.define_node(7, 24, NodeType::Instance, Arc::from("Owner")), (0, true));
+        assert_eq!(store.define_node(7, 99, NodeType::Class, Arc::from("duplicate")), (0, false));
+        assert_eq!(store.define_node(1u64 << 40 | 7, 32, NodeType::PrimitiveArray, Arc::from("byte[]")), (1, true));
+        assert_eq!(store.get_by_index(0).shallow_size, 24);
+        assert_eq!(store.get_by_index(0).class_name.as_ref(), "Owner");
+        assert_eq!(store.len(), 2);
+    }
 
     #[test]
     fn add_and_get_by_index() {

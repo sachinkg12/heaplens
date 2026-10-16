@@ -95,10 +95,18 @@ pub fn load_structure(
     options: &StorageOptions,
     cancel: &AtomicBool,
 ) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
+    load_structure_observed(mapping, options, cancel, &mut |_| {})
+}
+
+pub fn load_structure_observed(
+    mapping: Arc<memmap2::Mmap>, options: &StorageOptions, cancel: &AtomicBool,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
+) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
     super::disk_edges::check(cancel)?;
     if options.mode == StorageMode::Memory {
-        let (phase1, deferred) = super::parse::parse_indexed_phase1_mapped_cancellable(mapping, None, cancel)?;
+        let (phase1, deferred) = super::parse::parse_indexed_phase1_observed(mapping, None, cancel, progress)?;
         super::disk_edges::check(cancel)?;
+        progress(super::progress::Observation::Stage("edges"));
         let phase2 = super::parse::parse_indexed_phase2_cancellable(&phase1, deferred, cancel)?;
         return Ok((
             phase1,
@@ -119,6 +127,7 @@ pub fn load_structure(
         &options.directory()?,
         options.edge_buffer_bytes,
         cancel,
+        progress,
     )
 }
 
@@ -149,6 +158,54 @@ mod tests {
         let two = super::super::parse::parse_indexed_phase2(&one, deferred).unwrap();
         assert!(Arc::ptr_eq(&one.waste_raw, &two.waste_raw));
         assert!(!one.waste_raw.string_instances.is_empty());
+    }
+    #[test]
+    fn staged_memory_build_and_verified_reuse_publish_truthful_shallow_results() {
+        let root=private_root();
+        let mut expected=None;
+        for options in [StorageOptions::default(),options(root.path()),options(root.path())] {
+            let mut events=Vec::new();
+            let (one,two,report)=load_structure_observed(fixture(),&options,&AtomicBool::new(false),
+                &mut |event|events.push(event.payload())).unwrap();
+            let shallow=events.iter().find(|event|event["snapshot"]["kind"]=="shallow").unwrap();
+            assert!(shallow["snapshot"]["summary"]["reachable_heap_size"].is_null());
+            assert_eq!(shallow["snapshot"]["readiness"]["retained"],"not_calculated");
+            let actual = shallow["snapshot"]["class_histogram"].as_array().unwrap();
+            assert!(!actual.is_empty(), "this fixture has histogram-eligible objects");
+            let expected_shallow = super::super::parse_metadata::shallow_histogram(&one.node_store);
+            assert_eq!(actual.len(), expected_shallow.len());
+            for (actual, expected) in actual.iter().zip(&expected_shallow) {
+                assert_eq!(actual["class_name"], expected.class_name);
+                assert_eq!(actual["instance_count"], expected.instance_count);
+                assert_eq!(actual["shallow_size"], expected.shallow_size);
+            }
+            for entry in shallow["snapshot"]["class_histogram"].as_array().unwrap() {
+                assert!(entry.get("retained_size").is_none());
+            }
+            let state=IndexedAnalysisState::from_phases(one,two).unwrap();
+            assert_eq!(shallow["snapshot"]["summary"]["total_heap_size"],state.get_summary().total_heap_size);
+            let current=serde_json::to_value(state.get_summary()).unwrap();
+            if let Some(expected)=&expected {assert_eq!(&current,expected);}else{expected=Some(current);}
+            if report.cache_status=="reused" {
+                assert_eq!(events[0]["stage"],"index_verifying");
+                assert!(!events.iter().any(|event|event["stage"]=="sizing"));
+            } else {
+                let shallow_at=events.iter().position(|event|event["stage"]=="shallow_ready").unwrap();
+                let edges_at=events.iter().position(|event|event["stage"]=="edges").unwrap();
+                assert!(shallow_at<edges_at);
+            }
+        }
+    }
+    #[test]
+    fn cancelling_after_shallow_results_never_publishes_a_partial_index() {
+        let root=private_root();let cancel=AtomicBool::new(false);
+        let result=load_structure_observed(fixture(),&options(root.path()),&cancel,&mut |event| {
+            if matches!(event,super::super::progress::Observation::Shallow {..}) {
+                cancel.store(true,std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        assert!(result.is_err());assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(),0);
     }
     #[test]
     fn bounded_single_pass_and_large_graph_replay_have_identical_csr_and_labels() {

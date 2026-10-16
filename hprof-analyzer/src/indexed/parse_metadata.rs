@@ -105,54 +105,45 @@ impl ParseNames {
 }
 
 /// Display grouping remains by text, independently of class-object identity.
-/// Numeric pointer keys only memoize names borrowed from the live node store;
-/// no pointer is dereferenced and equal text from distinct owners still merges.
+/// Only the small dictionary is hashed; the object scan uses existing slots.
+#[cfg(test)]
 pub(super) fn shallow_histogram(nodes: &NodeStore) -> Vec<ClassHistogramEntry> {
-    const MAX_IDENTITY_SLOTS: usize = 65_536;
-    let mut identities = HashMap::new();
-    let mut names = HashMap::new();
-    let mut totals: Vec<(Arc<str>, u64, u64)> = Vec::new();
-    for node in nodes.iter() {
+    shallow_histogram_cancellable(nodes, &mut || false).expect("uncancellable shallow aggregation")
+}
+pub(super) fn shallow_histogram_cancellable(nodes: &NodeStore, cancelled: &mut impl FnMut() -> bool) -> anyhow::Result<Vec<ClassHistogramEntry>> {
+    let groups = super::name_groups::NameGroups::cancellable(nodes, cancelled)?;
+    let mut totals = vec![(0u64, 0u64); groups.names.len()];
+    for index in 0..nodes.len() as u32 {
+        if index % 4096 == 0 { anyhow::ensure!(!cancelled(), "Analysis cancelled"); }
         if !matches!(
-            node.node_type,
+            nodes.kind_at(index),
             NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray
         ) {
             continue;
         }
-        let name = node.class_name.as_ref();
-        let identity = (name.as_ptr() as usize, name.len());
-        let slot = if let Some(&slot) = identities.get(&identity) {
-            slot
-        } else {
-            let slot = *names.entry(node.class_name.clone()).or_insert_with(|| {
-                let slot = totals.len();
-                totals.push((node.class_name.clone(), 0, 0));
-                slot
-            });
-            if identities.len() < MAX_IDENTITY_SLOTS {
-                identities.insert(identity, slot);
-            }
-            slot
-        };
-        let total = &mut totals[slot];
-        total.1 += 1;
-        total.2 += node.shallow_size;
+        let total = &mut totals[groups.at(nodes, index) as usize];
+        total.0 += 1;
+        total.1 += nodes.shallow_at(index);
     }
     let mut result: Vec<_> = totals
         .into_iter()
-        .map(|(name, count, size)| ClassHistogramEntry {
+        .zip(groups.names)
+        .filter(|((count, _), _)| *count > 0)
+        .map(|((count, size), name)| ClassHistogramEntry {
             class_name: name.to_string(),
             instance_count: count,
             shallow_size: size,
             retained_size: 0,
         })
         .collect();
+    anyhow::ensure!(!cancelled(), "Analysis cancelled");
     result.sort_by(|a, b| {
         b.shallow_size
             .cmp(&a.shallow_size)
             .then_with(|| a.class_name.cmp(&b.class_name))
     });
-    result
+    anyhow::ensure!(!cancelled(), "Analysis cancelled");
+    Ok(result)
 }
 
 /// The same first object/int fields selected by the existing Waste readers.
@@ -212,6 +203,15 @@ impl CandidateFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancellation_during_shallow_scan_stops_before_finishing_the_catalog() {
+        let mut nodes = NodeStore::new();
+        let name: Arc<str> = Arc::from("example.Owner");
+        for id in 0..20_000 { nodes.add_node(id, 0, 8, NodeType::Instance, name.clone()); }
+        let mut polls = 0;
+        assert!(shallow_histogram_cancellable(&nodes, &mut || { polls += 1; polls == 3 }).is_err());
+        assert_eq!(polls, 3);
+    }
     #[test]
     fn class_headers_resolve_forward_strings_and_repeated_names_without_heap_scans() {
         fn record(data: &mut Vec<u8>, tag: u8, body: &[u8]) {

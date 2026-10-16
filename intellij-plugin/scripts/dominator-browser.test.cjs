@@ -15,7 +15,7 @@ const analysis = { command:'analysisComplete', summary:{ reachable_heap_size:102
   topObjects:[], classHistogram:[], leakSuspects:[],
   topLayers:[node(42),node(44,'byte[]','Array'),node(45,'<img src=x onerror=alert(1)>')] };
 let browser;
-before(async () => { browser = await chromium.launch({ headless:true }); });
+before(async () => { browser = await chromium.launch({ headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{}) }); });
 after(async () => { await browser?.close(); });
 async function send(page, data) {
   await page.evaluate(data => window.dispatchEvent(new MessageEvent('message', {data})), data);
@@ -71,7 +71,8 @@ for (const width of [1280,600]) test('Dominator shared tree, scoped replies, rec
     assert.equal(await row(page,42).getAttribute('aria-expanded'),'false');
     await row(page,42).click(); const pending = await latest(page);
     await send(page,{command:'serverCrashed'});
-    await page.locator('#tabBtn-overview').click(); await page.locator('#tabBtn-domtree').click();
+    await page.locator('#tabBtn-overview').click();
+    assert.equal(await page.locator('#tabBtn-domtree').isDisabled(),true);
     assert.match(await page.locator('#dominator-tree').textContent(),/unavailable/);
     await send(page,{...pending,command:'dominatorChildrenResult',children:[node(99)]});
     assert.equal(await row(page,99).count(),0);

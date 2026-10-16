@@ -103,6 +103,19 @@ class RealEngineTest {
         // Generated private fixture indices only; all sessions are closed first.
         try(var paths=Files.walk(root)){for(Path path:paths.sorted(Comparator.reverseOrder()).toList())Files.delete(path);}
     }
+    @Test void nativeSessionForwardsShallowSnapshotBeforeCompletedRetainedData() {
+        try(Run run=new Run(dump,false)) {
+            int partial=-1,complete=-1;
+            for(int i=0;i<run.events.size();i++) {
+                JsonObject e=run.events.get(i);
+                if(e.has("snapshot") && "shallow".equals(e.getAsJsonObject("snapshot").get("kind").getAsString())) {
+                    assertTrue(e.getAsJsonObject("snapshot").getAsJsonObject("summary").get("reachable_heap_size").isJsonNull());partial=i;
+                }
+                if("analysisComplete".equals(e.get("command").getAsString()))complete=i;
+            }
+            assertTrue(partial>=0 && complete>partial,"Shallow data precedes the completed analysis");
+        }
+    }
     @Test @Tag("local-fixture") void layoutDefaultMatchesFivePreviouslyMatVerifiedObjects() {
         assumeTrue(dump.getFileName().toString().equals("layout-default.hprof"));
         try (Run run = new Run(dump, false)) {

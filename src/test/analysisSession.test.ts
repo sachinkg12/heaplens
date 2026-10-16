@@ -8,6 +8,7 @@ import {
 } from '../analysisSession';
 import {
     deliverOrBufferWebviewMessage,
+    deliverOrBufferProgress,
     markWebviewReadyAndFlush
 } from '../webviewMessageDelivery';
 
@@ -190,6 +191,21 @@ test('posts a terminal analysis message immediately when the webview is ready', 
     assert.equal(delivery, 'posted');
     assert.deepEqual(posted, [completion]);
     assert.equal(state.pendingWebviewMessage, null);
+});
+
+test('terminal delivery supersedes buffered partial data, while stage updates preserve its snapshot', () => {
+    const state = { webviewReady:false, pendingWebviewMessage:null as any, pendingProgressMessage:null as any };
+    const posted:any[]=[];
+    deliverOrBufferWebviewMessage(state,{command:'analysisStarting'},m=>posted.push(m));
+    deliverOrBufferProgress(state,{command:'analysisProgress',stage:'shallow_ready',snapshot:{kind:'shallow'}},m=>posted.push(m));
+    for(let i=0;i<1000;i++)deliverOrBufferProgress(state,{command:'analysisProgress',stage:'edges'},m=>posted.push(m));
+    markWebviewReadyAndFlush(state,m=>posted.push(m));
+    assert.equal(posted.length,2);assert.equal(posted[1].snapshot.kind,'shallow');
+    state.webviewReady=false;
+    deliverOrBufferProgress(state,{command:'analysisProgress',snapshot:{kind:'shallow'}},m=>posted.push(m));
+    deliverOrBufferWebviewMessage(state,{command:'analysisComplete'},m=>posted.push(m));
+    markWebviewReadyAndFlush(state,m=>posted.push(m));
+    assert.equal(posted.at(-1).command,'analysisComplete');assert.equal(posted.length,3);
 });
 
 test('delivers a successful result after the long-running warning', async () => {

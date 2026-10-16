@@ -81,7 +81,7 @@ createTreeRow = function(obj, depth) {
     return row;
 };
 var sharedDominatorRender = renderDominatorTree;
-renderDominatorTree = function(layers) {
+renderDominatorTree = function(layers, reachableHeap) {
     dominatorPending.clear(); // Back to Root must also retire outstanding child replies.
     dominatorStatus.textContent = '';
     var displayable = Array.isArray(layers) ? layers.filter(function(node) {
@@ -90,7 +90,7 @@ renderDominatorTree = function(layers) {
     var valid = displayable.filter(validDominatorNode);
     if (!Array.isArray(layers) || valid.length !== displayable.length)
         dominatorStatus.textContent = 'Some tree entries are unavailable or have unsupported object IDs.';
-    sharedDominatorRender(valid);
+    sharedDominatorRender(valid, reachableHeap);
     if (!_treeData.length) _domTreeContainer.textContent = 'No displayable retained entry points in this analysis.';
 };
 function resetDominator(text) {

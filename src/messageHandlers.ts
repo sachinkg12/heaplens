@@ -20,6 +20,7 @@ export interface EditorState {
     analysisMode?: 'full' | 'shallow';
     chatHistory: ChatMessage[];
     pendingWebviewMessage: any;
+    pendingProgressMessage?: any;
     webviewReady: boolean;
     dependencyInfoCache: Map<string, { tier: string; dependency?: DependencyInfo }>;
     fixedClasses: Set<string>;

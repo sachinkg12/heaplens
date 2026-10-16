@@ -28,6 +28,7 @@ struct LegacyClassHistogramTree<'a> {
 }
 
 impl ClassHistogramTree for LegacyClassHistogramTree<'_> {
+    type Class = Arc<str>;
     type Node = NodeIndex;
 
     fn root(&self) -> Self::Node {

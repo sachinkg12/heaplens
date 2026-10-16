@@ -2,6 +2,7 @@
 export interface BufferedWebviewMessageState {
     webviewReady: boolean;
     pendingWebviewMessage: any;
+    pendingProgressMessage?: any;
 }
 
 export type WebviewMessageDelivery = 'posted' | 'buffered';
@@ -37,6 +38,10 @@ export function deliverOrBufferWebviewMessage(
     message: any,
     postMessage: (message: any) => unknown
 ): WebviewMessageDelivery {
+    if (message.command === 'analysisStarting') { state.pendingProgressMessage = null; }
+    if (['analysisComplete','shallowScanComplete','analysisFailed','analysisCancelled','serverCrashed'].includes(message.command)) {
+        state.pendingProgressMessage = null;
+    }
     if (state.webviewReady) {
         postMessage(message);
         return 'posted';
@@ -46,6 +51,14 @@ export function deliverOrBufferWebviewMessage(
     return 'buffered';
 }
 
+/** Keep one coalesced snapshot, not an unbounded backlog while HTML loads. */
+export function deliverOrBufferProgress(
+    state: BufferedWebviewMessageState, message: any, postMessage: (message: any) => unknown
+): void {
+    if (state.webviewReady) { postMessage(message); return; }
+    state.pendingProgressMessage = { ...state.pendingProgressMessage, ...message };
+}
+
 /** Marks the webview ready and delivers a buffered terminal message once. */
 export function markWebviewReadyAndFlush(
     state: BufferedWebviewMessageState,
@@ -53,11 +66,11 @@ export function markWebviewReadyAndFlush(
 ): any | null {
     state.webviewReady = true;
     const pendingMessage = state.pendingWebviewMessage;
-    if (!pendingMessage) {
-        return null;
-    }
-
     state.pendingWebviewMessage = null;
-    postMessage(pendingMessage);
+    if (pendingMessage) { postMessage(pendingMessage); }
+    if (state.pendingProgressMessage) {
+        postMessage(state.pendingProgressMessage);
+        state.pendingProgressMessage = null;
+    }
     return pendingMessage;
 }

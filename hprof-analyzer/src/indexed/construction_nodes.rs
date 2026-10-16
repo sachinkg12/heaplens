@@ -130,21 +130,29 @@ impl ConstructionNodes {
         let rank = self.locate(id)? as usize * 4;
         u32::from_le_bytes(self.rows[rank..rank + 4].try_into().unwrap()).checked_sub(1)
     }
+    #[cfg(test)]
     pub fn add(&mut self, node: &NodeRecord) -> u32 {
-        if let Some(index) = self.index_of(node.id) {
-            return index;
-        }
+        self.insert(node, false).0
+    }
+    pub fn insert(&mut self, node: &NodeRecord, upgrade_root: bool) -> (u32, bool) {
         let rank = self
             .locate(node.id)
             .expect("Sizing catalog must include every parsed object");
+        let lookup = rank as usize * 4;
+        if let Some(index) = u32::from_le_bytes(self.rows[lookup..lookup + 4].try_into().unwrap()).checked_sub(1) {
+            if upgrade_root && self.kind_at(index) == NodeType::GcRoot {
+                self.set(index, node);
+                return (index, true);
+            }
+            return (index, false);
+        }
         let index = u32::try_from(self.count).unwrap();
         let at = self.at(index);
         self.rows[at..at + 8].copy_from_slice(&node.id.to_le_bytes());
-        let lookup = rank as usize * 4;
         self.rows[lookup..lookup + 4].copy_from_slice(&(index + 1).to_le_bytes());
         self.set(index, node);
         self.count += 1;
-        index
+        (index, true)
     }
     pub fn shallow_at(&self, index: u32) -> u64 {
         let at = self.at(index) + 8;
@@ -155,9 +163,14 @@ impl ConstructionNodes {
         u32::from_le_bytes(self.rows[at..at + 4].try_into().unwrap())
     }
     pub fn name_at(&self, index: u32) -> &Arc<str> {
-        let at = self.at(index) + 20;
-        &self.names[u32::from_le_bytes(self.rows[at..at + 4].try_into().unwrap()) as usize]
+        &self.names[self.name_slot_at(index) as usize]
     }
+    pub fn name_slot_at(&self, index: u32) -> u32 {
+        let at = self.at(index) + 20;
+        u32::from_le_bytes(self.rows[at..at + 4].try_into().unwrap())
+    }
+    pub fn name_count(&self) -> usize { self.names.len() }
+    pub fn dictionary_name(&self, slot: u32) -> &Arc<str> { &self.names[slot as usize] }
     pub fn kind_at(&self, index: u32) -> NodeType {
         match self.rows[self.at(index) + 24] {
             1 => NodeType::SuperRoot,
@@ -216,6 +229,32 @@ impl ConstructionNodes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn construction_and_memory_definitions_preserve_duplicates_and_root_upgrades() {
+        use super::super::node_store::NodeStore;
+        let root = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        let ids = [0, 7, (1u64 << 40) + 7, u64::MAX - 1, 15];
+        let mut sorter = super::super::sorted_runs::Sorter::new(root.path(), 32, true, &cancel).unwrap();
+        for id in ids { sorter.push(id).unwrap(); }
+        let mut disk = NodeStore::construction(sorter.finish().unwrap(), root.path(), &cancel).unwrap();
+        let mut memory = NodeStore::new();
+        for store in [&mut disk, &mut memory] {
+            store.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+            for (id, kind) in ids[1..].iter().copied().zip([NodeType::Class, NodeType::Instance, NodeType::ObjectArray, NodeType::PrimitiveArray]) {
+                let index = store.add_node(id, 0, 0, NodeType::GcRoot, Arc::from("root"));
+                assert_eq!(store.define_node(id, 24, kind, Arc::from("Owner")), (index, true));
+                assert_eq!(store.define_node(id, 99, NodeType::Instance, Arc::from("conflict")), (index, false));
+                assert_eq!(store.add_node(id, 0, 0, NodeType::GcRoot, Arc::from("later root")), index);
+                assert_eq!(store.kind_at(index), kind);
+                assert_eq!(store.shallow_at(index), 24);
+                assert_eq!(store.name_at(index).as_ref(), "Owner");
+            }
+        }
+        disk.validate_construction().unwrap();
+        assert_eq!(disk.len(), memory.len());
+        for id in ids { assert_eq!(disk.index_of(id), memory.index_of(id)); }
+    }
     #[test]
     fn exact_lookup_handles_sparse_full_width_unknown_and_unpopulated_ids() {
         let root = tempfile::tempdir().unwrap();

@@ -8,15 +8,15 @@ export function getProgressiveJs(): string {
             var status = document.getElementById('analysis-mode-status');
             var panel = document.getElementById('shallow-histogram');
             var search = document.getElementById('histogram-search');
-            function controls() { scan.disabled = busy; retained.disabled = busy || scope === 'full'; if(busy || scope==='shallow')search.disabled = busy || !shallow; }
+            function controls() { scan.disabled = busy; retained.disabled = busy || scope === 'full'; search.disabled = (busy || scope==='shallow') && !shallow; }
             function gate() {
                 document.querySelectorAll('.tab-btn').forEach(function(b) {
                     b.disabled = (scope === 'shallow' || busy) && !['overview','histogram'].includes(b.dataset.tab);
-                    if (b.disabled) b.title = 'Choose Analyze Retained to calculate this view.';
+                    if (b.disabled) b.title = busy ? 'Waiting for retained analysis to complete.' : 'Choose Analyze Retained to calculate this view.';
                     else b.removeAttribute('title');
                 });
                 if ((scope === 'shallow' || busy) && !['overview','histogram'].includes(_activeTab)) document.getElementById('tabBtn-overview').click();
-                document.body.classList.toggle('shallow-analysis', scope === 'shallow');
+                document.body.classList.toggle('shallow-analysis', scope === 'shallow' || !!shallow || busy);
                 controls();
             }
             function reset() {
@@ -47,7 +47,7 @@ export function getProgressiveJs(): string {
             function render() {
                 if(!shallow)return;
                 var filtered = rows(); page = Math.min(page, Math.max(0,Math.ceil(filtered.length/200)-1));
-                panel.innerHTML = '<p class="scan-note">Shallow allocation histogram. Retained sizes and percentages are not calculated. No instance index was built.</p>' +
+                panel.innerHTML = '<p class="scan-note">Shallow allocation histogram. Retained sizes and percentages are not calculated. '+(scope==='shallow' ? 'No instance index was built.' : 'Graph analysis continues in the background.')+'</p>' +
                     '<div><button class="btn" id="scan-export">Export shallow CSV</button> <button class="btn" id="scan-prev">Previous</button> <button class="btn" id="scan-next">Next</button> <span>'+fmtNum(filtered.length)+' classes · page '+(page+1)+'/'+Math.max(1,Math.ceil(filtered.length/200))+'</span></div>' +
                     '<table><thead><tr><th>Class</th><th class="right">Allocations</th><th class="right">Shallow</th><th>Retained</th></tr></thead><tbody>' +
                     filtered.slice(page*200,(page+1)*200).map(function(c) {
@@ -66,7 +66,28 @@ export function getProgressiveJs(): string {
             }
             search.addEventListener('input',function(){page=0;render();});
             onMessage('analysisStarting',function(m){begin(m.analysisScope === 'shallow' ? 'shallow' : 'full');});
-            onMessage('analysisProgress',function(m){busy=true; if(m.stage==='quick_scan')scope='shallow';gate();});
+            function stats(cells) {
+                document.getElementById('stats-bar').innerHTML=cells.map(function(c){return '<div class="stat-card"><div class="label">'+escapeHtml(c[0])+'</div><div class="value">'+escapeHtml(c[1])+'</div></div>';}).join('');
+            }
+            onMessage('analysisProgress',function(m){
+                busy=true; if(m.stage==='quick_scan')scope='shallow';
+                var p=m.snapshot;
+                if(p && p.kind==='records' && !shallow) {
+                    stats([['Instance records so far',fmtNum(p.instances)],['Array records so far',fmtNum(p.arrays)],['Class records so far',fmtNum(p.classes)],['GC-root records so far',fmtNum(p.roots)]]);
+                    status.textContent='Reading heap records · counts are partial. Heap sizes and reachability are not calculated yet.';
+                }
+                if(p && p.kind==='shallow') {
+                    shallow={summary:p.summary,classHistogram:p.class_histogram};page=0;
+                    var s=p.summary;
+                    stats([['Reachable heap','Not calculated'],['Total heap (estimate)',fmt(s.total_heap_size)],['Objects',fmtNum(s.total_instances)],['Classes',fmtNum(s.total_classes)],['Arrays',fmtNum(s.total_arrays)],['GC roots',fmtNum(s.total_gc_roots)]]);
+                    status.textContent='Overview and shallow histogram ready · graph and retained analysis continue. No second analysis is started.';
+                    render();
+                } else if(shallow) {
+                    var labels={edges:'Building references',dominators:'Calculating retained sizes',index_publishing:'Validating and publishing the index'};
+                    if(labels[m.stage])status.textContent='Overview and shallow histogram ready · '+labels[m.stage]+'…';
+                }
+                gate();
+            });
             onMessage('shallowScanComplete',function(m){
                 reset(); shallow=m; scope='shallow';busy=false;gate();
                 var s=m.summary;
@@ -84,7 +105,7 @@ export function getProgressiveJs(): string {
                 if(storage && storage.mode==='memory' && storage.cache_status==='disabled')status.textContent+=' References: memory.';
                 else if(storage && storage.mode==='disk' && ['built','reused'].includes(storage.cache_status))status.textContent+=' References: disk · Index '+storage.cache_status+'.';
             });
-            ['analysisCancelled','analysisFailed','serverCrashed'].forEach(function(command){onMessage(command,function(){busy=false;shallow=null;search.disabled=true;controls();status.textContent='Analysis unavailable. Retry repeats the selected mode, or choose Quick Scan.';});});
+            ['analysisCancelled','analysisFailed','serverCrashed'].forEach(function(command){onMessage(command,function(){busy=false;scope='shallow';gate();status.textContent=(shallow?'Shallow results only · retained analysis did not complete. ':'')+'Analysis unavailable. Retry repeats the selected mode, or choose Quick Scan.';});});
             onMessage('analysisModeStatus',function(m){status.textContent=m.message;});
             controls();
         })();

@@ -84,9 +84,14 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
     }
     return {
         provider, panel, logs, errors, cancellations,
-        open: (file: string, view: ReturnType<typeof panel>) => provider.resolveCustomEditor(
-            { uri: { fsPath: path.resolve(file) }, dispose: () => undefined } as any, view.value as any
-        )
+        open: async (file: string, view: ReturnType<typeof panel>) => {
+            await provider.resolveCustomEditor(
+                { uri: { fsPath: path.resolve(file) }, dispose: () => undefined } as any, view.value as any
+            );
+            // Tests can still opt into a pending FakeServer. Ordinary fixture
+            // opens settle its already-completed microtasks, not a real CPU job.
+            await settle();
+        }
     };
 }
 

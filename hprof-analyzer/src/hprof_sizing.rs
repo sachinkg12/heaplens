@@ -158,15 +158,17 @@ impl HprofSizing {
         explicit: Option<ObjectLayout>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self> {
-        Self::read_observed(data, explicit, cancelled, None)
+        Self::read_observed(data, explicit, cancelled, None, None)
     }
-    pub(crate) fn read_catalog(
+    pub(crate) fn read_tracked(
         data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
-        observe: &mut dyn FnMut(u64) -> Result<()>,
-    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, Some(observe)) }
+        observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
+        progress: &mut dyn FnMut(RecordCounts),
+    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, observe, Some(progress)) }
     fn read_observed(
         data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
         mut observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
+        mut progress: Option<&mut dyn FnMut(RecordCounts)>,
     ) -> Result<Self> {
         if cancelled() {
             bail!("Sizing cancelled");
@@ -187,6 +189,8 @@ impl HprofSizing {
         let mut declared_sizes = HashMap::new();
         let mut record_counts = RecordCounts::default();
         let mut producer = crate::hprof_producer::Metadata::default();
+        let mut observed = 0usize;
+        let mut last_progress = std::time::Instant::now();
         for record in hprof.records_iter() {
             if cancelled() {
                 bail!("Sizing cancelled");
@@ -222,6 +226,12 @@ impl HprofSizing {
                     if !payload_only { producer.observe(&sub); }
                     page_records = (page_records + 1) % crate::hprof_producer::Metadata::page_records();
                     record_counts.observe(&sub)?;
+                    observed += 1;
+                    // Clock and serialization overhead are outside the per-object hot path.
+                    if observed % 65536 == 0 && last_progress.elapsed().as_secs() >= 1 {
+                        if let Some(progress) = progress.as_mut() { progress(record_counts); }
+                        last_progress = std::time::Instant::now();
+                    }
                     if let Some(observe) = observe.as_mut() {
                         let id = crate::gc_roots::object_id(&sub).or_else(|| match &sub {
                             SubRecord::Class(v) => Some(v.obj_id().id()),
@@ -284,6 +294,7 @@ impl HprofSizing {
                 }
             }
         }
+        if let Some(progress) = progress.as_mut() { progress(record_counts); }
         let layout = if payload_only {
             ObjectLayout::new(id_bytes, id_bytes, id_bytes, 8)?
         } else {

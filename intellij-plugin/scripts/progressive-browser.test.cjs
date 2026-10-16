@@ -39,6 +39,40 @@ test('Waste is explicit, ignores stale replies and recovers after an error and R
 });
 const scan={command:'shallowScanComplete',summary:{total_heap_size:1239216,total_instances:19047,total_arrays:11900,declared_classes:1052,total_gc_roots:996,reachable_heap_size:null},
     classHistogram:Array.from({length:405},(_,i)=>({class_name:'example.Class'+i,instance_count:1,shallow_size:16}))};
+test('one full job displays partial counts, then searchable shallow results before retained analysis',async()=>{
+    const page=await browser.newPage();try {
+        const errors=[];page.on('pageerror',e=>errors.push(e.message));
+        await page.setContent(html);await send(page,{command:'analysisStarting',analysisScope:'full'});
+        await send(page,{command:'analysisProgress',stage:'graph_built',summary:{total_heap_size:1024,reachable_heap_size:1024,total_instances:10,total_classes:2,total_arrays:4,total_gc_roots:5}});
+        assert.match(await page.locator('#stats-bar').innerText(),/Not calculated/);
+        await send(page,{command:'analysisProgress',stage:'sizing',snapshot:{kind:'records',complete:false,instances:100,arrays:4,classes:2,roots:5}});
+        assert.match(await page.locator('#stats-bar').innerText(),/so far/i);
+        assert.doesNotMatch(await page.locator('#stats-bar').innerText(),/Reachable/);
+        const snapshot={kind:'shallow',summary:{...scan.summary,total_classes:1052},class_histogram:scan.classHistogram};
+        await send(page,{command:'analysisProgress',stage:'shallow_ready',snapshot});
+        assert.match(await page.locator('#stats-bar').innerText(),/Not calculated/);
+        await page.locator('#tabBtn-histogram').click();
+        assert.equal(await page.locator('#shallow-histogram tbody tr').count(),200);
+        assert.equal(await page.locator('#histogram-search').isEnabled(),true);
+        assert.equal(await page.locator('#tabBtn-query').isDisabled(),true);
+        await page.locator('#histogram-search').fill('Class404');
+        await send(page,{command:'analysisProgress',stage:'edges'});
+        assert.equal(await page.locator('#shallow-histogram tbody tr').count(),1);
+        assert.match(await page.locator('#shallow-histogram').innerText(),/background/);
+        assert.doesNotMatch(await page.locator('#shallow-histogram').innerText(),/No instance index/);
+        await send(page,{command:'analysisCancelled'});
+        assert.equal(await page.locator('#shallow-histogram tbody tr').count(),1);
+        assert.equal(await page.locator('#tabBtn-query').isDisabled(),true);
+        assert.match(await page.locator('#analysis-mode-status').innerText(),/Shallow results only/);
+        await send(page,{command:'analysisStarting',analysisScope:'full'});
+        assert.equal(await page.locator('#shallow-histogram').innerText(),'');
+        await send(page,{command:'analysisComplete',summary:{...scan.summary,total_classes:1052,reachable_heap_size:1000000},classHistogram:[],topObjects:[],topLayers:[],leakSuspects:[]});
+        assert.equal(await page.locator('#tabBtn-query').isEnabled(),true);
+        assert.equal(await page.locator('#shallow-histogram').isVisible(),false);
+        assert.equal((await page.evaluate(()=>window.sent)).filter(m=>['analyzeRetained','quickScan','executeQuery'].includes(m.command)).length,0);
+        assert.deepEqual(errors,[]);
+    }finally{await page.close();}
+});
 test('shallow results never trigger full tab handlers; filter, paging and CSV are local',async()=>{
     const page=await browser.newPage();try {
         const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.setContent(html);await send(page,{command:'analysisStarting',analysisScope:'shallow'});await send(page,scan);

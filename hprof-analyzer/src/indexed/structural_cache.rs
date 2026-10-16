@@ -134,7 +134,11 @@ fn read(
     key: &str,
     cancel: &AtomicBool,
 ) -> Result<(Phase1Result, Phase2Result)> {
-    validate(directory, mapping.len(), key, cancel)?;
+    {
+        let _timer = super::stage_timer::StageTimer::start("index.component_verification");
+        validate(directory, mapping.len(), key, cancel)?;
+    }
+    let _load_timer = super::stage_timer::StageTimer::start("index.mapped_load_and_validation");
     let input_bytes = mapping.len();
     let mut phase1 = super::cache_format::read(directory, mapping, cancel)?;
     // Derive graph provenance from the validated ABI, not optional text in
@@ -159,12 +163,26 @@ pub(crate) fn load(
     root: &Path,
     bytes: usize,
     cancel: &AtomicBool,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
 ) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
     private_directory(root)?;
-    let key = super::cache_digest::bytes(&mapping, cancel)?;
+    progress(super::progress::Observation::Stage("index_verifying"));
+    let key = {
+        let _timer = super::stage_timer::StageTimer::start("index.input_digest");
+        super::cache_digest::bytes(&mapping, cancel)?
+    };
     let directory = root.join(format!("{ABI}-{}-{key}", env!("CARGO_PKG_VERSION")));
     if directory.exists() {
-        let (phase1, phase2) = read(&directory, mapping, &key, cancel).context("Structural index rejected; use a new private cache directory or remove only this invalid entry")?;
+        let (mut phase1, phase2) = read(&directory, mapping, &key, cancel).context("Structural index rejected; use a new private cache directory or remove only this invalid entry")?;
+        // Structural metadata intentionally omits derived histograms. Rebuild
+        // the exact shallow values before advertising Histogram readiness.
+        {
+            let _timer = super::stage_timer::StageTimer::start("index.shallow_histogram");
+            phase1.class_histogram = super::parse_metadata::shallow_histogram_cancellable(&phase1.node_store,
+                &mut || cancel.load(std::sync::atomic::Ordering::Relaxed))?;
+        }
+        super::disk_edges::check(cancel)?;
+        progress(super::progress::Observation::Shallow { summary:&phase1.summary, histogram:&phase1.class_histogram });
         return Ok((
             phase1,
             phase2,
@@ -183,8 +201,9 @@ pub(crate) fn load(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(stage.path(), std::fs::Permissions::from_mode(0o700))?;
     }
-    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel)?;
+    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)?;
     super::disk_edges::check(cancel)?;
+    progress(super::progress::Observation::Stage("edges"));
     let (phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
         &phase1,
         deferred,
@@ -192,6 +211,7 @@ pub(crate) fn load(
         bytes,
         cancel,
     )?;
+    progress(super::progress::Observation::Stage("index_publishing"));
     receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)?);
     let mut files = Vec::new();
     for name in FILES {

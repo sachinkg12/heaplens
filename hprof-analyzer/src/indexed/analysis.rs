@@ -11,7 +11,7 @@ use petgraph::graph::NodeIndex;
 
 use crate::heapql::{HeapQlError, QueryResult};
 use crate::class_histogram::{
-    aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
+    aggregate_dense_histogram, ClassHistogramSample, ClassHistogramTree,
 };
 use crate::classloader_leaks::{
     detect_classloader_suspects, is_covered_by_classloader, ClassloaderTree,
@@ -32,10 +32,12 @@ struct IndexedClassHistogramTree<'a> {
     node_store: &'a NodeStore,
     dominator: &'a DominatorResult,
     total_heap_size: u64,
+    groups: &'a super::name_groups::NameGroups<'a>,
 }
 
 impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
     type Node = u32;
+    type Class = u32;
 
     fn root(&self) -> Self::Node {
         0
@@ -45,10 +47,9 @@ impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
         &self.dominator.dominator_children[node as usize]
     }
 
-    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample> {
-        let record = self.node_store.get_by_index(node);
+    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample<u32>> {
         let retained_size = self.dominator.retained_sizes[node as usize];
-        match record.node_type {
+        match self.node_store.kind_at(node) {
             NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
             NodeType::Class => {
                 if self.total_heap_size == 0
@@ -61,8 +62,8 @@ impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
         }
 
         Some(ClassHistogramSample {
-            class_name: record.class_name.clone(),
-            shallow_size: record.shallow_size as u64,
+            class_name: self.groups.at(self.node_store, node),
+            shallow_size: self.node_store.shallow_at(node),
             retained_size,
         })
     }
@@ -302,7 +303,10 @@ impl IndexedAnalysisState {
             .collect();
 
         // 1. Compute dominator tree
-        let dominator = compute_dominators(&node_store, &edge_store, &gc_root_indices);
+        let dominator = {
+            let _timer = super::stage_timer::StageTimer::start("analysis.dominators_total");
+            compute_dominators(&node_store, &edge_store, &gc_root_indices)
+        };
 
         // Compute reachable heap size by subtracting unreachable node sizes
         // (same logic as the legacy dominator.rs path).
@@ -321,6 +325,7 @@ impl IndexedAnalysisState {
         //    objects in a single pass over all nodes.
         use std::collections::BinaryHeap;
 
+        let selection_timer = super::stage_timer::StageTimer::start("analysis.top_object_selection");
         let reachable_heap_size = summary.reachable_heap_size;
         let threshold_bytes = if reachable_heap_size > 0 {
             (reachable_heap_size as f64 * 0.10) as u64
@@ -392,11 +397,18 @@ impl IndexedAnalysisState {
             }
         }
 
-        let class_histogram = aggregate_class_histogram(&IndexedClassHistogramTree {
+        drop(selection_timer);
+        let histogram_timer = super::stage_timer::StageTimer::start("analysis.retained_histogram");
+        let groups = super::name_groups::NameGroups::new(&node_store);
+        let class_histogram = aggregate_dense_histogram(&IndexedClassHistogramTree {
             node_store: &node_store,
             dominator: &dominator,
             total_heap_size: summary.total_heap_size,
-        });
+            groups: &groups,
+        }, &groups.names);
+        drop(groups);
+        drop(histogram_timer);
+        let _suspects_timer = super::stage_timer::StageTimer::start("analysis.suspects_and_reports");
 
         // 3. Build leak suspects — class-level aggregations first (matching legacy behavior),
         //    then individual suspects only if not already covered.

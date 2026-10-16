@@ -2,6 +2,31 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { editorHarness, FakeServer, settle } from './editorHarness';
 
+test('editor resolves before analysis, coalesces early snapshots, and rejects stale progress', async () => {
+    const client=new FakeServer();client.autoComplete=false;
+    const host=editorHarness(()=>client), view=host.panel();
+    try {
+        await host.open('/tmp/staged.hprof',view);
+        assert.equal(host.provider.getAnalysisData(),null);
+        const progress=client.handlers.get('heap_analysis_progress');
+        assert.ok(progress);
+        progress({request_id:1,stage:'shallow_ready',snapshot:{kind:'shallow',summary:{reachable_heap_size:null},class_histogram:[]}});
+        progress({request_id:1,stage:'edges'});
+        await view.send({command:'ready'});
+        assert.equal(view.messages.at(-1).stage,'edges');
+        assert.equal(view.messages.at(-1).snapshot.kind,'shallow');
+        await view.send({command:'executeQuery',query:'SELECT * FROM instances'});
+        assert.equal(client.requests.filter(r=>r.method==='execute_query').length,0);
+        const count=view.messages.length;
+        progress({request_id:999,stage:'sizing',snapshot:{kind:'records',instances:999}});
+        assert.equal(view.messages.length,count);
+        client.complete();await settle();
+        assert.equal(view.messages.at(-1).command,'analysisComplete');
+        assert.equal(client.requests.filter(r=>r.method==='scan_heap').length,0);
+        assert.equal(client.requests.filter(r=>r.method==='analyze_heap').length,1);
+    } finally {host.provider.dispose();}
+});
+
 test('Waste is requested explicitly, updates editor context and sanitizes a failed retry', async () => {
     const client=new FakeServer(), host=editorHarness(()=>client), view=host.panel();
     try {

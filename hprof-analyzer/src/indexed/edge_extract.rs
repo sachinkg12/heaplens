@@ -3,7 +3,7 @@ use super::{
     edge_store::label,
     parse::{DeferredEdgeData, DeferredInstance, Phase1Result},
 };
-use crate::graph_builder::{extract_object_references_fallback, extract_typed_references_named};
+use crate::graph_builder::extract_object_references_fallback;
 use anyhow::Result;
 
 pub(crate) fn instance(
@@ -73,15 +73,8 @@ fn instance_with_lookup(
             }
         }
     };
-    if let Some(layout) = phase.class_index.field_layout(di.class_obj_id) {
-        extract_typed_references_named(fields, deferred.id_size, layout, |id, _, index| {
-            if phase
-                .class_index
-                .is_strong_reference_field(di.class_obj_id, index)
-            {
-                reference(id, label::INSTANCE_FIELD);
-            }
-        });
+    if let Some(plan) = phase.class_index.reference_plan(di.class_obj_id) {
+        plan.references(fields, deferred.id_size, |id| reference(id, label::INSTANCE_FIELD));
     } else {
         extract_object_references_fallback(fields, deferred.id_size, |id| {
             reference(id, label::UNKNOWN)
@@ -199,4 +192,45 @@ fn structural_with_lookup(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    /// Optional real-capture differential check; ordinary CI uses byte fixtures.
+    #[test]
+    #[ignore = "requires HEAPLENS_ORACLE_DUMP pointing at a local capture"]
+    fn every_edge_label_parent_and_retained_size_matches_the_prior_decoder() {
+        let path = std::env::var_os("HEAPLENS_ORACLE_DUMP").expect("HEAPLENS_ORACLE_DUMP");
+        let mapping = crate::HprofLoader::new(path.into()).map_file().unwrap();
+        let (phase, deferred) = super::super::parse::parse_indexed_phase1_mapped(Arc::new(mapping), None).unwrap();
+        let mut oracle = super::super::edge_store::EdgeBuilder::new();
+        for di in deferred.deferred_instances.iter() {
+            if let Some(class) = phase.node_store.index_of(di.class_obj_id) { oracle.add_edge(di.node_idx, class, label::RUNTIME_CLASS); }
+            let fields = di.field_bytes.bytes(deferred.mapping.as_deref().map(|m| &m[..])).unwrap();
+            let mut reference = |id, edge_label| {
+                if let Some(target) = phase.node_store.index_of(id) { oracle.add_edge(di.node_idx, target, edge_label); }
+            };
+            if let Some(layout) = phase.class_index.field_layout(di.class_obj_id) {
+                crate::graph_builder::extract_typed_references_named(fields, deferred.id_size, layout, |id, _, index| {
+                    if phase.class_index.is_strong_reference_field(di.class_obj_id, index) { reference(id, label::INSTANCE_FIELD); }
+                });
+            } else {
+                crate::graph_builder::extract_object_references_fallback(fields, deferred.id_size, |id| reference(id, label::UNKNOWN));
+            }
+        }
+        structural(&deferred, &phase, |s, t, l| { oracle.add_edge(s, t, l); Ok(()) }).unwrap();
+        let oracle = oracle.build(phase.node_store.len());
+        let actual = super::super::parse::parse_indexed_phase2(&phase, deferred).unwrap();
+        for node in 0..phase.node_store.len() as u32 {
+            assert_eq!(actual.edge_store.neighbor_labels(node), oracle.neighbor_labels(node), "outgoing ID={:x}", phase.node_store.id_at(node));
+            assert_eq!(actual.edge_store.reverse_neighbors(node), oracle.reverse_neighbors(node), "incoming ID={:x}", phase.node_store.id_at(node));
+        }
+        let expected_dom = super::super::dominator::compute_dominators(&phase.node_store, &oracle, &[]);
+        let actual_dom = super::super::dominator::compute_dominators(&phase.node_store, &actual.edge_store, &[]);
+        assert_eq!(actual_dom.dominator_parent, expected_dom.dominator_parent);
+        assert_eq!(actual_dom.retained_sizes, expected_dom.retained_sizes);
+        assert_eq!(actual_dom.unreachable_shallow_size, expected_dom.unreachable_shallow_size);
+    }
+    use std::sync::Arc;
 }

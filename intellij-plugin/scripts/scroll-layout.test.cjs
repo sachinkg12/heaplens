@@ -19,7 +19,7 @@ const data = {
   classHistogram: [], leakSuspects: []
 };
 let browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await chromium.launch({ headless: true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{}) }); });
 after(async () => { await browser?.close(); });
 
 async function paint(page) {

@@ -101,6 +101,7 @@ pub(crate) fn start(
     states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     controls: &Controls,
     readiness: &Readiness,
+    engine_gate: Arc<tokio::sync::RwLock<()>>,
 ) -> Result<()> {
     let id = request
         .id
@@ -133,6 +134,7 @@ pub(crate) fn start(
     )?;
     let controls = controls.clone();
     tokio::task::spawn_blocking(move || {
+        let _engine = engine_gate.blocking_write();
         let progress = json!({"jsonrpc":"2.0","method":"heap_scan_progress","params":{"request_id":id,"stage":"quick_scan","phase":1,"total_phases":1}});
         let _ = send_stdout(&progress);
         // Fail closed on malformed data. Do not forward parser bytes or local paths.

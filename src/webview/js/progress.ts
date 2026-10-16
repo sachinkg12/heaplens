@@ -9,6 +9,12 @@ export function getProgressJs(): string {
             loading: 'Loading file',
             graph_building: 'Building graph',
             graph_built: 'Graph built',
+            sizing: 'Reading heap records',
+            catalog_building: 'Building object catalogs',
+            shallow_ready: 'Overview and shallow histogram ready',
+            edges: 'Building references',
+            index_verifying: 'Verifying reusable index',
+            index_publishing: 'Validating and publishing index',
             dominators: 'Computing dominators'
         };
         var _progressActive = false;
@@ -85,6 +91,8 @@ export function getProgressJs(): string {
             }
             if (msg.phase && msg.totalPhases) {
                 renderProgressBar(msg.stage, msg.phase, msg.totalPhases);
+            } else if (_progressPhaseLabels[msg.stage]) {
+                renderProgressBar(msg.stage, 1, 1);
             }
             if (msg.fileMetadata) {
                 renderFileMetadata(msg.fileMetadata);

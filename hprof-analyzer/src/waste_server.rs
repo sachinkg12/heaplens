@@ -1,4 +1,4 @@
-//! Bounded on-demand content analysis; never blocks the stdio dispatch loop.
+//! On-demand content analysis, invoked only by the bounded read scheduler.
 use crate::{get_analysis_state_for_path, send_stdout, FileAnalysisState, JsonRpcRequest};
 use anyhow::Result;
 use serde_json::json;
@@ -7,8 +7,6 @@ use std::{
     path::PathBuf,
     sync::{Arc, RwLock},
 };
-
-static WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 pub(crate) fn start(
     request: JsonRpcRequest,
@@ -26,15 +24,5 @@ pub(crate) fn start(
     let Some(state) = state else {
         return send_stdout(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"Complete retained analysis before requesting Waste."}})).map_err(Into::into);
     };
-    let Ok(permit) = WORKERS.try_acquire() else {
-        return send_stdout(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32001,"message":"Waste analysis is busy. Retry shortly."}})).map_err(Into::into);
-    };
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            json!({"jsonrpc":"2.0","id":id,"result":state.get_waste_analysis()})
-        })).unwrap_or_else(|_| json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Waste analysis failed. Retry or reopen the dump."}}));
-        let _ = send_stdout(&response);
-    });
-    Ok(())
+    send_stdout(&json!({"jsonrpc":"2.0","id":id,"result":state.get_waste_analysis()})).map_err(Into::into)
 }

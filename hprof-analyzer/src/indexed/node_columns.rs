@@ -28,7 +28,6 @@ impl Names {
     pub fn get(&self, slot: u32) -> &Arc<str> {
         &self.values[slot as usize]
     }
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.values.len()
     }
@@ -94,6 +93,9 @@ impl MemoryNodes {
     pub fn name_at(&self, index: u32) -> &Arc<str> {
         self.dictionary.get(self.names[index as usize])
     }
+    pub fn name_slot_at(&self, index: u32) -> u32 { self.names[index as usize] }
+    pub fn name_count(&self) -> usize { self.dictionary.len() }
+    pub fn dictionary_name(&self, slot: u32) -> &Arc<str> { self.dictionary.get(slot) }
     pub fn kind_at(&self, index: u32) -> NodeType {
         self.kinds[index as usize]
     }

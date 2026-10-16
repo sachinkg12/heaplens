@@ -7,7 +7,7 @@ export function getOverviewJs(): string {
             var s = data.summary;
             if (s) {
                 var statsHtml = [
-                    { label: 'Reachable Heap', value: fmt(s.reachable_heap_size || s.total_heap_size) },
+                    { label: 'Reachable Heap', value: s.reachable_heap_size == null ? 'Not calculated' : fmt(s.reachable_heap_size) },
                     { label: 'Total Heap', value: fmt(s.total_heap_size) },
                     { label: 'Objects', value: fmtNum(s.total_instances) },
                     { label: 'Classes', value: fmtNum(s.total_classes) },
@@ -283,7 +283,7 @@ export function getOverviewJs(): string {
             var s = msg.summary;
             if (!s) return;
             var progressHtml = [
-                { label: 'Reachable Heap', value: fmt(s.reachable_heap_size || s.total_heap_size) },
+                { label: 'Reachable Heap', value: 'Not calculated' },
                 { label: 'Total Heap', value: fmt(s.total_heap_size) },
                 { label: 'Objects', value: fmtNum(s.total_instances) },
                 { label: 'Classes', value: fmtNum(s.total_classes) },

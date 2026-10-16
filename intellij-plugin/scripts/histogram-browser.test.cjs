@@ -15,7 +15,7 @@ const data = {
     instance_count: i + 1, shallow_size: (i + 1) * 24, retained_size: (i + 1) * 40 }))
 };
 let browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await chromium.launch({ headless: true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{}) }); });
 after(async () => { await browser?.close(); });
 async function send(page, data) {
   await page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);

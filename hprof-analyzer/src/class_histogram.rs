@@ -2,7 +2,7 @@
 //!
 //! Retained subtrees for objects of the same class can overlap. The class
 //! retained size is therefore the sum of only the topmost same-class objects
-//! in the dominator tree, matching MAT's minimum-retained-size semantics.
+//! in the dominator tree, following minimum-retained-size semantics.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,8 +10,8 @@ use std::sync::Arc;
 use crate::ClassHistogramEntry;
 
 /// One histogram-eligible node in a dominator tree.
-pub(crate) struct ClassHistogramSample {
-    pub(crate) class_name: Arc<str>,
+pub(crate) struct ClassHistogramSample<K = Arc<str>> {
+    pub(crate) class_name: K,
     pub(crate) shallow_size: u64,
     pub(crate) retained_size: u64,
 }
@@ -22,13 +22,14 @@ pub(crate) struct ClassHistogramSample {
 /// so another backend can participate without changing this component.
 pub(crate) trait ClassHistogramTree {
     type Node: Copy;
+    type Class: Clone;
 
     fn root(&self) -> Self::Node;
     fn children(&self, node: Self::Node) -> &[Self::Node];
-    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample>;
+    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample<Self::Class>>;
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ClassTotals {
     instance_count: u64,
     shallow_size: u64,
@@ -90,10 +91,53 @@ impl NonOverlappingClassAccumulator {
     }
 }
 
-struct TraversalFrame<N> {
+trait Accumulator<K> {
+    fn enter(&mut self, sample: ClassHistogramSample<K>) -> K;
+    fn exit(&mut self, key: &K);
+    fn finish(self) -> Vec<ClassHistogramEntry>;
+}
+impl Accumulator<Arc<str>> for NonOverlappingClassAccumulator {
+    fn enter(&mut self, sample: ClassHistogramSample) -> Arc<str> { self.enter(sample) }
+    fn exit(&mut self, key: &Arc<str>) { self.exit(key); }
+    fn finish(self) -> Vec<ClassHistogramEntry> { self.finish() }
+}
+
+struct DenseAccumulator<'a> {
+    names: &'a [&'a Arc<str>],
+    totals: Vec<ClassTotals>,
+    active: Vec<usize>,
+}
+impl Accumulator<u32> for DenseAccumulator<'_> {
+    fn enter(&mut self, sample: ClassHistogramSample<u32>) -> u32 {
+        let slot = sample.class_name as usize;
+        let totals = &mut self.totals[slot];
+        totals.instance_count += 1;
+        totals.shallow_size += sample.shallow_size;
+        if self.active[slot] == 0 { totals.retained_size += sample.retained_size; }
+        self.active[slot] += 1;
+        sample.class_name
+    }
+    fn exit(&mut self, key: &u32) { self.active[*key as usize] -= 1; }
+    fn finish(self) -> Vec<ClassHistogramEntry> {
+        debug_assert!(self.active.iter().all(|depth| *depth == 0));
+        let mut entries: Vec<_> = self.totals.into_iter().zip(self.names).filter(|(t, _)| t.instance_count > 0)
+            .map(|(t, name)| ClassHistogramEntry { class_name: name.to_string(), instance_count: t.instance_count,
+                shallow_size: t.shallow_size, retained_size: t.retained_size }).collect();
+        entries.sort_by(|a, b| b.retained_size.cmp(&a.retained_size).then(a.class_name.cmp(&b.class_name)));
+        entries
+    }
+}
+
+pub(crate) fn aggregate_dense_histogram<T: ClassHistogramTree<Class = u32>>(
+    tree: &T, names: &[&Arc<str>],
+) -> Vec<ClassHistogramEntry> {
+    aggregate_with(tree, DenseAccumulator { names, totals: vec![ClassTotals::default(); names.len()], active: vec![0; names.len()] })
+}
+
+struct TraversalFrame<N, K> {
     node: N,
     next_child: usize,
-    active_class: Option<Arc<str>>,
+    active_class: Option<K>,
 }
 
 /// Builds a class histogram without double-counting nested retained subtrees.
@@ -102,9 +146,12 @@ struct TraversalFrame<N> {
 /// depth rather than the total number of heap objects.
 pub(crate) fn aggregate_class_histogram<T>(tree: &T) -> Vec<ClassHistogramEntry>
 where
-    T: ClassHistogramTree,
+    T: ClassHistogramTree<Class = Arc<str>>,
 {
-    let mut accumulator = NonOverlappingClassAccumulator::default();
+    aggregate_with(tree, NonOverlappingClassAccumulator::default())
+}
+
+fn aggregate_with<T: ClassHistogramTree, A: Accumulator<T::Class>>(tree: &T, mut accumulator: A) -> Vec<ClassHistogramEntry> {
     let root = tree.root();
     let root_class = tree.sample(root).map(|sample| accumulator.enter(sample));
     let mut stack = vec![TraversalFrame {
@@ -146,6 +193,7 @@ mod tests {
 
     impl ClassHistogramTree for TestTree {
         type Node = usize;
+        type Class = Arc<str>;
 
         fn root(&self) -> Self::Node {
             0
@@ -271,6 +319,27 @@ mod tests {
 
             let tree = TestTree { children, samples };
             let actual = aggregate_class_histogram(&tree);
+            // Distinct Arc allocations with equal text must still be one class.
+            struct NumericTree<'a>(&'a TestTree, &'a HashMap<&'a str, u32>);
+            impl ClassHistogramTree for NumericTree<'_> {
+                type Node = usize;
+                type Class = u32;
+                fn root(&self) -> usize { 0 }
+                fn children(&self, node: usize) -> &[usize] { &self.0.children[node] }
+                fn sample(&self, node: usize) -> Option<ClassHistogramSample<u32>> {
+                    self.0.samples[node].as_ref().map(|s| ClassHistogramSample {
+                        class_name: self.1[s.class_name.as_ref()], shallow_size: s.shallow_size, retained_size: s.retained_size,
+                    })
+                }
+            }
+            let mut names = Vec::new();
+            let mut slots = HashMap::new();
+            for sample in tree.samples.iter().flatten() {
+                slots.entry(sample.class_name.as_ref()).or_insert_with(|| {
+                    let slot = names.len() as u32; names.push(&sample.class_name); slot
+                });
+            }
+            assert_eq!(aggregate_dense_histogram(&NumericTree(&tree, &slots), &names), actual);
             let mut expected: HashMap<Arc<str>, ClassTotals> = HashMap::new();
 
             for node in 1..node_count {

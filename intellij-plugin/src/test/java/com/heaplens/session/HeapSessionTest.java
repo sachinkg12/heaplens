@@ -67,6 +67,21 @@ class HeapSessionTest {
     }
     boolean hasEvent(String command) { return events.stream().anyMatch(e -> command.equals(e.get("command").getAsString())); }
 
+    @Test void stagedSnapshotIsForwardedWithoutMarkingAnalysisReady() {
+        Fake f=started();
+        JsonObject params=JsonParser.parseString("{\"stage\":\"shallow_ready\",\"snapshot\":{\"kind\":\"shallow\",\"summary\":{\"reachable_heap_size\":null},\"class_histogram\":[]}}").getAsJsonObject();
+        params.addProperty("request_id",f.analysisId);
+        f.listener.notification("heap_analysis_progress",params);
+        await(()->events.stream().anyMatch(e->e.has("snapshot")));
+        assertEquals(HeapSession.State.ANALYZING,session.state());
+        assertTrue(events.stream().filter(e->e.has("snapshot")).findFirst().orElseThrow().getAsJsonObject("snapshot").getAsJsonObject("summary").get("reachable_heap_size").isJsonNull());
+        assertEquals(1,f.methods.stream().filter(m->m.equals("analyze_heap")).count());
+        assertFalse(f.methods.contains("scan_heap"));
+        session.read("get_children",new JsonObject(),(v,error)->assertNotNull(error));
+        await(()->f.methods.size()==1);
+        f.complete();await(()->session.state()==HeapSession.State.READY);
+    }
+
     @Test void shallowReadinessBlocksGraphReadsUntilExplicitEscalation() {
         session.start(AnalysisMode.SHALLOW);
         await(()->!clients.isEmpty() && clients.getFirst().analysisId>0);

@@ -16,7 +16,7 @@ import { friendlyError } from './errorMessages';
 import { executeAiFix } from './aiFixProvider';
 import { trackEvent, classifyError } from './telemetry';
 import { AnalysisSession } from './analysisSession';
-import { deliverOrBufferWebviewMessage, guardWebviewMessages } from './webviewMessageDelivery';
+import { deliverOrBufferWebviewMessage, deliverOrBufferProgress, guardWebviewMessages } from './webviewMessageDelivery';
 import { EditorServerConnection } from './editorServerConnection';
 import { LlmConfigurationService } from './llmConfigurationService';
 
@@ -164,7 +164,15 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         });
 
         // Start analysis
-        await this.analyzeFile(hprofPath, webviewPanel, client);
+        // Resolving the editor must not await the CPU job: the webview needs
+        // to install its handlers and display staged results during analysis.
+        void this.analyzeFile(hprofPath, webviewPanel, client).catch(error => {
+            if (this.editors.get(hprofPath) !== editorState) { return; }
+            this.outputChannel.appendLine(`[HeapLens] Analysis startup failed: ${error}`);
+            deliverOrBufferWebviewMessage(editorState, {
+                command:'analysisFailed', error:'Analysis could not start. Retry is available.'
+            }, message => webviewPanel.webview.postMessage(message));
+        });
     }
 
     private createClient(hprofPath: string): RustClient | null {
@@ -267,9 +275,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     };
                     if (params.summary) { progressMsg.summary = params.summary; }
                     if (params.file_metadata) { progressMsg.fileMetadata = params.file_metadata; }
-                    if (state?.webviewReady) {
-                        webviewPanel.webview.postMessage(progressMsg);
-                    }
+                    if (params.snapshot) { progressMsg.snapshot = params.snapshot; }
+                    if (state) { deliverOrBufferProgress(state, progressMsg, message => webviewPanel.webview.postMessage(message)); }
 
                     const phase = params.phase || 0;
                     const msg = phaseMessages[params.stage] || 'Analyzing...';

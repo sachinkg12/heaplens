@@ -53,6 +53,7 @@ pub fn compute_dominators(
     // --- Lengauer-Tarjan dominator algorithm ---
 
     // DFS numbering
+    let dfs_timer = super::stage_timer::StageTimer::start("dominators.dfs");
     let mut semi: Vec<u32> = vec![0; n];       // semi[v] = DFS number of semidominator of v
     let mut vertex: Vec<u32> = vec![0; n];     // vertex[i] = node with DFS number i
     let mut parent: Vec<u32> = vec![u32::MAX; n]; // DFS tree parent
@@ -90,6 +91,7 @@ pub fn compute_dominators(
     }
 
     let reachable = dfs_count as usize;
+    drop(dfs_timer);
 
     if reachable <= 1 {
         // Only the root or nothing is reachable
@@ -112,6 +114,7 @@ pub fn compute_dominators(
     }
 
     // Union-Find with path compression for ancestor queries
+    let lt_timer = super::stage_timer::StageTimer::start("dominators.lt_kernel");
     let mut ancestor: Vec<u32> = vec![u32::MAX; n]; // ancestor in the forest
     let mut label: Vec<u32> = (0..n as u32).collect();   // label[v] = node with min semi on path
 
@@ -197,6 +200,8 @@ pub fn compute_dominators(
 
     // Root has no dominator
     idom[root as usize] = u32::MAX;
+    drop(lt_timer);
+    let children_timer = super::stage_timer::StageTimer::start("dominators.children");
 
     // --- Build dominator tree structure ---
 
@@ -221,6 +226,8 @@ pub fn compute_dominators(
         }
     }
     let dominator_children = DominatorChildren::from_parents(&dominator_parent);
+    drop(children_timer);
+    let _retained_timer = super::stage_timer::StageTimer::start("dominators.retained_sizes");
 
     // --- Compute retained sizes bottom-up ---
 

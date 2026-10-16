@@ -49,6 +49,7 @@ fn build_impl(
         "CSR node count exceeds supported width"
     );
     let mut offsets = vec![0u32; nodes + 1];
+    let count_timer = super::stage_timer::StageTimer::start("csr.count_and_prefix");
     replay(true, &mut |(src, degree, label)| {
         super::disk_edges::check(cancel)?;
         ensure!(
@@ -66,6 +67,8 @@ fn build_impl(
             .ok_or_else(|| anyhow::anyhow!("CSR edge count exceeds supported width"))?;
     }
     let total = offsets[nodes] as usize;
+    drop(count_timer);
+    let resolve_timer = super::stage_timer::StageTimer::start("csr.resolve_and_fill");
     // A packed target/label word is eight bytes, compared with twelve-byte
     // triplets. A temporary cursor column lets counting overestimate missing
     // targets without resolving the full ID lookup twice. It is released before
@@ -106,6 +109,8 @@ fn build_impl(
         "Reference replay count changed"
     );
     drop(cursors);
+    drop(resolve_timer);
+    let sort_timer = super::stage_timer::StageTimer::start("csr.row_sort_and_compact");
     let mut read_start = 0;
     let mut written = 0usize;
     for row in 0..nodes {
@@ -139,6 +144,8 @@ fn build_impl(
         read_start = end;
     }
     offsets[nodes] = written as u32;
+    drop(sort_timer);
+    let split_timer = super::stage_timer::StageTimer::start("csr.split_columns");
     let mut targets = Vec::new();
     targets.try_reserve_exact(written)?;
     let mut labels = Vec::new();
@@ -148,6 +155,8 @@ fn build_impl(
         labels.push(value as u8);
     }
     drop(packed);
+    drop(split_timer);
+    let _reverse_timer = super::stage_timer::StageTimer::start("csr.reverse_index");
     let mut reverse_offsets = vec![0u32; nodes + 1];
     for &target in &targets {
         reverse_offsets[target as usize + 1] += 1;

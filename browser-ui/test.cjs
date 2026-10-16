@@ -69,6 +69,15 @@ test('explicit Waste reads update only their dump and nullable comparison metada
     await until(()=>b.events.some(e=>e.message.requestId==='complete-waste'));
     assert.equal(b.events.find(e=>e.message.requestId==='complete-waste').message.result.waste_delta.total_wasted_delta,0);
 });
+test('real browser host forwards a truthful shallow snapshot during one full job',async t=>{
+    const {sessions:[a],ready}=await setup(t);await ready(a);
+    const messages=a.events.map(e=>e.message),partial=messages.findIndex(m=>m.snapshot?.kind==='shallow');
+    const complete=messages.findIndex(m=>m.command==='analysisComplete');
+    assert.ok(partial>=0 && complete>partial);
+    assert.equal(messages[partial].snapshot.summary.reachable_heap_size,null);
+    assert.equal(messages[partial].snapshot.readiness.retained,'not_calculated');
+    assert.equal(messages.filter(m=>m.command==='shallowScanComplete').length,0);
+});
 test('real browser Quick Scan is isolated, cannot query, retries shallow and explicitly escalates', async t=>{
     const {host,sessions:[a,b],command}=await setup(t,{quickScan:true});
     await command(a,{command:'ready'});await until(()=>a.state==='shallow-ready');
