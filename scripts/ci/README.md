@@ -28,11 +28,25 @@ Boundary tests and VS Code npm test run on every CI event. The table shows addit
 | Documentation-only outside intellij-plugin / CI directories | No | No | No | No |
 | Unknown paths | Yes | Yes | Yes | No; explicit release decision needed |
 | Stable vMAJOR.MINOR.PATCH tag | Yes | Yes | Yes, then VS Code publication after passing checks | No recursive bump |
-| intellij-v... tag | Yes | No; real-server adapter smoke still runs | No | No; IntelliJ publishing is disabled |
+| Exact intellij-vMAJOR.MINOR.PATCH tag | Yes | Yes | No | No; the tested IntelliJ ZIP is published after passing checks |
+| Other intellij-v... tags (prerelease or malformed) | Yes | Yes | No | No; validation only |
+| cli-v... tag | No | Yes | No | No; CLI publication runs in the standalone workflow with its own gates |
 
 Selection is cumulative across the complete Git diff, not just the last commit or a limited API file list. PRs use the merge base. Deletions and both sides of renames count. Missing history or invalid routing inputs fail the workflow rather than authorize a release.
 
-The existing stable v1.0.x format is retained. Other v-prefixed tags, including prerelease tags, validate but do not publish. This project has no automatic IntelliJ tagging, JetBrains upload or IntelliJ Marketplace credentials yet.
+The existing stable v1.0.x format is retained. Other v-prefixed tags, including prerelease tags, validate but do not publish. IntelliJ and CLI releases use their own tag namespaces and version numbers, described below; nothing tags them automatically.
+
+## Tagged IntelliJ and CLI releases
+
+Pull requests and pushes to main only build and test candidates. A deliberate exact release tag on a commit that is already on main turns the candidate that CI tested into a published package. Version bumps and changelog entries stay manual.
+
+**IntelliJ, tag `intellij-vMAJOR.MINOR.PATCH`.** Set `version` in `intellij-plugin/build.gradle.kts` first; the tag must equal it. The run executes the boundary, Rust and IntelliJ jobs. `test-intellij` writes `SHA256SUMS` next to the ZIP it tested and uploads both. `publish-intellij` then runs on `ubuntu-latest` with `contents: write` only, downloads that artifact, and `scripts/ci/release-intellij.cjs` checks the tag syntax, the ancestry of the tagged commit on `origin/main`, the Gradle version, the ZIP name, the embedded plugin descriptor version and the checksums. It creates the GitHub release `intellij-v...` with the ZIP and `SHA256SUMS`, uploads the identical ZIP to JetBrains Marketplace through the documented upload API with `JETBRAINS_MARKETPLACE_TOKEN`, and attaches `marketplace-receipt.json` to the release. Marketplace verifies and lists the update itself; a green job is an accepted upload, not an approved listing. No Gradle task runs in the publish job, so nothing can be rebuilt or repackaged.
+
+**CLI, tag `cli-vMAJOR.MINOR.PATCH`.** See [the standalone packaging guide](../distribution/README.md#publish-after-acceptance) for the version coupling and the publication order.
+
+**Reruns.** Every publication step checks before it acts. A GitHub release asset, npm version or tap formula that already exists with identical content is skipped; one with different content stops the job for a person to resolve. Marketplace re-packages uploads, so an IntelliJ rerun recognizes a previous upload only through the receipt on the GitHub release; a listed version without a matching receipt stops the job.
+
+**Secrets.** `JETBRAINS_MARKETPLACE_TOKEN` is read only by `publish-intellij`. `HOMEBREW_TAP_TOKEN`, a fine-grained token limited to the tap repository's contents, is read only by `publish-cli`. npm uses trusted publishing with the job's short-lived identity token, so no npm secret exists. The VS Code tokens and `PAT_TOKEN` are not available to either release job.
 
 The first boundary-infrastructure commit also changes package.json/package-lock.json and tsconfig.json. It is therefore not an IntelliJ-only commit and can still legitimately trigger a VS Code patch release when merged to main. The no-release guarantee applies to commits whose entire relevant diff is IntelliJ-only.
 
