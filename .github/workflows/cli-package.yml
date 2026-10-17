@@ -2,6 +2,8 @@ name: Standalone CLI candidate
 
 on:
   workflow_dispatch:
+  push:
+    tags: ['cli-v*']
   pull_request:
     branches: [main]
     paths:
@@ -92,3 +94,78 @@ jobs:
           name: heaplens-cli-smoke-report-node${{ matrix.node }}
           path: ${{ runner.temp }}/heaplens-cli-candidate/smoke-report.json
           retention-days: 14
+
+  # ── Release gates and publication (exact cli-vMAJOR.MINOR.PATCH tags only) ──
+  # Pull requests and manual runs stop at the candidate and smoke jobs above with read-only permissions.
+  release-checks:
+    if: ${{ startsWith(github.ref, 'refs/tags/cli-v') }}
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      DO_NOT_TRACK: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            hprof-analyzer/target
+          key: cli-release-${{ runner.os }}-${{ hashFiles('hprof-analyzer/Cargo.lock') }}
+      - run: npm ci
+      - run: npm run test:boundaries
+      - name: Run the shared engine suite on the release platform
+        working-directory: hprof-analyzer
+        run: cargo test --locked --release
+
+  publish-cli:
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/cli-v') && needs.release-checks.result == 'success' && needs.apple-silicon-candidate.result == 'success' && needs.installed-package-test.result == 'success' }}
+    needs: [release-checks, apple-silicon-candidate, installed-package-test]
+    runs-on: macos-14
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+    concurrency:
+      group: cli-release # One CLI publication at a time, so an older tag cannot interleave with a newer one.
+      cancel-in-progress: false
+    env:
+      DO_NOT_TRACK: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Pin the npm release that trusted publishing requires
+        run: |
+          npm install -g npm@11.21.1
+          node --version
+          npm --version
+      - name: Require the native Apple Silicon runner
+        run: node -e "if(process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Apple Silicon runner required')"
+      - uses: actions/download-artifact@v4
+        with:
+          name: heaplens-cli-darwin-arm64-candidate
+          path: ${{ runner.temp }}/heaplens-cli-candidate
+      - name: Publish the tested candidate to the GitHub release, npm and the Homebrew tap
+        env:
+          CANDIDATE_DIR: ${{ runner.temp }}/heaplens-cli-candidate
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPOSITORY: sachinkg12/homebrew-heaplens
+        run: |
+          git fetch --no-tags origin main
+          node scripts/ci/release-cli.cjs

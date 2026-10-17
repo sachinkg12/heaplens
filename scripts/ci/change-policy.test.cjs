@@ -8,8 +8,8 @@ const {planChanges} = require('./change-policy.cjs');
 const {changedPaths} = require('./detect-changes.cjs');
 const {checkResults} = require('./check-results.cjs');
 const main = {eventName:'push',ref:'refs/heads/main',message:'fix: behavior'};
-const expected = (vscode,intellij,rust,auto_release,publish_vscode=false) =>
-  ({vscode,intellij,rust,auto_release,publish_vscode});
+const expected = (vscode,intellij,rust,auto_release,publish_vscode=false,publish_intellij=false) =>
+  ({vscode,intellij,rust,auto_release,publish_vscode,publish_intellij});
 
 for (const [label,files,plan] of [
   ['shared telemetry contract', ['telemetry/contract.json'], expected(true,true,true,true)],
@@ -37,8 +37,19 @@ test('PRs, release commits and unrelated branches cannot auto-bump', () => {
 test('stable VS Code tags select every compatibility check and only VS Code publication', () => {
   assert.deepEqual(planChanges([],{...main,ref:'refs/tags/v1.0.32'}),expected(true,true,true,false,true));
 });
-test('IntelliJ tags validate without bumping or publishing VS Code', () => {
-  assert.deepEqual(planChanges([],{...main,ref:'refs/tags/intellij-v0.1.0'}),expected(false,true,false,false));
+test('exact IntelliJ tags rerun the engine suite and publish only IntelliJ', () => {
+  assert.deepEqual(planChanges([],{...main,ref:'refs/tags/intellij-v0.1.17'}),expected(false,true,true,false,false,true));
+});
+test('prerelease or malformed IntelliJ tags validate without publishing', () => {
+  for (const ref of ['refs/tags/intellij-v0.1.17-rc.1','refs/tags/intellij-v01.2.3','refs/tags/intellij-vnext'])
+    assert.deepEqual(planChanges([],{...main,ref}),expected(false,true,true,false));
+});
+test('CLI tags revalidate the shared engine here and never publish VS Code or IntelliJ', () => {
+  for (const ref of ['refs/tags/cli-v0.1.1','refs/tags/cli-v0.2.0-beta.1'])
+    assert.deepEqual(planChanges([],{...main,ref}),expected(false,false,true,false));
+});
+test('release tags only count on push events', () => {
+  assert.deepEqual(planChanges([],{eventName:'pull_request',ref:'refs/tags/intellij-v0.1.17'}),expected(false,false,false,false));
 });
 test('unrecognized and prerelease tags never publish accidentally', () => {
   for (const ref of ['refs/tags/vnotes','refs/tags/v01.2.3','refs/tags/v1.0.32-beta.1'])
@@ -120,4 +131,5 @@ test('the workflow CLI emits false release outputs for a real IntelliJ-only push
   assert.match(fs.readFileSync(output,'utf8'),/^intellij=true$/m);
   assert.match(fs.readFileSync(output,'utf8'),/^auto_release=false$/m);
   assert.match(fs.readFileSync(output,'utf8'),/^publish_vscode=false$/m);
+  assert.match(fs.readFileSync(output,'utf8'),/^publish_intellij=false$/m);
 });

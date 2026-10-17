@@ -54,7 +54,7 @@ The output contains:
 - `homebrew-local/heaplens.rb` pointing at this local candidate for maintainer testing only.
 - `SHA256SUMS`, `candidate.json`, and, after a successful smoke run, `smoke-report.json`.
 
-The separate candidate workflow builds from its checkout on an architecture-checked runner and uploads the candidate as an artifact. A second job then installs that artifact and runs the smoke suite on Node 22 and Node 24, uploading one smoke report per version. The workflow has read-only repository permissions and no publication credentials. It runs manually or for matching pull-request changes; merging alone does not publish a CLI package or tap.
+The separate candidate workflow builds from its checkout on an architecture-checked runner and uploads the candidate as an artifact. A second job then installs that artifact and runs the smoke suite on Node 22 and Node 24, uploading one smoke report per version. Those jobs have read-only repository permissions and no publication credentials. They run manually or for matching pull-request changes; merging alone does not publish a CLI package or tap. Only an exact `cli-vMAJOR.MINOR.PATCH` tag adds the release gates and the publish job described below.
 
 ## Test a local npm install
 
@@ -83,14 +83,27 @@ If Homebrew rejects the installed Command Line Tools before installing HeapLens,
 
 ## Publish after acceptance
 
-1. Confirm ownership and availability of the npm name and tap repository. The configuration names are provisional until then.
-2. Build from a clean reviewed commit and test the exact resulting archives. Review the package file list and notices. Record platform and installed acceptance results.
-3. Create a separate `cli-v0.1.0` GitHub release and attach the portable archive and SHA256SUMS. Do not use the extension's `v1.0.x` release namespace for the CLI. Verify that the formula URL serves the exact archive matching its checksum.
-4. Authenticate to npm and publish only the generated `heaplens-cli-0.1.0.tgz` with `npm publish <candidate-tarball> --access public`. Initial publication requires the publisher's npm account; later CI publication can use a configured trusted publisher. No registry token is included in the package or this workflow.
-5. Create the public `homebrew-heaplens` tap repository, put the generated public formula in `Formula/heaplens.rb`, and test installation from that tap on a clean Apple Silicon environment.
-6. After both channels are public, document the real install commands and configure aggregate download statistics against those actual identifiers. npm downloads and Homebrew reported install events are different metrics, not unique people or an additive user total.
+### One-time setup, by hand
 
-These are maintainer publication steps, not actions performed by the candidate scripts. Package names, versions, and platform support must be verified again before a public release. macOS signing/notarization and clean-machine Gatekeeper acceptance remain release checks; a successful local build is not evidence that downloaded binaries clear those checks.
+1. Create the public `sachinkg12/homebrew-heaplens` tap repository. Add a fine-grained GitHub token limited to that repository's contents (read and write) as the `HOMEBREW_TAP_TOKEN` secret of this repository.
+2. Publish the first version from the maintainer's npm account, because trusted publishing can only be configured on an existing package: `npm publish <candidate-tarball> --access public`. Then, in the package settings on npmjs.com, add a trusted publisher for GitHub Actions with the user `sachinkg12`, the repository `heaplens`, the workflow file `cli-package.yml` and no environment, allowed for `npm publish`. Two-factor authentication is required on the account.
+3. Create the `cli-v<version>` GitHub release for that first version by hand with the portable archive, the npm archive and `SHA256SUMS`, and put the generated public formula in `Formula/heaplens.rb` of the tap. Confirm that the formula URL serves the exact archive matching its checksum.
+
+### Every later release, by tag
+
+1. Bump the version in `scripts/distribution/config.json` and `version` in `hprof-analyzer/Cargo.toml` (with `Cargo.lock`) in one commit, because the packager checks the native `heaplens --version` against the configuration. The crate version is also part of the disk-index namespace, so newly built engines start new index directories; installed hosts keep using theirs until they update. Use the `chore(release):` subject prefix if the commit should not trigger the automatic VS Code patch release that engine changes otherwise cause.
+2. Merge to main, then push the tag `cli-vMAJOR.MINOR.PATCH` on that merged commit. Prerelease or malformed tags do not publish.
+3. The workflow runs the candidate build, the Node 22 and Node 24 installed smoke runs, the boundary tests and the full Rust suite on an Apple Silicon runner. `publish-cli` then runs `scripts/ci/release-cli.cjs`, the only job with `contents: write` and `id-token: write`, in this order:
+   - bind the tag to the candidate, configuration and crate versions, the tagged commit and a clean worktree, and verify `SHA256SUMS`;
+   - regenerate a local-file formula for the downloaded archive (the candidate's `homebrew-local` formula names the build runner's temporary directory), install it from a disposable tap, run `brew test` and `heaplens --help`, then remove that tap;
+   - create the GitHub release `cli-v...` with the portable archive, the npm archive and `SHA256SUMS`, or complete an existing one whose assets match byte for byte;
+   - download the portable archive from the public release URL and compare its checksum, then install and test the public formula from a second disposable tap;
+   - publish the npm archive with trusted publishing, or skip it when the registry already has this version with the same integrity;
+   - write the public formula to the tap through the GitHub contents API, or skip it when the tap already serves the identical formula.
+   A GitHub asset, npm version or tap formula that exists with different content stops the job for a person to resolve, and a tag older than the version the tap already serves is refused rather than written. Publications run one at a time across tags. Reruns resume the remaining steps.
+4. After publication, confirm the real install commands in the user documentation and configure aggregate download statistics against the published identifiers. npm downloads and Homebrew install events are different metrics, not unique people or an additive user total.
+
+macOS signing/notarization and clean-machine Gatekeeper acceptance remain separate release checks; a successful workflow run is not evidence that downloaded binaries clear those checks.
 
 ## Engineering learnings
 

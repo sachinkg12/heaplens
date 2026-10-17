@@ -127,11 +127,12 @@ test('distribution code stays additive and is excluded from the VSIX', () => {
   assert.match(packageReadme, /Telemetry is enabled by default/);
   assert.match(packageReadme, /Node\.js 22 or newer/); assert.doesNotMatch(packageReadme, /Node\.js 20/);
 });
-test('standalone workflow builds candidates with read-only credentials and cannot publish either IDE', () => {
+test('standalone workflow builds candidates with read-only credentials; only exact CLI tags reach the publish job', () => {
   const root = path.resolve(__dirname, '../..');
   const source = fs.readFileSync(path.join(root, '.github/workflows/cli-package.yml'), 'utf8');
   const workflow = yaml.load(source);
-  assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'workflow_dispatch']);
+  assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'push', 'workflow_dispatch']);
+  assert.deepEqual(workflow.on.push, { tags: ['cli-v*'] }); // Branch pushes never run it.
   assert.deepEqual(workflow.permissions, { contents: 'read' });
   assert.equal(workflow.jobs['apple-silicon-candidate']['runs-on'], 'macos-14');
   assert.equal(workflow.jobs['apple-silicon-candidate'].env.DO_NOT_TRACK, '1');
@@ -150,5 +151,11 @@ test('standalone workflow builds candidates with read-only credentials and canno
   assert.equal(installed.env.DO_NOT_TRACK, '1');
   assert.match(JSON.stringify(installed.steps), /download-artifact@v4.*heaplens-cli-darwin-arm64-candidate.*smoke\.cjs/);
   assert.match(source, /scripts\/distribution\/smoke\.cjs/);
-  assert.doesNotMatch(source, /secrets\.|npm publish|git push|npm version|publishPlugin|gh release|contents: write|id-token: write/);
+  assert.doesNotMatch(source, /npm version|publishPlugin|git push|git tag/);
+  for (const name of ['apple-silicon-candidate', 'installed-package-test']) {
+    const job = workflow.jobs[name];
+    assert.equal(job.permissions, undefined, name + ' inherits read-only permissions');
+    assert.doesNotMatch(JSON.stringify(job), /secrets\.|npm publish|gh release|id-token|release-cli/, name + ' cannot publish');
+  }
+  assert.ok(workflow.jobs['publish-cli'], 'publication is isolated in its own tag-gated job');
 });

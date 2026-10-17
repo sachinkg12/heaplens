@@ -83,7 +83,70 @@ test('VSIX build and publication use the selected VS Code path and aggregate gat
   assert.deepEqual(jobs.publish.needs, ['changes', 'checks', 'build']);
   assert.match(jobs.publish.if, /needs\.changes\.outputs\.publish_vscode == 'true'/);
   assert.match(jobs.publish.if, /needs\.build\.result == 'success'/);
-  assert.doesNotMatch(JSON.stringify(workflow), /publishPlugin|JETBRAINS_MARKETPLACE_TOKEN/);
+  assert.doesNotMatch(JSON.stringify(workflow), /publishPlugin/);
+  for (const [name, job] of Object.entries(jobs))
+    if (name !== 'publish-intellij') assert.doesNotMatch(JSON.stringify(job), /JETBRAINS_MARKETPLACE_TOKEN/, name + ' must not see the Marketplace token');
+});
+
+test('IntelliJ publication uploads only the tested artifact behind the aggregate gate on exact release tags', () => {
+  const job = jobs['publish-intellij'];
+  assert.ok(job, 'CI needs an IntelliJ publish job');
+  assert.deepEqual(job.needs, ['changes', 'checks', 'test-intellij']);
+  assert.match(job.if, /needs\.changes\.outputs\.publish_intellij == 'true'/);
+  assert.match(job.if, /needs\.checks\.result == 'success'/);
+  assert.match(job.if, /needs\.test-intellij\.result == 'success'/);
+  assert.deepEqual(job.permissions, {contents:'write'});
+  assert.equal(job.concurrency['cancel-in-progress'], false);
+  assert.doesNotMatch(String(job.concurrency.group), /github\.ref/, 'publications serialize across tags, not per tag');
+  assert.ok(job.steps.some(step => step.uses?.startsWith('actions/download-artifact@') && step.with.name === 'intellij-apple-silicon-candidate'));
+  assert.ok(job.steps.every(step => !step.uses?.startsWith('gradle/') && !step.uses?.startsWith('actions/setup-java@')));
+  assert.doesNotMatch(runs(job), /gradlew|cargo |npm ci|git push|git tag/);
+  assert.match(runs(job), /git fetch --no-tags origin main/);
+  assert.match(runs(job), /node scripts\/ci\/release-intellij\.cjs/);
+  const publishStep = job.steps.find(step => /release-intellij/.test(step.run || ''));
+  assert.equal(publishStep.env.JETBRAINS_MARKETPLACE_TOKEN, '${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}');
+  assert.equal(publishStep.env.GH_TOKEN, '${{ github.token }}');
+  assert.ok(jobs.changes.outputs.publish_intellij, 'routing must expose publish_intellij');
+  const checksum = jobs['test-intellij'].steps.find(step => /shasum -a 256/.test(step.run || ''));
+  assert.ok(checksum, 'the tested ZIP must be checksummed by the job that tested it');
+  const upload = jobs['test-intellij'].steps.find(step => step.with?.name === 'intellij-apple-silicon-candidate');
+  assert.match(upload.with.path, /SHA256SUMS/);
+  assert.ok(jobs['test-intellij'].steps.indexOf(checksum) < jobs['test-intellij'].steps.indexOf(upload));
+});
+
+test('CLI publication runs only on exact release tags after every candidate, smoke and engine gate', () => {
+  const cli = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/cli-package.yml'), 'utf8'));
+  assert.deepEqual(cli.on.push, {tags:['cli-v*']});
+  assert.ok(cli.on.pull_request && cli.on.workflow_dispatch !== undefined);
+  assert.deepEqual(cli.permissions, {contents:'read'});
+  const gates = cli.jobs['release-checks'];
+  assert.match(gates.if, /startsWith\(github\.ref, 'refs\/tags\/cli-v'\)/);
+  assert.equal(gates['runs-on'], 'macos-14');
+  assert.match(runs(gates), /cargo test --locked --release/);
+  assert.match(runs(gates), /npm run test:boundaries/);
+  const job = cli.jobs['publish-cli'];
+  assert.ok(job, 'the CLI workflow needs a publish job');
+  assert.deepEqual(job.needs, ['release-checks', 'apple-silicon-candidate', 'installed-package-test']);
+  for (const need of job.needs) assert.match(job.if, new RegExp("needs\\." + need + "\\.result == 'success'"));
+  assert.match(job.if, /startsWith\(github\.ref, 'refs\/tags\/cli-v'\)/);
+  assert.deepEqual(job.permissions, {contents:'write', 'id-token':'write'});
+  for (const [name, other] of Object.entries(cli.jobs)) if (name !== 'publish-cli') assert.equal(other.permissions?.['id-token'], undefined, name + ' must not mint identity tokens');
+  assert.equal(job.concurrency['cancel-in-progress'], false);
+  assert.doesNotMatch(String(job.concurrency.group), /github\.ref/, 'publications serialize across tags, not per tag');
+  assert.equal(job['runs-on'], 'macos-14');
+  const node = job.steps.find(step => step.uses?.startsWith('actions/setup-node@'));
+  assert.match(String(node.with['node-version']), /^22\.\d+\.\d+$/);
+  assert.equal(node.with['registry-url'], 'https://registry.npmjs.org');
+  assert.match(runs(job), /npm install -g npm@11\.\d+\.\d+/);
+  assert.match(runs(job), /process\.platform.*process\.arch/);
+  assert.ok(job.steps.some(step => step.uses?.startsWith('actions/download-artifact@') && step.with.name === 'heaplens-cli-darwin-arm64-candidate'));
+  assert.doesNotMatch(runs(job), /cargo build|build\.cjs|git push|git tag|NPM_TOKEN|NODE_AUTH_TOKEN/);
+  assert.match(runs(job), /git fetch --no-tags origin main/);
+  assert.match(runs(job), /node scripts\/ci\/release-cli\.cjs/);
+  const publishStep = job.steps.find(step => /release-cli/.test(step.run || ''));
+  assert.equal(publishStep.env.HOMEBREW_TAP_TOKEN, '${{ secrets.HOMEBREW_TAP_TOKEN }}');
+  assert.equal(publishStep.env.TAP_REPOSITORY, 'sachinkg12/homebrew-heaplens');
+  assert.doesNotMatch(JSON.stringify(cli), /PAT_TOKEN|VSCE_PAT|OVSX_PAT|JETBRAINS_MARKETPLACE_TOKEN/);
 });
 
 test('VS Code compiler roots and package exclusions enforce host isolation', () => {

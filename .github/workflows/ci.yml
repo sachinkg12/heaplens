@@ -19,6 +19,7 @@ jobs:
       rust: ${{ steps.route.outputs.rust }}
       auto_release: ${{ steps.route.outputs.auto_release }}
       publish_vscode: ${{ steps.route.outputs.publish_vscode }}
+      publish_intellij: ${{ steps.route.outputs.publish_intellij }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -182,10 +183,18 @@ jobs:
             -Dheaplens.test.ci=true \
             -Dheaplens.test.server="$PLUGIN_ROOT/native/darwin-arm64/hprof-server" \
             -Dheaplens.test.dump="$FIXTURE_DIR/ci-smoke.hprof" -Dheaplens.test.pluginRoot="$PLUGIN_ROOT"
+      - name: Record the candidate checksum next to the ZIP
+        working-directory: intellij-plugin/build/distributions
+        run: |
+          [ "$(ls *-darwin-arm64.zip | wc -l | tr -d ' ')" = 1 ] || { echo '::error::Expected exactly one Apple Silicon ZIP'; exit 1; }
+          shasum -a 256 *-darwin-arm64.zip > SHA256SUMS
+          cat SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: intellij-apple-silicon-candidate
-          path: intellij-plugin/build/distributions/*-darwin-arm64.zip
+          path: |
+            intellij-plugin/build/distributions/*-darwin-arm64.zip
+            intellij-plugin/build/distributions/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v4
@@ -319,3 +328,36 @@ jobs:
         with:
           files: '*.vsix'
           generate_release_notes: true
+
+  # ── Publish the verified IntelliJ ZIP (exact intellij-vMAJOR.MINOR.PATCH tags only) ──
+  # The ZIP that test-intellij built, tested and verified is uploaded unchanged; nothing is rebuilt here.
+  publish-intellij:
+    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.test-intellij.result == 'success' && needs.changes.outputs.publish_intellij == 'true' }}
+    needs: [changes, checks, test-intellij]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: intellij-release # One IntelliJ publication at a time, across tags.
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: intellij-apple-silicon-candidate
+          path: ${{ runner.temp }}/intellij-candidate
+      - name: Publish the tested ZIP to the GitHub release and JetBrains Marketplace
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/intellij-candidate
+          GH_TOKEN: ${{ github.token }}
+          JETBRAINS_MARKETPLACE_TOKEN: ${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}
+        run: |
+          git fetch --no-tags origin main
+          node scripts/ci/release-intellij.cjs
