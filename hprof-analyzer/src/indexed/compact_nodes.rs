@@ -1,15 +1,14 @@
 //! Immutable, independently validated node columns. Compression is confined to
 //! metadata; CSR targets and traversal offsets retain their existing layout.
+#[cfg(test)]
+use super::node_store::NodeRecord;
 use super::{
     cache_writer::{CacheWriter, Receipt},
     column::Column,
     node_store::{NodeStore, NodeType},
 };
-#[cfg(test)]
-use super::node_store::NodeRecord;
 use anyhow::{ensure, Result};
 use std::{
-    collections::HashMap,
     io::Write,
     path::Path,
     sync::{atomic::AtomicBool, Arc},
@@ -94,15 +93,18 @@ pub(crate) fn write(
     cancel: &AtomicBool,
 ) -> Result<(Receipt, Vec<Arc<str>>)> {
     let mut names = Vec::new();
-    let mut slots: HashMap<Arc<str>, u32> = HashMap::new();
-    for (row, node) in nodes.iter().enumerate() {
+    // Preserve first-occurrence dictionary order, including when root names
+    // were replaced. Numeric slots avoid cloning/hashing a name per object.
+    let mut slots = vec![u32::MAX; nodes.name_count()];
+    for row in 0..nodes.len() {
         if row % 4096 == 0 {
             super::disk_edges::check(cancel)?;
         }
-        if !slots.contains_key(node.class_name.as_ref()) {
+        let original = nodes.name_slot_at(row as u32) as usize;
+        if slots[original] == u32::MAX {
             let slot = u32::try_from(names.len())?;
-            names.push(node.class_name.clone());
-            slots.insert(node.class_name.clone(), slot);
+            names.push(nodes.dictionary_name(original as u32).clone());
+            slots[original] = slot;
         }
     }
     let mut sorted = Vec::new();
@@ -122,14 +124,18 @@ pub(crate) fn write(
             nodes.len(),
             |i| {
                 if column == 5 {
-                    return if nodes.has_construction_lookup() { u64::from(nodes.lookup_order_at(i as u32)) } else { u64::from(sorted[i]) };
+                    return if nodes.has_construction_lookup() {
+                        u64::from(nodes.lookup_order_at(i as u32))
+                    } else {
+                        u64::from(sorted[i])
+                    };
                 }
                 let row = i as u32;
                 match column {
                     0 => nodes.id_at(row),
                     1 => nodes.shallow_at(row),
                     2 => u64::from(nodes.class_at(row)),
-                    3 => u64::from(slots[nodes.name_at(row)]),
+                    3 => u64::from(slots[nodes.name_slot_at(row) as usize]),
                     4 => nodes.kind_at(row) as u64,
                     _ => unreachable!(),
                 }
@@ -165,6 +171,10 @@ impl MappedNodes {
     pub fn len(&self) -> usize {
         self.count
     }
+    pub(crate) fn id_order_index(&self, rank: u32) -> u32 {
+        assert!((rank as usize) < self.count);
+        self.value(5, rank as usize) as u32
+    }
     pub fn id_at(&self, row: u32) -> u64 {
         self.value(0, row as usize)
     }
@@ -177,9 +187,15 @@ impl MappedNodes {
     pub fn name_at(&self, row: u32) -> &Arc<str> {
         &self.names[self.name_slot_at(row) as usize]
     }
-    pub fn name_slot_at(&self, row: u32) -> u32 { self.value(3, row as usize) as u32 }
-    pub fn name_count(&self) -> usize { self.names.len() }
-    pub fn dictionary_name(&self, slot: u32) -> &Arc<str> { &self.names[slot as usize] }
+    pub fn name_slot_at(&self, row: u32) -> u32 {
+        self.value(3, row as usize) as u32
+    }
+    pub fn name_count(&self) -> usize {
+        self.names.len()
+    }
+    pub fn dictionary_name(&self, slot: u32) -> &Arc<str> {
+        &self.names[slot as usize]
+    }
     pub fn kind_at(&self, row: u32) -> NodeType {
         kind(self.value(4, row as usize)).unwrap()
     }
@@ -381,6 +397,24 @@ mod tests {
             );
         }
         n
+    }
+    #[test]
+    fn numeric_dictionary_preserves_first_live_occurrence_after_root_upgrade() {
+        let mut nodes = NodeStore::new();
+        nodes.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        let root = nodes.add_node(7, 0, 0, NodeType::GcRoot, Arc::from("obsolete root name"));
+        nodes.add_node(8, 0, 16, NodeType::Instance, Arc::from("Second"));
+        nodes.define_node(7, 24, NodeType::Instance, Arc::from("First"));
+        let dir = tempfile::tempdir().unwrap();
+        let c = AtomicBool::new(false);
+        let (_, names) = write(&nodes, dir.path(), &c).unwrap();
+        assert_eq!(
+            names.iter().map(|n| n.as_ref()).collect::<Vec<_>>(),
+            vec!["SuperRoot", "First", "Second"]
+        );
+        let mapped = MappedNodes::map(dir.path(), names, nodes.len(), &c).unwrap();
+        assert_eq!(mapped.name_at(root).as_ref(), "First");
+        assert_eq!(mapped.shallow_at(root), 24);
     }
     #[test]
     fn mapped_columns_preserve_ids_sizes_names_types_and_unsorted_lookup() {

@@ -1220,6 +1220,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
         .map(|(id, name, ps)| (*id, (*name, *ps))).collect();
 
     let mut waste_data = WasteRawData {
+        mapped_arrays: None,
         lazy_contents: None,
         reference_bytes: sizing.layout.reference_bytes(),
         string_instances: Vec::new(),
@@ -1356,7 +1357,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                                 fields, id_size, &ft,
                                                 jvm_hprof::heap_dump::FieldType::ObjectId, 0,
                                             ) {
-                                                if let Some(&capacity) = waste_data.array_element_counts.get(&backing_array_id) {
+                                                if let Some(capacity) = waste_data.array_count(backing_array_id) {
                                                     let size_u32 = size_val as u32;
                                                     if capacity > 4 * size_u32 && capacity > 16 {
                                                         waste_data.over_allocated_collections.push(OverAllocatedCollectionInfo {

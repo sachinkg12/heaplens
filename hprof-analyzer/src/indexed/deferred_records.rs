@@ -23,10 +23,12 @@ struct Location {
 impl Row for Location {
     const WIDTH: usize = 24;
     fn write(self, out: &mut impl Write) -> Result<()> {
-        out.write_all(&self.node.to_le_bytes())?;
-        out.write_all(&self.class.to_le_bytes())?;
-        out.write_all(&self.offset.to_le_bytes())?;
-        out.write_all(&self.length.to_le_bytes())?;
+        let mut bytes = [0; Self::WIDTH];
+        bytes[..4].copy_from_slice(&self.node.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.class.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.offset.to_le_bytes());
+        bytes[16..].copy_from_slice(&self.length.to_le_bytes());
+        out.write_all(&bytes)?;
         Ok(())
     }
     fn decode(b: &[u8]) -> Self {
@@ -178,16 +180,23 @@ impl DeferredRecords {
     }
     /// Reuse exact, already-interned class slots instead of hashing each class
     /// twice again when materializing the on-demand body index.
-    pub(crate) fn locations(&self) -> Option<(&[u64], impl Iterator<Item = (u32, u32, u64, u64)> + '_)> {
-        if !matches!(&self.backing, Backing::Compact(_) | Backing::Mapped(_)) { return None; }
-        Some((&self.classes, (0..self.len()).map(|i| {
-            let row = match &self.backing {
-                Backing::Compact(rows) => rows[i],
-                Backing::Mapped(rows) => rows.get(i),
-                _ => unreachable!("validated mapped catalog"),
-            };
-            (row.node, row.class, row.offset, row.length)
-        })))
+    pub(crate) fn locations(
+        &self,
+    ) -> Option<(&[u64], impl Iterator<Item = (u32, u32, u64, u64)> + '_)> {
+        if !matches!(&self.backing, Backing::Compact(_) | Backing::Mapped(_)) {
+            return None;
+        }
+        Some((
+            &self.classes,
+            (0..self.len()).map(|i| {
+                let row = match &self.backing {
+                    Backing::Compact(rows) => rows[i],
+                    Backing::Mapped(rows) => rows.get(i),
+                    _ => unreachable!("validated mapped catalog"),
+                };
+                (row.node, row.class, row.offset, row.length)
+            }),
+        ))
     }
     pub(crate) fn sort_by_node(
         &mut self,
@@ -195,10 +204,28 @@ impl DeferredRecords {
         bytes: usize,
         cancel: &AtomicBool,
     ) -> Result<()> {
+        super::disk_edges::check(cancel)?;
         match &mut self.backing {
             Backing::Owned(rows) => rows.sort_unstable_by_key(|r| r.node_idx),
             Backing::Compact(rows) => rows.sort_unstable_by_key(|r| r.node),
             Backing::Mapped(rows) => {
+                // Roots may create nodes before their bodies. Verify, never
+                // assume, order; one inversion retains the external fallback.
+                let mut previous = None;
+                let mut ordered = true;
+                for (i, row) in rows.iter().enumerate() {
+                    if i % 4096 == 0 {
+                        super::disk_edges::check(cancel)?;
+                    }
+                    if previous.is_some_and(|node| node > row.node) {
+                        ordered = false;
+                        break;
+                    }
+                    previous = Some(row.node);
+                }
+                if ordered {
+                    return Ok(());
+                }
                 let mut sorter = Sorter::new(parent, bytes, false, cancel)?;
                 for row in rows.iter() {
                     sorter.push(row)?;
@@ -239,6 +266,51 @@ impl DeferredRecords {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_spool_avoids_sort_files_but_inversions_still_use_the_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = AtomicBool::new(false);
+        for order in [vec![1, 2, 3], vec![3, 1, 2], vec![1, 3, 2]] {
+            let mut rows = DeferredRecords::new(3, true, Some(dir.path())).unwrap();
+            for &node in &order {
+                rows.push(DeferredInstance {
+                    node_idx: node,
+                    class_obj_id: u64::MAX,
+                    field_bytes: DeferredBytes::Mapped {
+                        offset: node as usize,
+                        length: 1,
+                    },
+                })
+                .unwrap();
+            }
+            rows.finish().unwrap();
+            let original_owner = match &rows.backing {
+                Backing::Mapped(m) => m._owner_path_for_test(),
+                _ => unreachable!(),
+            };
+            rows.sort_by_node(dir.path(), 48, &cancel).unwrap();
+            assert_eq!(
+                rows.iter().map(|r| r.node_idx).collect::<Vec<_>>(),
+                vec![1, 2, 3]
+            );
+            if order == [1, 2, 3] {
+                assert!(
+                    original_owner.exists(),
+                    "ordered spool must retain its original owner"
+                );
+            } else {
+                assert!(
+                    !original_owner.exists(),
+                    "unordered spool must replace its original owner"
+                );
+            }
+        }
+        let mut empty = DeferredRecords::new(0, true, Some(dir.path())).unwrap();
+        empty.finish().unwrap();
+        assert!(empty
+            .sort_by_node(dir.path(), 48, &AtomicBool::new(true))
+            .is_err());
+    }
     #[test]
     fn compact_and_spooled_locations_preserve_full_offsets_ids_and_sorted_bodies() {
         let dir = tempfile::tempdir().unwrap();

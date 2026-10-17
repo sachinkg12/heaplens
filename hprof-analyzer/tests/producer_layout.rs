@@ -386,5 +386,5 @@ fn profiled_memory_disk_reopen_and_shallow_scan_agree_and_old_cache_is_untouched
         .unwrap()
         .file_name()
         .to_string_lossy()
-        .starts_with("structure-v9-")));
+        .starts_with("structure-v10-")));
 }

@@ -6,12 +6,12 @@ use std::{
     cmp::Reverse,
     collections::BinaryHeap,
     fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 type Edge = (u32, u32, u8);
-const FAN_IN: usize = 32;
+use super::run_budget::FAN_IN;
 
 pub(crate) fn create(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
@@ -28,17 +28,25 @@ pub(crate) fn check(cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 fn write_edge(out: &mut impl Write, edge: Edge) -> Result<()> {
-    out.write_all(&edge.0.to_le_bytes())?;
-    out.write_all(&edge.1.to_le_bytes())?;
-    out.write_all(&[edge.2])?;
+    let mut bytes = [0; 9];
+    bytes[..4].copy_from_slice(&edge.0.to_le_bytes());
+    bytes[4..8].copy_from_slice(&edge.1.to_le_bytes());
+    bytes[8] = edge.2;
+    out.write_all(&bytes)?;
     Ok(())
 }
-fn read_edge(input: &mut impl Read) -> Result<Option<Edge>> {
-    let mut bytes = [0; 9];
-    if input.read(&mut bytes[..1])? == 0 {
+fn read_edge(input: &mut impl BufRead) -> Result<Option<Edge>> {
+    let available = input.fill_buf()?;
+    if available.is_empty() {
         return Ok(None);
     }
-    input.read_exact(&mut bytes[1..])?;
+    let mut bytes = [0; 9];
+    if available.len() >= bytes.len() {
+        bytes.copy_from_slice(&available[..9]);
+        input.consume(9);
+    } else {
+        input.read_exact(&mut bytes)?;
+    }
     Ok(Some((
         u32::from_le_bytes(bytes[..4].try_into()?),
         u32::from_le_bytes(bytes[4..8].try_into()?),
@@ -51,6 +59,7 @@ struct Sorter<'a> {
     prefix: &'static str,
     buffer: Vec<Edge>,
     limit: usize,
+    io_buffer: usize,
     levels: Vec<Vec<PathBuf>>,
     next: usize,
     cancel: &'a AtomicBool,
@@ -62,13 +71,15 @@ impl<'a> Sorter<'a> {
         bytes: usize,
         cancel: &'a AtomicBool,
     ) -> Result<Self> {
-        let limit = bytes / std::mem::size_of::<Edge>();
+        let (rows_bytes, io_buffer) = super::run_budget::split(bytes, 8192);
+        let limit = rows_bytes / std::mem::size_of::<Edge>();
         ensure!(limit > 0, "Edge buffer too small");
         Ok(Self {
             dir,
             prefix,
             buffer: Vec::with_capacity(limit),
             limit,
+            io_buffer,
             levels: Vec::new(),
             next: 0,
             cancel,
@@ -97,7 +108,7 @@ impl<'a> Sorter<'a> {
         self.buffer.sort_unstable();
         self.buffer.dedup_by(|b, a| a.0 == b.0 && a.1 == b.1);
         let path = self.path();
-        let mut writer = BufWriter::new(create(&path)?);
+        let mut writer = BufWriter::with_capacity(self.io_buffer, create(&path)?);
         for &edge in &self.buffer {
             write_edge(&mut writer, edge)?;
         }
@@ -108,7 +119,7 @@ impl<'a> Sorter<'a> {
     }
     fn merged(&mut self, inputs: Vec<PathBuf>) -> Result<PathBuf> {
         let output = self.path();
-        merge(&inputs, &output, self.cancel)?;
+        merge(&inputs, &output, self.io_buffer, self.cancel)?;
         for input in inputs {
             std::fs::remove_file(input)?;
         }
@@ -128,6 +139,7 @@ impl<'a> Sorter<'a> {
     }
     fn finish(mut self) -> Result<PathBuf> {
         self.flush()?;
+        drop(std::mem::take(&mut self.buffer));
         let mut runs: Vec<_> = std::mem::take(&mut self.levels)
             .into_iter()
             .flatten()
@@ -156,13 +168,13 @@ impl<'a> Sorter<'a> {
         Ok(runs.pop().unwrap())
     }
 }
-fn merge(inputs: &[PathBuf], output: &Path, cancel: &AtomicBool) -> Result<()> {
+fn merge(inputs: &[PathBuf], output: &Path, io_buffer: usize, cancel: &AtomicBool) -> Result<()> {
     let mut readers: Vec<_> = inputs
         .iter()
-        .map(|p| File::open(p).map(BufReader::new))
+        .map(|p| File::open(p).map(|f| BufReader::with_capacity(io_buffer, f)))
         .collect::<std::io::Result<_>>()?;
     let mut heap = BinaryHeap::new();
-    let mut writer = BufWriter::new(create(output)?);
+    let mut writer = BufWriter::with_capacity(io_buffer, create(output)?);
     for (index, reader) in readers.iter_mut().enumerate() {
         if let Some(edge) = read_edge(reader)? {
             heap.push(Reverse((edge, index)));
@@ -170,7 +182,8 @@ fn merge(inputs: &[PathBuf], output: &Path, cancel: &AtomicBool) -> Result<()> {
     }
     let mut previous = None;
     let mut steps = 0usize;
-    while let Some(Reverse((edge, index))) = heap.pop() {
+    while let Some(mut head) = heap.peek_mut() {
+        let Reverse((edge, index)) = *head;
         if steps % 4096 == 0 {
             check(cancel)?;
         }
@@ -180,7 +193,9 @@ fn merge(inputs: &[PathBuf], output: &Path, cancel: &AtomicBool) -> Result<()> {
             previous = Some((edge.0, edge.1));
         }
         if let Some(next) = read_edge(&mut readers[index])? {
-            heap.push(Reverse((next, index)));
+            *head = Reverse((next, index));
+        } else {
+            std::collections::binary_heap::PeekMut::pop(head);
         }
     }
     writer.flush()?;
@@ -212,7 +227,9 @@ impl<'a> DiskEdgeBuilder<'a> {
     }
     pub fn add_edge(&mut self, src: u32, dst: u32, label: u8) -> Result<()> {
         ensure!(
-            (src as usize) < self.nodes && (dst as usize) < self.nodes && super::edge_store::label::valid(label),
+            (src as usize) < self.nodes
+                && (dst as usize) < self.nodes
+                && super::edge_store::label::valid(label),
             "Invalid edge"
         );
         self.sorter.as_mut().unwrap().add((src, dst, label))
@@ -223,12 +240,20 @@ impl<'a> DiskEdgeBuilder<'a> {
     pub(crate) fn build_recorded(
         mut self,
     ) -> Result<(EdgeStore, Vec<super::cache_writer::Receipt>)> {
+        let timer = super::stage_timer::StageTimer::start("disk.forward_merge");
         let forward = self.sorter.take().unwrap().finish()?;
+        drop(timer);
         let mut reverse = Sorter::new(self.directory, "reverse", self.bytes, self.cancel)?;
+        let timer = super::stage_timer::StageTimer::start("disk.forward_columns");
         let mut receipts = self.columns(&forward, "forward", Some(&mut reverse))?;
+        drop(timer);
         std::fs::remove_file(forward)?;
+        let timer = super::stage_timer::StageTimer::start("disk.reverse_merge");
         let reverse_path = reverse.finish()?;
+        drop(timer);
+        let timer = super::stage_timer::StageTimer::start("disk.reverse_columns");
         receipts.extend(self.columns(&reverse_path, "reverse", None)?);
+        drop(timer);
         std::fs::remove_file(reverse_path)?;
         Ok((EdgeStore::map(self.directory, self.nodes)?, receipts))
     }
@@ -238,7 +263,8 @@ impl<'a> DiskEdgeBuilder<'a> {
         prefix: &str,
         mut reverse: Option<&mut Sorter<'a>>,
     ) -> Result<Vec<super::cache_writer::Receipt>> {
-        let mut input = BufReader::new(File::open(sorted)?);
+        let (_, io_buffer) = super::run_budget::split(self.bytes, 8192);
+        let mut input = BufReader::with_capacity(io_buffer, File::open(sorted)?);
         let mut offsets = super::cache_writer::CacheWriter::new(
             self.directory,
             &format!("{prefix}.offsets"),
@@ -296,6 +322,24 @@ impl<'a> DiskEdgeBuilder<'a> {
 mod tests {
     use super::*;
     use crate::indexed::edge_store::EdgeBuilder;
+    #[test]
+    fn fixed_edges_cross_buffer_boundaries_and_truncation_is_not_eof() {
+        let edges = [(0, u32::MAX, 6), (u32::MAX, 0, 0), (17, 29, 2)];
+        let mut bytes = Vec::new();
+        for edge in edges {
+            write_edge(&mut bytes, edge).unwrap();
+        }
+        for capacity in 1..40 {
+            let mut reader = BufReader::with_capacity(capacity, &bytes[..]);
+            for edge in edges {
+                assert_eq!(read_edge(&mut reader).unwrap(), Some(edge));
+            }
+            assert_eq!(read_edge(&mut reader).unwrap(), None);
+            for cut in 1..9 {
+                assert!(read_edge(&mut BufReader::with_capacity(capacity, &bytes[..cut])).is_err());
+            }
+        }
+    }
     #[test]
     fn tiny_spills_match_memory_csr_with_null_empty_duplicate_and_shared_targets() {
         for nodes in [1, 32, 127] {

@@ -63,6 +63,8 @@ pub(crate) struct BoxedPrimitiveInfo {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct WasteRawData {
     #[serde(skip)]
+    pub(crate) mapped_arrays: Option<std::sync::Arc<crate::indexed::array_catalog::ArrayCatalog>>,
+    #[serde(skip)]
     pub(crate) lazy_contents: Option<std::sync::Arc<crate::indexed::waste::LazyStringContents>>,
     pub(crate) reference_bytes: u64,
     pub(crate) string_instances: Vec<StringInstanceInfo>,
@@ -76,6 +78,7 @@ pub struct WasteRawData {
 impl WasteRawData {
     pub fn new() -> Self {
         WasteRawData {
+            mapped_arrays: None,
             lazy_contents: None,
             reference_bytes: 8,
             string_instances: Vec::new(),
@@ -85,6 +88,10 @@ impl WasteRawData {
             over_allocated_collections: Vec::new(),
             boxed_primitives: Vec::new(),
         }
+    }
+    pub(crate) fn array_count(&self, id: u64) -> Option<u32> {
+        self.array_element_counts.get(&id).copied()
+            .or_else(|| self.mapped_arrays.as_ref()?.count(id))
     }
 }
 

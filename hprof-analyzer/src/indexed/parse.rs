@@ -13,15 +13,15 @@ use jvm_hprof::{parse_hprof, RecordTag};
 
 use crate::graph_builder::convert_jvm_class_name;
 use crate::waste::{
-    BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo,
-    OverAllocatedCollectionInfo, StringInstanceInfo, WasteRawData,
+    BackingArrayInfo, BoxedPrimitiveInfo, EmptyCollectionInfo, OverAllocatedCollectionInfo,
+    StringInstanceInfo, WasteRawData,
 };
 use crate::HeapSummary;
 
 use super::class_index::{ClassIndex, ClassInfo, FieldDescriptor};
-use super::edge_store::EdgeStore;
 #[cfg(test)]
 use super::edge_store::EdgeBuilder;
+use super::edge_store::EdgeStore;
 use super::node_store::{NodeStore, NodeType};
 use super::parse_metadata::{CandidateFields, ParseNames};
 use super::string_table::StringTable;
@@ -45,16 +45,32 @@ pub enum DeferredBytes {
 }
 impl DeferredBytes {
     fn capture(bytes: &[u8], input: &[u8], mapped: bool) -> Result<Self> {
-        if !mapped { return Ok(Self::Owned(bytes.to_vec())); }
-        let offset = (bytes.as_ptr() as usize).checked_sub(input.as_ptr() as usize)
+        if !mapped {
+            return Ok(Self::Owned(bytes.to_vec()));
+        }
+        let offset = (bytes.as_ptr() as usize)
+            .checked_sub(input.as_ptr() as usize)
             .ok_or_else(|| anyhow::anyhow!("Invalid input range"))?;
-        anyhow::ensure!(offset.checked_add(bytes.len()).is_some_and(|end| end <= input.len()), "Invalid input range");
-        Ok(Self::Mapped { offset, length: bytes.len() })
+        anyhow::ensure!(
+            offset
+                .checked_add(bytes.len())
+                .is_some_and(|end| end <= input.len()),
+            "Invalid input range"
+        );
+        Ok(Self::Mapped {
+            offset,
+            length: bytes.len(),
+        })
     }
     pub(crate) fn bytes<'a>(&'a self, input: Option<&'a [u8]>) -> Result<&'a [u8]> {
         match self {
             Self::Owned(bytes) => Ok(bytes),
-            Self::Mapped { offset, length } => input.and_then(|input| offset.checked_add(*length).and_then(|end| input.get(*offset..end)))
+            Self::Mapped { offset, length } => input
+                .and_then(|input| {
+                    offset
+                        .checked_add(*length)
+                        .and_then(|end| input.get(*offset..end))
+                })
                 .ok_or_else(|| anyhow::anyhow!("Mapped input range unavailable")),
         }
     }
@@ -158,7 +174,10 @@ pub fn parse_indexed(data: &[u8]) -> Result<ParseResult> {
 }
 
 /// Parse using a known producer layout, or infer an estimated layout with None.
-pub fn parse_indexed_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<ParseResult> {
+pub fn parse_indexed_with_layout(
+    data: &[u8],
+    layout: Option<crate::object_layout::ObjectLayout>,
+) -> Result<ParseResult> {
     let (phase1, deferred) = parse_indexed_phase1_with_layout(data, layout)?;
     let phase2 = parse_indexed_phase2(&phase1, deferred)?;
 
@@ -183,62 +202,134 @@ pub fn parse_indexed_phase1(data: &[u8]) -> Result<(Phase1Result, DeferredEdgeDa
     parse_indexed_phase1_with_layout(data, None)
 }
 
-pub fn parse_indexed_phase1_with_layout(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
+pub fn parse_indexed_phase1_with_layout(
+    data: &[u8],
+    layout: Option<crate::object_layout::ObjectLayout>,
+) -> Result<(Phase1Result, DeferredEdgeData)> {
     parse_phase1(data, layout, None, None, None, &mut |_| {})
 }
 
 /// File-backed entry point: preserve the mapping for on-demand content analysis.
 /// As with HprofLoader, the input file must remain immutable while it is mapped.
-pub fn parse_indexed_phase1_mapped(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, layout, Some(mapping.clone()), None, None, &mut |_| {})
+pub fn parse_indexed_phase1_mapped(
+    mapping: Arc<memmap2::Mmap>,
+    layout: Option<crate::object_layout::ObjectLayout>,
+) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(
+        &mapping,
+        layout,
+        Some(mapping.clone()),
+        None,
+        None,
+        &mut |_| {},
+    )
 }
-pub fn parse_indexed_phase1_mapped_cancellable(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>,
-    cancel: &std::sync::atomic::AtomicBool) -> Result<(Phase1Result, DeferredEdgeData)> {
+pub fn parse_indexed_phase1_mapped_cancellable(
+    mapping: Arc<memmap2::Mmap>,
+    layout: Option<crate::object_layout::ObjectLayout>,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(Phase1Result, DeferredEdgeData)> {
     parse_indexed_phase1_observed(mapping, layout, cancel, &mut |_| {})
 }
 
-pub fn parse_indexed_phase1_observed(mapping: Arc<memmap2::Mmap>, layout: Option<crate::object_layout::ObjectLayout>,
-    cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, layout, Some(mapping.clone()), None, Some((0, cancel)), progress)
+pub fn parse_indexed_phase1_observed(
+    mapping: Arc<memmap2::Mmap>,
+    layout: Option<crate::object_layout::ObjectLayout>,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
+) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(
+        &mapping,
+        layout,
+        Some(mapping.clone()),
+        None,
+        Some((0, cancel)),
+        progress,
+    )
 }
 
-pub(crate) fn parse_indexed_phase1_disk(mapping: Arc<memmap2::Mmap>, directory: &std::path::Path,
-    sort_bytes: usize, cancel: &std::sync::atomic::AtomicBool, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
-    parse_phase1(&mapping, None, Some(mapping.clone()), Some(directory), Some((sort_bytes, cancel)), progress)
+pub(crate) fn parse_indexed_phase1_disk(
+    mapping: Arc<memmap2::Mmap>,
+    directory: &std::path::Path,
+    sort_bytes: usize,
+    cancel: &std::sync::atomic::AtomicBool,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
+) -> Result<(Phase1Result, DeferredEdgeData)> {
+    parse_phase1(
+        &mapping,
+        None,
+        Some(mapping.clone()),
+        Some(directory),
+        Some((sort_bytes, cancel)),
+        progress,
+    )
 }
 
-fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>, mapping: Option<Arc<memmap2::Mmap>>, directory: Option<&std::path::Path>, construction: Option<(usize, &std::sync::atomic::AtomicBool)>, progress: &mut dyn FnMut(super::progress::Observation<'_>)) -> Result<(Phase1Result, DeferredEdgeData)> {
+fn parse_phase1(
+    data: &[u8],
+    layout: Option<crate::object_layout::ObjectLayout>,
+    mapping: Option<Arc<memmap2::Mmap>>,
+    directory: Option<&std::path::Path>,
+    construction: Option<(usize, &std::sync::atomic::AtomicBool)>,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
+) -> Result<(Phase1Result, DeferredEdgeData)> {
     let sizing_timer = super::stage_timer::StageTimer::start("parse.sizing_and_producer");
     let mut content_ranges = HashMap::new();
     let mut ids = if let (Some(directory), Some((bytes, cancel))) = (directory, construction) {
-        let mut sorter = super::sorted_runs::Sorter::<u64>::new(directory, bytes.min(16 * 1024 * 1024), true, cancel)?;
-        sorter.push(0)?; Some(sorter)
-    } else { None };
+        let mut sorter = super::sorted_runs::Sorter::<u64>::new(
+            directory,
+            bytes.min(16 * 1024 * 1024),
+            true,
+            cancel,
+        )?;
+        sorter.push(0)?;
+        Some(sorter)
+    } else {
+        None
+    };
     let mut catalog = |id| ids.as_mut().expect("catalog enabled").push(id);
     let has_catalog = directory.is_some();
-    let cancelled = || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed));
-    let catalog = if has_catalog { Some(&mut catalog as &mut dyn FnMut(u64) -> Result<()>) } else { None };
-    let mut counts_progress = |counts: crate::hprof_sizing::RecordCounts| progress(super::progress::Observation::Records {
-            instances:counts.instances, arrays:counts.object_arrays + counts.primitive_arrays,
-            classes:counts.classes, roots:counts.roots
-        });
-    let sizing = if let Some(mapping) = mapping.as_deref() {
-        crate::hprof_sizing::HprofSizing::read_mapped_tracked(mapping, layout, &cancelled, catalog, &mut counts_progress)?
+    let cancelled = || {
+        construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed))
+    };
+    let catalog = if has_catalog {
+        Some(&mut catalog as &mut dyn FnMut(u64) -> Result<()>)
     } else {
-        crate::hprof_sizing::HprofSizing::read_tracked(data, layout, &cancelled, catalog, &mut counts_progress)?
+        None
+    };
+    let mut counts_progress = |counts: crate::hprof_sizing::RecordCounts| {
+        progress(super::progress::Observation::Records {
+            instances: counts.instances,
+            arrays: counts.object_arrays + counts.primitive_arrays,
+            classes: counts.classes,
+            roots: counts.roots,
+        })
+    };
+    let sizing = if let Some(mapping) = mapping.as_deref() {
+        crate::hprof_sizing::HprofSizing::read_mapped_tracked(
+            mapping,
+            layout,
+            &cancelled,
+            catalog,
+            &mut counts_progress,
+        )?
+    } else {
+        crate::hprof_sizing::HprofSizing::read_tracked(
+            data,
+            layout,
+            &cancelled,
+            catalog,
+            &mut counts_progress,
+        )?
     };
     drop(sizing_timer);
     let catalog_timer = super::stage_timer::StageTimer::start("parse.catalog_and_names");
     progress(super::progress::Observation::Stage("catalog_building"));
-    let hprof = parse_hprof(data)
-        .map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
+    let hprof =
+        parse_hprof(data).map_err(|e| anyhow::anyhow!("Failed to parse HPROF file: {:?}", e))?;
 
     let id_size = hprof.header().id_size();
-    let hprof_version = hprof
-        .header()
-        .label()
-        .unwrap_or("unknown")
-        .to_string();
+    let hprof_version = hprof.header().label().unwrap_or("unknown").to_string();
 
     // The sizing scan already visits these records. Reuse its independent hints
     // rather than reserving object/class/string tables from payload byte size.
@@ -247,25 +338,45 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // Admit before count-sized tables are allocated. Retain the lease with the
     // final state, including while its dump editor is open but idle.
     let resource = if mapping.is_some() {
-        Some(super::resource_lease::Lease::acquire(super::resource_plan::Plan::from_counts(
-            counts, directory.is_some(), construction.map_or(0, |(bytes, _)| bytes))?)?)
-    } else { None };
+        Some(super::resource_lease::Lease::acquire(
+            super::resource_plan::Plan::from_counts(
+                counts,
+                directory.is_some(),
+                construction.map_or(0, |(bytes, _)| bytes),
+            )?,
+        )?)
+    } else {
+        None
+    };
     let mut string_table = StringTable::try_with_capacity(counts.strings)?;
     let mut load_class_entries: Vec<(u64, u64)> = reserved_records(counts.load_classes)?;
     let mut class_index = ClassIndex::try_with_capacity(counts.classes)?;
     let mut node_store = if let Some(ids) = ids {
         NodeStore::construction(ids.finish()?, directory.unwrap(), construction.unwrap().1)?
-    } else { NodeStore::try_with_capacity(counts.node_capacity()?)? };
+    } else {
+        NodeStore::try_with_capacity(counts.node_capacity()?)?
+    };
     node_store.set_resource(resource);
     let mut gc_root_ids: Vec<u64> = reserved_records(counts.roots)?;
-    let mut deferred_instances = super::deferred_records::DeferredRecords::new(counts.instances, mapping.is_some(), directory)?;
-    let mut deferred_arrays = super::deferred_records::DeferredRecords::new(counts.object_arrays, mapping.is_some(), directory)?;
+    let mut deferred_instances = super::deferred_records::DeferredRecords::new(
+        counts.instances,
+        mapping.is_some(),
+        directory,
+    )?;
+    let mut deferred_arrays = super::deferred_records::DeferredRecords::new(
+        counts.object_arrays,
+        mapping.is_some(),
+        directory,
+    )?;
     let mut deferred_class_edges: Vec<DeferredClassEdge> = reserved_records(counts.classes)?;
     let mut heap_types: Vec<String> = Vec::new();
 
     // Class name map: class_obj_id -> human-readable name
-    let mut class_name_map = super::parse_metadata::prepare_class_names(data, &mut load_class_entries,
-        || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))?;
+    let mut class_name_map =
+        super::parse_metadata::prepare_class_names(data, &mut load_class_entries, || {
+            construction
+                .is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        })?;
     drop(catalog_timer);
     let records_timer = super::stage_timer::StageTimer::start("parse.node_records");
     let mut missing_instance_names = false;
@@ -294,16 +405,15 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
     // Add SuperRoot node at index 0
     let super_root_name: Arc<str> = Arc::from("SuperRoot");
-    let _super_root_idx =
-        node_store.add_node(0, 0, 0, NodeType::SuperRoot, super_root_name);
+    let _super_root_idx = node_store.add_node(0, 0, 0, NodeType::SuperRoot, super_root_name);
 
     // ========================================================================
     // Pass 1: Single scan of all records
     // ========================================================================
 
     for record_result in hprof.records_iter() {
-        let record = record_result
-            .map_err(|e| anyhow::anyhow!("Failed to parse record: {:?}", e))?;
+        let record =
+            record_result.map_err(|e| anyhow::anyhow!("Failed to parse record: {:?}", e))?;
 
         match record.tag() {
             RecordTag::Utf8 => {
@@ -320,15 +430,15 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
             }
             RecordTag::HeapDump | RecordTag::HeapDumpSegment => {
                 if let Some(hd_result) = record.as_heap_dump_segment() {
-                    let heap_dump = hd_result.map_err(|e| {
-                        anyhow::anyhow!("Failed to parse HeapDumpSegment: {:?}", e)
-                    })?;
+                    let heap_dump = hd_result
+                        .map_err(|e| anyhow::anyhow!("Failed to parse HeapDumpSegment: {:?}", e))?;
 
                     for sub_result in heap_dump.sub_records() {
-                        if let Some((_, cancel)) = construction { super::disk_edges::check(cancel)?; }
-                        let sub = sub_result.map_err(|e| {
-                            anyhow::anyhow!("Failed to parse sub-record: {:?}", e)
-                        })?;
+                        if let Some((_, cancel)) = construction {
+                            super::disk_edges::check(cancel)?;
+                        }
+                        let sub = sub_result
+                            .map_err(|e| anyhow::anyhow!("Failed to parse sub-record: {:?}", e))?;
 
                         if let Some(root_id) = crate::gc_roots::object_id(&sub) {
                             add_gc_root(
@@ -390,14 +500,25 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 );
 
                                 // A root record may precede the class definition.
-                                let (class_idx, defined) = node_store.define_node(obj_id, 0, NodeType::Class, Arc::from("Class"));
+                                let (class_idx, defined) = node_store.define_node(
+                                    obj_id,
+                                    0,
+                                    NodeType::Class,
+                                    Arc::from("Class"),
+                                );
                                 class_count += u64::from(defined);
 
                                 // Collect class structural edges for Phase 2
                                 // (target nodes may not exist yet during Phase 1)
                                 {
-                                    let super_class_id = class.super_class_obj_id().map(|id| id.id()).filter(|&id| id != 0);
-                                    let classloader_id = class.class_loader_obj_id().map(|id| id.id()).filter(|&id| id != 0);
+                                    let super_class_id = class
+                                        .super_class_obj_id()
+                                        .map(|id| id.id())
+                                        .filter(|&id| id != 0);
+                                    let classloader_id = class
+                                        .class_loader_obj_id()
+                                        .map(|id| id.id())
+                                        .filter(|&id| id != 0);
 
                                     let mut static_field_refs = Vec::new();
                                     for sf_result in class.static_fields() {
@@ -423,8 +544,14 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                         class_node_idx: class_idx,
                                         super_class_id,
                                         classloader_id,
-                                        signers_id: class.signers_obj_id().map(|id| id.id()).filter(|&id| id != 0),
-                                        protection_domain_id: class.protection_domain_obj_id().map(|id| id.id()).filter(|&id| id != 0),
+                                        signers_id: class
+                                            .signers_obj_id()
+                                            .map(|id| id.id())
+                                            .filter(|&id| id != 0),
+                                        protection_domain_id: class
+                                            .protection_domain_obj_id()
+                                            .map(|id| id.id())
+                                            .filter(|&id| id != 0),
                                         static_field_refs,
                                     });
                                 }
@@ -434,13 +561,22 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                             jvm_hprof::heap_dump::SubRecord::Instance(instance) => {
                                 let obj_id = instance.obj_id().id();
                                 let class_obj_id = instance.class_obj_id().id();
-                                let size = sizing.instance(class_obj_id, instance.fields().len())?;
+                                let size =
+                                    sizing.instance(class_obj_id, instance.fields().len())?;
                                 let class_name = class_name_map
                                     .get(&class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| { missing_instance_names = true; names.unknown(class_obj_id) });
+                                    .unwrap_or_else(|| {
+                                        missing_instance_names = true;
+                                        names.unknown(class_obj_id)
+                                    });
 
-                                let (node_idx, defined) = node_store.define_node(obj_id, size, NodeType::Instance, class_name);
+                                let (node_idx, defined) = node_store.define_node(
+                                    obj_id,
+                                    size,
+                                    NodeType::Instance,
+                                    class_name,
+                                );
                                 if defined {
                                     instance_count += 1;
                                     total_shallow_size += size as u64;
@@ -450,7 +586,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 deferred_instances.push(DeferredInstance {
                                     node_idx,
                                     class_obj_id,
-                                    field_bytes: DeferredBytes::capture(instance.fields(), data, mapping.is_some())?,
+                                    field_bytes: DeferredBytes::capture(
+                                        instance.fields(),
+                                        data,
+                                        mapping.is_some(),
+                                    )?,
                                 })?;
                             }
 
@@ -463,7 +603,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 // instead of iterating to count. Still iterate
                                 // for collecting non-null element references.
                                 let element_count = array.num_elements();
-                                let element_refs = DeferredBytes::capture(array.raw_contents(), data, mapping.is_some())?;
+                                let element_refs = DeferredBytes::capture(
+                                    array.raw_contents(),
+                                    data,
+                                    mapping.is_some(),
+                                )?;
 
                                 let size = sizing.object_array(element_count)?;
                                 // Use a placeholder; LoadClass may not be processed yet.
@@ -471,10 +615,18 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let class_name = class_name_map
                                     .get(&array_class_obj_id)
                                     .cloned()
-                                    .unwrap_or_else(|| { missing_array_names = true; names.object_array() });
+                                    .unwrap_or_else(|| {
+                                        missing_array_names = true;
+                                        names.object_array()
+                                    });
                                 array_element_counts.insert(obj_id, element_count);
 
-                                let (node_idx, defined) = node_store.define_node(obj_id, size, NodeType::ObjectArray, class_name);
+                                let (node_idx, defined) = node_store.define_node(
+                                    obj_id,
+                                    size,
+                                    NodeType::ObjectArray,
+                                    class_name,
+                                );
                                 if defined {
                                     array_count += 1;
                                     total_shallow_size += size as u64;
@@ -503,30 +655,54 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 array_element_counts.insert(obj_id, elem_count);
 
                                 // A mapped input defers payload reads until Waste is requested.
-                                if matches!(prim_type,
-                                    jvm_hprof::heap_dump::PrimitiveArrayType::Byte |
-                                    jvm_hprof::heap_dump::PrimitiveArrayType::Char
+                                if matches!(
+                                    prim_type,
+                                    jvm_hprof::heap_dump::PrimitiveArrayType::Byte
+                                        | jvm_hprof::heap_dump::PrimitiveArrayType::Char
                                 ) {
                                     let raw_data = array.contents();
                                     if !raw_data.is_empty() {
-                                        let is_char = matches!(prim_type, jvm_hprof::heap_dump::PrimitiveArrayType::Char);
+                                        let is_char = matches!(
+                                            prim_type,
+                                            jvm_hprof::heap_dump::PrimitiveArrayType::Char
+                                        );
                                         if mapping.is_some() {
-                                            let offset = (raw_data.as_ptr() as usize).checked_sub(data.as_ptr() as usize)
-                                                .ok_or_else(|| anyhow::anyhow!("Invalid array content range"))?;
-                                            let end = offset.checked_add(raw_data.len())
+                                            let offset = (raw_data.as_ptr() as usize)
+                                                .checked_sub(data.as_ptr() as usize)
+                                                .ok_or_else(|| {
+                                                    anyhow::anyhow!("Invalid array content range")
+                                                })?;
+                                            let end = offset
+                                                .checked_add(raw_data.len())
                                                 .filter(|end| *end <= data.len())
-                                                .ok_or_else(|| anyhow::anyhow!("Invalid array content range"))?;
-                                            content_ranges.insert(obj_id, ArrayContentRange {
-                                                offset, length: end - offset, shallow_size: size, is_char,
-                                            });
+                                                .ok_or_else(|| {
+                                                    anyhow::anyhow!("Invalid array content range")
+                                                })?;
+                                            content_ranges.insert(
+                                                obj_id,
+                                                ArrayContentRange {
+                                                    offset,
+                                                    length: end - offset,
+                                                    shallow_size: size,
+                                                    is_char,
+                                                },
+                                            );
                                         } else {
                                             // Borrowed-byte callers keep their established eager semantics.
-                                            backing_arrays.insert(obj_id, backing_array(raw_data, size, is_char));
+                                            backing_arrays.insert(
+                                                obj_id,
+                                                backing_array(raw_data, size, is_char),
+                                            );
                                         }
                                     }
                                 }
 
-                                let (_, defined) = node_store.define_node(obj_id, size, NodeType::PrimitiveArray, class_name);
+                                let (_, defined) = node_store.define_node(
+                                    obj_id,
+                                    size,
+                                    NodeType::PrimitiveArray,
+                                    class_name,
+                                );
                                 if defined {
                                     array_count += 1;
                                     total_shallow_size += size as u64;
@@ -539,7 +715,12 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 let prim_type = array.primitive_type();
                                 let (_, class_name) = names.primitive(prim_type);
 
-                                let (_, defined) = node_store.define_node(obj_id, 0, NodeType::PrimitiveArray, class_name);
+                                let (_, defined) = node_store.define_node(
+                                    obj_id,
+                                    0,
+                                    NodeType::PrimitiveArray,
+                                    class_name,
+                                );
                                 if defined {
                                     array_count += 1;
                                 }
@@ -574,8 +755,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     for &(class_obj_id, class_name_id) in &load_class_entries {
         if let Some(name) = string_table.get(class_name_id) {
             let java_name = convert_jvm_class_name(name);
-            let arc_name: Arc<str> = class_name_map.get(&class_obj_id).filter(|name| name.as_ref() == java_name)
-                .cloned().unwrap_or_else(|| Arc::from(java_name.as_str()));
+            let arc_name: Arc<str> = class_name_map
+                .get(&class_obj_id)
+                .filter(|name| name.as_ref() == java_name)
+                .cloned()
+                .unwrap_or_else(|| Arc::from(java_name.as_str()));
             class_name_map.insert(class_obj_id, arc_name.clone());
 
             // Fix up ClassInfo class_name
@@ -605,7 +789,9 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // Fix up Class node names (they were stored as "Class" placeholder
     // because LoadClass may not have been processed yet)
     for &(id, _) in &load_class_entries {
-        let Some(index) = node_store.index_of(id) else { continue; };
+        let Some(index) = node_store.index_of(id) else {
+            continue;
+        };
         let node = node_store.get_by_index(index);
         if matches!(node.node_type, NodeType::Class) && node.class_name.as_ref() == "Class" {
             if let Some(name) = class_name_map.get(&node.id) {
@@ -617,28 +803,32 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
     // Fix up deferred instance class names (instances whose class was Unknown
     // because LoadClass hadn't been processed yet)
-    if missing_instance_names { for di in deferred_instances.iter() {
-        if let Some(name) = class_name_map.get(&di.class_obj_id) {
-            let node = node_store.get_by_index(di.node_idx);
-            if node.class_name.starts_with("Unknown(") {
-                let mut node_mut = node_store.get_by_index_mut(di.node_idx);
-                node_mut.class_name = name.clone();
+    if missing_instance_names {
+        for di in deferred_instances.iter() {
+            if let Some(name) = class_name_map.get(&di.class_obj_id) {
+                let node = node_store.get_by_index(di.node_idx);
+                if node.class_name.starts_with("Unknown(") {
+                    let mut node_mut = node_store.get_by_index_mut(di.node_idx);
+                    node_mut.class_name = name.clone();
+                }
             }
         }
-    } }
+    }
 
     // Fix up object array class names (arrays whose class name defaulted to
     // "Object[]" because LoadClass hadn't been processed yet)
-    if missing_array_names { for array in deferred_arrays.iter() {
-        let (node_idx, array_class_obj_id) = (array.node_idx, array.class_obj_id);
-        if let Some(name) = class_name_map.get(&array_class_obj_id) {
-            let node = node_store.get_by_index(node_idx);
-            if node.class_name.as_ref() == "Object[]" {
-                let mut node_mut = node_store.get_by_index_mut(node_idx);
-                node_mut.class_name = name.clone();
+    if missing_array_names {
+        for array in deferred_arrays.iter() {
+            let (node_idx, array_class_obj_id) = (array.node_idx, array.class_obj_id);
+            if let Some(name) = class_name_map.get(&array_class_obj_id) {
+                let node = node_store.get_by_index(node_idx);
+                if node.class_name.as_ref() == "Object[]" {
+                    let mut node_mut = node_store.get_by_index_mut(node_idx);
+                    node_mut.class_name = name.clone();
+                }
             }
         }
-    } }
+    }
 
     // ========================================================================
     // Resolve class field layouts
@@ -654,8 +844,11 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
     // ========================================================================
 
     let histogram_timer = super::stage_timer::StageTimer::start("parse.shallow_histogram");
-    let class_histogram = super::parse_metadata::shallow_histogram_cancellable(&node_store,
-        &mut || construction.is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed)))?;
+    let class_histogram =
+        super::parse_metadata::shallow_histogram_cancellable(&node_store, &mut || {
+            construction
+                .is_some_and(|(_, cancel)| cancel.load(std::sync::atomic::Ordering::Relaxed))
+        })?;
     drop(histogram_timer);
 
     let summary = HeapSummary {
@@ -669,7 +862,10 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
         hprof_version,
         heap_types,
     };
-    progress(super::progress::Observation::Shallow { summary:&summary, histogram:&class_histogram });
+    progress(super::progress::Observation::Shallow {
+        summary: &summary,
+        histogram: &class_histogram,
+    });
     let waste_timer = super::stage_timer::StageTimer::start("parse.waste_candidates");
 
     // ========================================================================
@@ -678,7 +874,9 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
 
     let mut waste_raw = WasteRawData::new();
     waste_raw.reference_bytes = sizing.layout.reference_bytes();
-    waste_raw.lazy_contents = mapping.as_ref().map(|mapping| Arc::new(LazyStringContents::new(mapping.clone(), content_ranges)));
+    waste_raw.lazy_contents = mapping
+        .as_ref()
+        .map(|mapping| Arc::new(LazyStringContents::new(mapping.clone(), content_ranges)));
     // Merge backing array content hashes collected during PrimitiveArray parsing
     waste_raw.backing_arrays = backing_arrays;
     // Collect waste data from deferred instances (in-memory, no file scan needed)
@@ -721,10 +919,19 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
             .collect();
 
         let candidate_fields: HashMap<u64, CandidateFields> = [
-            string_class_id, hashmap_class_id, linked_hashmap_class_id, arraylist_class_id,
-        ].into_iter().flatten().filter_map(|id| {
-            class_index.field_layout(id).map(|layout| (id, CandidateFields::new(layout, id_size)))
-        }).collect();
+            string_class_id,
+            hashmap_class_id,
+            linked_hashmap_class_id,
+            arraylist_class_id,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|id| {
+            class_index
+                .field_layout(id)
+                .map(|layout| (id, CandidateFields::new(layout, id_size)))
+        })
+        .collect();
 
         waste_raw.array_element_counts = array_element_counts;
 
@@ -764,24 +971,23 @@ fn parse_phase1(data: &[u8], layout: Option<crate::object_layout::ObjectLayout>,
                                 shallow_size: shallow,
                             });
                         } else if let Some(backing_array_id) = plan.object(fields) {
-                            if let Some(&capacity) =
-                                waste_raw.array_element_counts.get(&backing_array_id)
+                            if let Some(capacity) =
+                                waste_raw.array_count(backing_array_id)
                             {
                                 let size_u32 = size_val as u32;
                                 if capacity > 4 * size_u32 && capacity > 16 {
-                                    waste_raw
-                                        .over_allocated_collections
-                                        .push(OverAllocatedCollectionInfo {
+                                    waste_raw.over_allocated_collections.push(
+                                        OverAllocatedCollectionInfo {
                                             class_name: cname,
                                             size: size_u32,
                                             capacity,
-                                        });
+                                        },
+                                    );
                                 }
                             }
                         }
                     }
                 }
-
             }
 
             // Waste: boxed primitives (outside field_layout check —
@@ -838,10 +1044,23 @@ pub fn parse_indexed_phase2(
 ) -> Result<Phase2Result> {
     parse_indexed_phase2_cancellable(phase1, deferred, &std::sync::atomic::AtomicBool::new(false))
 }
-pub fn parse_indexed_phase2_cancellable(phase1: &Phase1Result, deferred: DeferredEdgeData,
-    cancel: &std::sync::atomic::AtomicBool) -> Result<Phase2Result> {
+pub fn parse_indexed_phase2_cancellable(
+    phase1: &Phase1Result,
+    deferred: DeferredEdgeData,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Phase2Result> {
     let edges = super::memory_edges::build(phase1, &deferred, cancel)?;
-    Ok(Phase2Result { object_bodies: deferred.mapping.as_ref().map(|_| super::object_bodies::ObjectBodies::memory_catalog(&deferred.deferred_instances)).transpose()?, edge_store: edges, waste_raw: phase1.waste_raw.clone() })
+    Ok(Phase2Result {
+        object_bodies: deferred
+            .mapping
+            .as_ref()
+            .map(|_| {
+                super::object_bodies::ObjectBodies::memory_catalog(&deferred.deferred_instances)
+            })
+            .transpose()?,
+        edge_store: edges,
+        waste_raw: phase1.waste_raw.clone(),
+    })
 }
 
 /// Disk mode streams each resolved reference into a bounded sorted-run builder.
@@ -852,7 +1071,10 @@ pub fn parse_indexed_phase2_disk(
     edge_buffer_bytes: usize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Phase2Result> {
-    Ok(parse_indexed_phase2_disk_recorded(phase1, deferred, directory, edge_buffer_bytes, cancel)?.0)
+    Ok(
+        parse_indexed_phase2_disk_recorded(phase1, deferred, directory, edge_buffer_bytes, cancel)?
+            .0,
+    )
 }
 
 pub(crate) fn parse_indexed_phase2_disk_recorded(
@@ -862,21 +1084,59 @@ pub(crate) fn parse_indexed_phase2_disk_recorded(
     edge_buffer_bytes: usize,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<(Phase2Result, Vec<super::cache_writer::Receipt>)> {
-    let mut builder = super::disk_edges::DiskEdgeBuilder::new(directory, phase1.node_store.len(), edge_buffer_bytes, cancel)?;
+    let mut batch = super::reference_batch::ReferenceBatch::new(edge_buffer_bytes)?;
+    let mut builder = super::disk_edges::DiskEdgeBuilder::new(
+        directory,
+        phase1.node_store.len(),
+        edge_buffer_bytes - batch.bytes(),
+        cancel,
+    )?;
+    let timer = super::stage_timer::StageTimer::start("disk.reference_extraction");
     for instance in deferred.deferred_instances.iter() {
         super::disk_edges::check(cancel)?;
-        super::edge_extract::instance(&instance, &deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
+        super::edge_extract::instance_reference_ids(
+            &instance,
+            &deferred,
+            phase1,
+            |src, id, label| {
+                batch.push(src, id, label, &phase1.node_store, |s, t, l| {
+                    builder.add_edge(s, t, l)
+                })
+            },
+        )?;
     }
-    super::edge_extract::structural(&deferred, phase1, |src, dst, label| builder.add_edge(src, dst, label))?;
-    let body_receipt = super::object_bodies::ObjectBodies::write_catalog(&mut deferred.deferred_instances,directory,edge_buffer_bytes.min(16 * 1024 * 1024),cancel)?;
-    let input_bytes = deferred.mapping.as_ref().ok_or_else(||anyhow::anyhow!("Disk storage requires mapped input"))?.len();
+    batch.flush(&phase1.node_store, |s, t, l| builder.add_edge(s, t, l))?;
+    drop(batch);
+    super::edge_extract::structural(&deferred, phase1, |src, dst, label| {
+        builder.add_edge(src, dst, label)
+    })?;
+    drop(timer);
+    let body_receipt = super::object_bodies::ObjectBodies::write_catalog(
+        &mut deferred.deferred_instances,
+        directory,
+        edge_buffer_bytes.min(16 * 1024 * 1024),
+        cancel,
+    )?;
+    let input_bytes = deferred
+        .mapping
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Disk storage requires mapped input"))?
+        .len();
     // References and body offsets are now persisted. Free parse-only records
     // before reverse sorting, mapping and cache publication can overlap them.
     drop(deferred);
-    let bodies=super::object_bodies::ObjectBodies::map(directory,phase1.node_store.len(),input_bytes)?;
+    let bodies =
+        super::object_bodies::ObjectBodies::map_cancellable(directory, phase1.node_store.len(), input_bytes, cancel)?;
     let (edge_store, mut receipts) = builder.build_recorded()?;
     receipts.push(body_receipt);
-    Ok((Phase2Result { object_bodies: Some(bodies), edge_store, waste_raw: phase1.waste_raw.clone() }, receipts))
+    Ok((
+        Phase2Result {
+            object_bodies: Some(bodies),
+            edge_store,
+            waste_raw: phase1.waste_raw.clone(),
+        },
+        receipts,
+    ))
 }
 
 #[cfg(test)]
@@ -1093,7 +1353,8 @@ mod tests {
                 node_idx: reference_idx,
                 class_obj_id: 11,
                 field_bytes: DeferredBytes::Owned(200u64.to_be_bytes().to_vec()),
-            }].into(),
+            }]
+            .into(),
             deferred_arrays: Vec::new().into(),
             deferred_class_edges: Vec::new(),
             class_name_map: HashMap::new(),
@@ -1104,7 +1365,10 @@ mod tests {
         let phase2 = parse_indexed_phase2(&phase1, deferred).unwrap();
 
         assert!(
-            !phase2.edge_store.neighbors(reference_idx).contains(&payload_idx),
+            !phase2
+                .edge_store
+                .neighbors(reference_idx)
+                .contains(&payload_idx),
             "java.lang.ref.Reference.referent must not keep its target strongly reachable"
         );
     }

@@ -293,6 +293,12 @@ impl Default for NodeStore {
         Self::new()
     }
 }
+
+impl NodeStore {
+    pub(crate) fn mapped_id_order_index(&self, rank: u32) -> u32 {
+        self.mapped.as_ref().expect("frozen node order").id_order_index(rank)
+    }
+}
 impl Clone for NodeStore {
     fn clone(&self) -> Self {
         // Only private construction owns mutable maps; it is frozen before the

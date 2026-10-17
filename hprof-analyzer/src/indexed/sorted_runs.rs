@@ -1,16 +1,16 @@
 //! Private fixed-row runs: bounded sort buffers and bounded merge fan-in.
 //! Used for construction catalogs, never as an unchecked public file decoder.
+use super::run_budget::FAN_IN;
 use anyhow::{ensure, Result};
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
     fs::File,
-    io::{BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Write},
     marker::PhantomData,
     path::{Path, PathBuf},
     sync::{atomic::AtomicBool, Arc},
 };
-const FAN_IN: usize = 32;
 const IO_BUFFER: usize = 4096;
 
 pub(crate) trait Row: Copy + Ord + Send + Sync {
@@ -28,24 +28,32 @@ impl Row for u64 {
         u64::from_le_bytes(bytes[..8].try_into().unwrap())
     }
 }
-fn next<T: Row>(input: &mut impl Read) -> Result<Option<T>> {
+fn next<T: Row>(input: &mut impl BufRead) -> Result<Option<T>> {
     // Catalog row widths are small and fixed; reject partial rows.
     ensure!(
         T::WIDTH <= 32 && T::WIDTH > 0,
         "Invalid construction row width"
     );
-    let mut bytes = [0; 32];
-    if input.read(&mut bytes[..1])? == 0 {
+    let available = input.fill_buf()?;
+    if available.is_empty() {
         return Ok(None);
     }
-    input.read_exact(&mut bytes[1..T::WIDTH])?;
-    Ok(Some(T::decode(&bytes[..T::WIDTH])))
+    if available.len() >= T::WIDTH {
+        let row = T::decode(&available[..T::WIDTH]);
+        input.consume(T::WIDTH);
+        Ok(Some(row))
+    } else {
+        let mut bytes = [0; 32];
+        input.read_exact(&mut bytes[..T::WIDTH])?;
+        Ok(Some(T::decode(&bytes[..T::WIDTH])))
+    }
 }
 
 pub(crate) struct Sorter<'a, T: Row> {
     owner: Arc<tempfile::TempDir>,
     buffer: Vec<T>,
     limit: usize,
+    io_buffer: usize,
     levels: Vec<Vec<PathBuf>>,
     serial: usize,
     unique: bool,
@@ -53,7 +61,8 @@ pub(crate) struct Sorter<'a, T: Row> {
 }
 impl<'a, T: Row> Sorter<'a, T> {
     pub fn new(parent: &Path, bytes: usize, unique: bool, cancel: &'a AtomicBool) -> Result<Self> {
-        let limit = bytes / std::mem::size_of::<T>();
+        let (rows_bytes, io_buffer) = super::run_budget::split(bytes, IO_BUFFER);
+        let limit = rows_bytes / std::mem::size_of::<T>();
         ensure!(limit > 0, "Catalog sort budget too small");
         let mut buffer = Vec::new();
         buffer.try_reserve_exact(limit)?;
@@ -65,6 +74,7 @@ impl<'a, T: Row> Sorter<'a, T> {
             ),
             buffer,
             limit,
+            io_buffer,
             levels: Vec::new(),
             serial: 0,
             unique,
@@ -96,7 +106,7 @@ impl<'a, T: Row> Sorter<'a, T> {
             self.buffer.dedup();
         }
         let path = self.path();
-        let mut out = BufWriter::with_capacity(IO_BUFFER, super::disk_edges::create(&path)?);
+        let mut out = BufWriter::with_capacity(self.io_buffer, super::disk_edges::create(&path)?);
         for &row in &self.buffer {
             row.write(&mut out)?;
         }
@@ -110,9 +120,9 @@ impl<'a, T: Row> Sorter<'a, T> {
         let path = self.path();
         let mut readers: Vec<_> = inputs
             .iter()
-            .map(|p| File::open(p).map(|f| BufReader::with_capacity(IO_BUFFER, f)))
+            .map(|p| File::open(p).map(|f| BufReader::with_capacity(self.io_buffer, f)))
             .collect::<std::io::Result<_>>()?;
-        let mut out = BufWriter::with_capacity(IO_BUFFER, super::disk_edges::create(&path)?);
+        let mut out = BufWriter::with_capacity(self.io_buffer, super::disk_edges::create(&path)?);
         let mut heap = BinaryHeap::new();
         for (slot, reader) in readers.iter_mut().enumerate() {
             if let Some(row) = next::<T>(reader)? {
@@ -121,7 +131,8 @@ impl<'a, T: Row> Sorter<'a, T> {
         }
         let mut previous = None;
         let mut count = 0usize;
-        while let Some(Reverse((row, slot))) = heap.pop() {
+        while let Some(mut head) = heap.peek_mut() {
+            let Reverse((row, slot)) = *head;
             if count % 4096 == 0 {
                 super::disk_edges::check(self.cancel)?;
             }
@@ -131,7 +142,9 @@ impl<'a, T: Row> Sorter<'a, T> {
             }
             previous = Some(row);
             if let Some(row) = next::<T>(&mut readers[slot])? {
-                heap.push(Reverse((row, slot)));
+                *head = Reverse((row, slot));
+            } else {
+                std::collections::binary_heap::PeekMut::pop(head);
             }
         }
         out.flush()?;
@@ -157,6 +170,8 @@ impl<'a, T: Row> Sorter<'a, T> {
     }
     pub fn finish(mut self) -> Result<MappedRows<T>> {
         self.flush()?;
+        // No more runs will be generated; release row staging before merging.
+        drop(std::mem::take(&mut self.buffer));
         let mut runs: Vec<_> = std::mem::take(&mut self.levels)
             .into_iter()
             .flatten()
@@ -186,6 +201,10 @@ pub(crate) struct MappedRows<T: Row> {
     marker: PhantomData<T>,
 }
 impl<T: Row> MappedRows<T> {
+    #[cfg(test)]
+    pub(crate) fn _owner_path_for_test(&self) -> PathBuf {
+        self._owner.path().to_path_buf()
+    }
     pub fn open(path: &Path, owner: Arc<tempfile::TempDir>) -> Result<Self> {
         let file = File::open(path)?;
         let length = usize::try_from(file.metadata()?.len())?;
@@ -219,6 +238,23 @@ impl<T: Row> MappedRows<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn buffered_rows_cross_every_small_buffer_boundary_and_reject_partial_rows() {
+        let values = [0u64, u64::MAX, 1 << 48, 7];
+        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        for capacity in 1..40 {
+            let mut reader = BufReader::with_capacity(capacity, &bytes[..]);
+            for value in values {
+                assert_eq!(next::<u64>(&mut reader).unwrap(), Some(value));
+            }
+            assert_eq!(next::<u64>(&mut reader).unwrap(), None);
+            for cut in 1..8 {
+                assert!(
+                    next::<u64>(&mut BufReader::with_capacity(capacity, &bytes[..cut])).is_err()
+                );
+            }
+        }
+    }
     #[test]
     fn tiny_bounded_runs_merge_deduplicate_and_keep_full_width_ids() {
         let dir = tempfile::tempdir().unwrap();

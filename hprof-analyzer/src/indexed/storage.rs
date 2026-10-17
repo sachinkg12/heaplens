@@ -278,9 +278,9 @@ mod tests {
             assert_eq!(disk.get_waste_analysis(), memory.get_waste_analysis());
         }
         let metadata = std::fs::read(entry(root.path()).join("metadata.bin")).unwrap();
-        assert!(metadata.starts_with(b"HLMETA03"));
+        assert!(metadata.starts_with(b"HLMETA04"));
         assert!(!entry(root.path()).join("metadata.json").exists());
-        assert_eq!(std::fs::read_dir(entry(root.path())).unwrap().count(), 9);
+        assert_eq!(std::fs::read_dir(entry(root.path())).unwrap().count(), 10);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -325,6 +325,7 @@ mod tests {
             "metadata.bin",
             "manifest.json",
             "nodes.bin",
+            "arrays.bin",
         ] {
             let root = private_root();
             let input = fixture();
@@ -358,7 +359,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("structure-v9-bodies-blake3-"));
+            .starts_with("structure-v10-mapped-catalogs-blake3-"));
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.join("manifest.json")).unwrap())
                 .unwrap();
@@ -392,6 +393,41 @@ mod tests {
             std::fs::read(legacy.join("manifest.json")).unwrap(),
             b"preserved old cache"
         );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn mapped_array_catalogs_preserve_counts_ranges_without_expanded_tables() {
+        let root = private_root(); let input = fixture(); let cancel = AtomicBool::new(false);
+        let (memory, _) = super::super::parse::parse_indexed_phase1_mapped(input.clone(), None).unwrap();
+        let expected = &memory.waste_raw;
+        for pass in 0..2 {
+            let (one, two, report) = load_structure(input.clone(), &options(root.path()), &cancel).unwrap();
+            assert_eq!(report.cache_status, if pass == 0 { "built" } else { "reused" });
+            assert!(Arc::ptr_eq(&one.waste_raw, &two.waste_raw));
+            let raw = &one.waste_raw;
+            assert!(raw.array_element_counts.is_empty());
+            assert!(raw.lazy_contents.as_ref().unwrap().arrays.is_empty());
+            let catalog = raw.mapped_arrays.as_ref().unwrap();
+            assert_eq!(catalog.len(), expected.array_element_counts.len());
+            for (&id, &count) in &expected.array_element_counts {
+                assert_eq!(raw.array_count(id), Some(count));
+                let before = expected.lazy_contents.as_ref().unwrap().arrays.get(&id);
+                let after = catalog.range(id);
+                assert_eq!(before.map(|r|(r.offset,r.length,r.shallow_size,r.is_char)),
+                    after.map(|r|(r.offset,r.length,r.shallow_size,r.is_char)));
+            }
+            assert_eq!(raw.array_count(u64::MAX), None);
+        }
+    }
+    #[test]
+    fn previous_uncompressed_catalog_namespace_is_preserved_and_never_reused() {
+        let root = private_root();
+        let old = root.path().join("structure-v9-bodies-blake3-sizing-v2-strong-class-v3-old");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("metadata.bin"), b"preserved v9 catalog").unwrap();
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "built");
+        assert_eq!(load(fixture(), &options(root.path())).1.cache_status, "reused");
+        assert_eq!(std::fs::read(old.join("metadata.bin")).unwrap(), b"preserved v9 catalog");
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
     }
 

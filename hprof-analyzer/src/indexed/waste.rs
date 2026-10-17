@@ -70,7 +70,8 @@ pub fn compute_indexed_waste(raw: &WasteRawData, total_heap_size: u64) -> WasteA
         if raw.backing_arrays.contains_key(&id) || resolved.contains_key(&id) {
             continue;
         }
-        if let Some(range) = contents.arrays.get(&id) {
+        if let Some(range) = contents.arrays.get(&id).copied()
+            .or_else(|| raw.mapped_arrays.as_ref()?.range(id)) {
             // Ranges were checked against this same owned mapping at parse time.
             let data = &contents.mapping[range.offset..range.offset + range.length];
             #[cfg(test)]

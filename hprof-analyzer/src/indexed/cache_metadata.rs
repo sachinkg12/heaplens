@@ -21,7 +21,7 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
-const MAGIC: &[u8; 8] = b"HLMETA03";
+const MAGIC: &[u8; 8] = b"HLMETA04";
 const SMALL_INPUT_ALLOWANCE: u64 = 512 * 1024 * 1024;
 const MAX_SUMMARY: usize = 64 * 1024;
 
@@ -111,11 +111,38 @@ fn table<const N: usize, I: Iterator<Item = [u64; N]> + Clone>(
     }
     Ok(())
 }
-pub(crate) fn write(
+#[cfg(test)]
+fn write(
     phase: &Phase1Result,
     node_names: Vec<Arc<str>>,
     directory: &Path,
     cancel: &AtomicBool,
+) -> Result<Receipt> {
+    write_impl(phase, node_names, directory, cancel, false)
+}
+pub(crate) fn write_mapped(
+    phase: &Phase1Result,
+    node_names: Vec<Arc<str>>,
+    directory: &Path,
+    cancel: &AtomicBool,
+) -> Result<Vec<Receipt>> {
+    let arrays = super::array_catalog::ArrayCatalog::write(
+        &phase.waste_raw,
+        &phase.node_store,
+        directory,
+        cancel,
+    )?;
+    Ok(vec![
+        arrays,
+        write_impl(phase, node_names, directory, cancel, true)?,
+    ])
+}
+fn write_impl(
+    phase: &Phase1Result,
+    node_names: Vec<Arc<str>>,
+    directory: &Path,
+    cancel: &AtomicBool,
+    external_arrays: bool,
 ) -> Result<Receipt> {
     ensure!(
         phase.waste_raw.backing_arrays.is_empty(),
@@ -218,13 +245,17 @@ pub(crate) fn write(
             .map(|v| [dict.id(&v.class_name), v.shallow_size]),
         [4, 8],
     )?;
-    table(
-        &mut out,
-        raw.array_element_counts
-            .iter()
-            .map(|(&id, &count)| [id, count as u64]),
-        [8, 4],
-    )?;
+    if external_arrays {
+        table(&mut out, std::iter::empty::<[u64; 2]>(), [8, 4])?;
+    } else {
+        table(
+            &mut out,
+            raw.array_element_counts
+                .iter()
+                .map(|(&id, &count)| [id, count as u64]),
+            [8, 4],
+        )?;
+    }
     table(
         &mut out,
         raw.over_allocated_collections
@@ -239,19 +270,23 @@ pub(crate) fn write(
             .map(|v| [dict.id(&v.class_name), v.shallow_size]),
         [4, 8],
     )?;
-    table(
-        &mut out,
-        ranges.iter().map(|(&id, v)| {
-            [
-                id,
-                v.offset as u64,
-                v.length as u64,
-                v.shallow_size,
-                u64::from(v.is_char),
-            ]
-        }),
-        [8, 8, 8, 8, 1],
-    )?;
+    if external_arrays {
+        table(&mut out, std::iter::empty::<[u64; 5]>(), [8, 8, 8, 8, 1])?;
+    } else {
+        table(
+            &mut out,
+            ranges.iter().map(|(&id, v)| {
+                [
+                    id,
+                    v.offset as u64,
+                    v.length as u64,
+                    v.shallow_size,
+                    u64::from(v.is_char),
+                ]
+            }),
+            [8, 8, 8, 8, 1],
+        )?;
+    }
     let receipt = out.finish()?;
     validate_metadata_length(receipt.bytes, contents.mapping.len() as u64)?;
     Ok(receipt)
@@ -515,7 +550,26 @@ pub(crate) fn read(
     validate_metadata_length(file.metadata()?.len(), mapping.len() as u64)?;
     super::disk_edges::check(cancel)?;
     let bytes = unsafe { memmap2::Mmap::map(&file)? };
-    decode(&bytes, mapping, cancel)
+    let input_bytes = mapping.len();
+    let mut metadata = decode(&bytes, mapping, cancel)?;
+    ensure!(
+        metadata.waste_raw.array_element_counts.is_empty()
+            && metadata
+                .waste_raw
+                .lazy_contents
+                .as_ref()
+                .unwrap()
+                .arrays
+                .is_empty(),
+        "Unexpected inline array catalogs"
+    );
+    metadata.waste_raw.mapped_arrays = Some(Arc::new(super::array_catalog::ArrayCatalog::map(
+        directory,
+        metadata.nodes,
+        input_bytes,
+        cancel,
+    )?));
+    Ok(metadata)
 }
 
 #[cfg(test)]

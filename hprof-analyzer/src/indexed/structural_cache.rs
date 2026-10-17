@@ -12,8 +12,8 @@ use std::{
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
-const ABI: &str = "structure-v9-bodies-blake3-sizing-v2-strong-class-v3";
-const FILES: [&str; 8] = [
+const ABI: &str = "structure-v10-mapped-catalogs-blake3-sizing-v2-strong-class-v3";
+const FILES: [&str; 9] = [
     "nodes.bin",
     "metadata.bin",
     "forward.offsets",
@@ -22,6 +22,7 @@ const FILES: [&str; 8] = [
     "reverse.offsets",
     "reverse.targets",
     "instance.bodies",
+    "arrays.bin",
 ];
 use super::cache_writer::Receipt as Entry;
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -148,10 +149,11 @@ fn read(
     }
     let edges = EdgeStore::map(directory, phase1.node_store.len())?;
     let phase2 = Phase2Result {
-        object_bodies: Some(super::object_bodies::ObjectBodies::map(
+        object_bodies: Some(super::object_bodies::ObjectBodies::map_cancellable(
             directory,
             phase1.node_store.len(),
             input_bytes,
+            cancel,
         )?),
         edge_store: edges,
         waste_raw: phase1.waste_raw.clone(),
@@ -204,7 +206,7 @@ pub(crate) fn load(
     let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)?;
     super::disk_edges::check(cancel)?;
     progress(super::progress::Observation::Stage("edges"));
-    let (phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
+    let (mut phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
         &phase1,
         deferred,
         stage.path(),
@@ -213,6 +215,10 @@ pub(crate) fn load(
     )?;
     progress(super::progress::Observation::Stage("index_publishing"));
     receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)?);
+    // Drop the second owner before freezing, never clone object-sized candidates.
+    phase2.waste_raw = Arc::new(crate::waste::WasteRawData::new());
+    super::cache_format::freeze_waste(&mut phase1, stage.path(), cancel)?;
+    phase2.waste_raw = phase1.waste_raw.clone();
     let mut files = Vec::new();
     for name in FILES {
         let position = receipts
