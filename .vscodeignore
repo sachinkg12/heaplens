@@ -1,6 +1,19 @@
 # Rust source and build artifacts (binary is in bin/)
 hprof-analyzer/
 Cargo.lock
+bin/**
+!bin/hprof-server
+!bin/hprof-server.exe
+!bin/rust-notices/**
+
+# Local research, internal documentation and compiled test harnesses
+.review-sp-e*/**
+.spe-extract/**
+doc/**
+docs/**
+out/test/**
+.github/**
+traffic/**
 
 # TypeScript source (compiled JS is in out/)
 src/

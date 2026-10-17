@@ -103,7 +103,7 @@ export function getRegistryJs(): string {
         var _tabBar = document.querySelector('.tab-bar');
         if (_tabBar) {
             _tabBar.addEventListener('keydown', function(e) {
-                var tabs = Array.from(document.querySelectorAll('.tab-btn'));
+                var tabs = Array.from(document.querySelectorAll('.tab-btn')).filter(function(b){return !b.disabled;});
                 var idx = tabs.indexOf(document.activeElement);
                 if (idx === -1) return;
                 var target = null;

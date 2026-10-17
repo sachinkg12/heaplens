@@ -22,7 +22,7 @@ export default function Home() {
           <Link className="button button--primary button--lg" to="/docs/getting-started/installation">Install for VS Code</Link>
           <Link className="button button--secondary button--lg" to="/docs/getting-started/choose-host">Choose your host →</Link>
         </div>
-        <p className={styles.release}>VS Code: released · IntelliJ and standalone packages: preview guides<br />Availability depends on the published package, platform, and version.</p>
+        <p className={styles.release}>VS Code and IntelliJ: Marketplace installation · Standalone: separate distribution<br />Analysis controls depend on the installed package, platform and version.</p>
       </header>
       <section className={styles.flow} aria-label="HeapLens data flow"><FlowDiagram /></section>
       <section className={styles.strip} aria-label="Implemented capabilities">

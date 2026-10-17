@@ -14,6 +14,7 @@ pub fn open(args: &Args) -> Result<(), Failure> {
         node,
         ui_host,
         no_browser,
+        quick_scan,
         port,
     } = &args.command
     else {
@@ -44,6 +45,9 @@ pub fn open(args: &Args) -> Result<(), Failure> {
         return Err(unavailable());
     }
     let mut command = Process::new(node.clone().unwrap_or_else(|| PathBuf::from("node")));
+    let storage = args.storage_options().map_err(|_| Failure::new(2, "storage_options", "Invalid storage options; disk mode requires the indexed backend."))?;
+    command.env("HEAPLENS_STORAGE", storage.mode.name()).env("HEAPLENS_EDGE_BUFFER_MIB", (storage.edge_buffer_bytes / (1024 * 1024)).to_string());
+    if let Some(directory) = storage.cache_dir { command.env("HEAPLENS_CACHE_DIR", directory); }
     command
         .arg(host)
         .arg("--server")
@@ -59,6 +63,7 @@ pub fn open(args: &Args) -> Result<(), Failure> {
     if *no_browser {
         command.arg("--no-browser");
     }
+    if *quick_scan { command.arg("--quick-scan"); }
     for root in source_root {
         command.arg("--source-root").arg(root);
     }

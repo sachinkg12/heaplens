@@ -2,7 +2,7 @@
 title: HeapLens IntelliJ Privacy Policy
 ---
 
-Last updated: **October 11, 2026**
+Last updated: **October 16, 2026**
 
 Applies to: **HeapLens for IntelliJ IDEA**
 
@@ -59,6 +59,12 @@ The provider's retention, logging, training, and processing-location policies ap
 Stopping a request or clearing local history cannot recall data already received by a provider. AI suggestions may be incorrect; review and test proposed changes before applying them.
 
 ## Local storage
+
+Optional **Disk-backed references** can persist structural indexes locally. These contain object IDs, HPROF metadata strings, class/field metadata, modeled sizes, reference connections, array lengths, byte offsets, checksums and a full-content cryptographic fingerprint of the capture. The algorithm is recorded in the cache manifest. They do not persist raw primitive-array buffers or duplicate-string previews. This metadata can be sensitive and is not encrypted or automatically uploaded by index construction. Memory storage is the default and does not create reusable structural indexes; switching back to Memory does not delete existing indexes.
+
+Completed indices remain after closing the dump so they can be reused. Normal failed/cancelled construction removes its unpublished temporary directory; forced process termination can leave an ignored partial directory. Close all analyses using the files before deleting selected HeapLens cache directories through your file manager. Index location and operating-system permission requirements are described in the [CLI storage guide](../api-reference/cli.md#disk-reference-storage). The original dump and mapped index files must remain unchanged while open.
+
+The shared analysis engine also uses local coordination files containing resource-reservation counts. These files do not contain heap contents and do not authorize telemetry or AI transmission.
 
 Provider settings and telemetry preferences persist locally and are configured not to roam through IntelliJ settings synchronization. API keys are managed through **IntelliJ Password Safe**; persistence depends on its configuration, which may be memory-only.
 

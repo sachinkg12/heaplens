@@ -8,6 +8,13 @@ const workflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci
 const jobs = workflow.jobs;
 const runs = job => job.steps.filter(step => step.run).map(step => step.run).join('\n');
 
+test('Rust accuracy gate discovers every maintained integration suite and doctest', () => {
+  const step = jobs['test-rust'].steps.find(candidate => candidate.name === 'Run Rust tests');
+  assert.equal(step['working-directory'], 'hprof-analyzer');
+  assert.equal(step.run, 'cargo test --locked --release');
+  assert.doesNotMatch(step.run, /--test\s|--lib\b|--bins\b/);
+});
+
 test('release selection is explicit, and all required checks precede versioning', () => {
   assert.ok(jobs.changes, 'CI needs a changed-path routing job');
   assert.deepEqual(jobs['auto-version'].needs, ['changes', 'checks']);
@@ -89,4 +96,22 @@ test('VS Code compiler roots and package exclusions enforce host isolation', () 
   assert.equal(parsed.errors.length, 0);
   assert.ok(parsed.fileNames.length > 0);
   assert.ok(parsed.fileNames.every(file => file.startsWith(path.join(root, 'src') + path.sep)));
+});
+
+test('VS Code storage controls are user-facing and shipped without private research or test files', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.ok(manifest.contributes.commands.some(command => command.command === 'heaplens.configureAnalysisStorage'));
+  const settings = manifest.contributes.configuration.properties;
+  assert.deepEqual(settings['heaplens.analysis.storage'].enum, ['memory', 'disk']);
+  assert.equal(settings['heaplens.analysis.storage'].default, 'memory');
+  assert.equal(settings['heaplens.analysis.storage'].scope, 'application');
+  assert.equal(settings['heaplens.analysis.edgeBufferMiB'].scope, 'application');
+  const ignore = fs.readFileSync(path.join(root, '.vscodeignore'), 'utf8').split(/\r?\n/);
+  for (const pattern of ['bin/**', '!bin/hprof-server', '!bin/hprof-server.exe', '.review-sp-e*/**', '.spe-extract/**', 'doc/**', 'docs/**', 'out/test/**', 'traffic/**'])
+    assert.ok(ignore.includes(pattern), 'missing package exclusion/allowlist: ' + pattern);
+  const step = jobs['test-rust'].steps.find(candidate => candidate.name === 'Test VS Code storage adapter against the built server');
+  assert.ok(step);
+  assert.match(step.run, /npm run compile/);
+  assert.match(step.run, /HEAPLENS_TEST_SERVER=.*hprof-analyzer\/target\/release\/hprof-server/);
+  assert.match(step.run, /node --test out\/test\/analysisStorage\.integration\.test\.js/);
 });

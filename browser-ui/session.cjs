@@ -3,12 +3,12 @@ const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { Rpc } = require('./rpc.cjs');
 const { requestId, objectId } = require('./guards.cjs');
-const capabilities = ["object-actions", "consent-actions", "source-actions", "ai-actions", "snapshot-actions", "export-actions", "monitor-actions", "telemetry-actions"].map(name => require('./' + name + '.cjs'));
-const rename = { summary: 'summary', top_objects: 'topObjects', top_layers: 'topLayers', class_histogram: 'classHistogram', leak_suspects: 'leakSuspects', object_leak_suspects: 'objectLeakSuspects', waste_analysis: 'wasteAnalysis' };
+const capabilities = ["object-actions", "consent-actions", "source-actions", "ai-actions", "snapshot-actions", "export-actions", "monitor-actions", "telemetry-actions", "progressive-actions", "waste-actions"].map(name => require('./' + name + '.cjs'));
+const rename = { summary: 'summary', top_objects: 'topObjects', top_layers: 'topLayers', class_histogram: 'classHistogram', leak_suspects: 'leakSuspects', object_leak_suspects: 'objectLeakSuspects', waste_analysis: 'wasteAnalysis', storage: 'storage' };
 // Immutable compact snapshots, not a second heap graph or comparator.
 function snapshot(raw) {
     const summary = Object.fromEntries(['total_heap_size', 'reachable_heap_size', 'total_instances', 'total_classes', 'total_arrays', 'total_gc_roots'].map(k => [k, raw.summary[k]]));
-    const waste = Object.fromEntries(['total_wasted_bytes', 'waste_percentage', 'duplicate_string_wasted_bytes', 'empty_collection_wasted_bytes', 'over_allocated_wasted_bytes', 'boxed_primitive_wasted_bytes'].map(k => [k, raw.waste_analysis?.[k] || 0]));
+    const waste = raw.waste_analysis ? Object.fromEntries(['total_wasted_bytes', 'waste_percentage', 'duplicate_string_wasted_bytes', 'empty_collection_wasted_bytes', 'over_allocated_wasted_bytes', 'boxed_primitive_wasted_bytes'].map(k => [k, raw.waste_analysis[k]])) : null;
     const value = { summary, class_histogram: raw.class_histogram, leak_suspects: raw.leak_suspects, waste_analysis: waste };
     if (Buffer.byteLength(JSON.stringify(value)) > 8 * 1024 * 1024)
         throw Error('Comparison metadata exceeds 8 MiB');
@@ -25,6 +25,7 @@ class Session {
         this.eventBytes = 0;
         this.state = 'idle';
         this.raw = null;
+        this.mode = host.quickScan ? 'shallow' : 'full';
         this.history = [];
         this.config = null;
         this.chatGrant = null;
@@ -65,7 +66,7 @@ class Session {
         if (!m || typeof m !== 'object' || Array.isArray(m) || !this.commands.has(m.command) || this.state === 'closed' && !['ready', 'shutdown'].includes(m.command))
             throw Error('Unsupported action');
         const action = this.commands.get(m.command);
-        if (['ready', 'retryAnalysis', 'cancelAnalysis', 'closeDump', 'shutdown'].includes(m.command))
+        if (['ready', 'retryAnalysis', 'quickScan', 'analyzeRetained', 'cancelAnalysis', 'closeDump', 'shutdown'].includes(m.command))
             await this.actionContext.run(undefined, () => action(m));
         else
             await this.actionContext.run({ view: this.view, generation: this.generation }, () => action(m));
@@ -73,7 +74,8 @@ class Session {
     status(message) { this.emit('browserStatus', { message }); }
     ready() {
         if (this.raw) {
-            this.emit('analysisComplete', { ...Object.fromEntries(Object.entries(rename).map(([a, b]) => [b, this.raw[a]])), displayName: this.file.label });
+            if(this.mode === 'shallow') this.emit('shallowScanComplete', {summary:this.raw.summary,classHistogram:this.raw.class_histogram,readiness:this.raw.readiness});
+            else this.emit('analysisComplete', { ...Object.fromEntries(Object.entries(rename).map(([a, b]) => [b, this.raw[a]])), displayName: this.file.label });
             this.status('READY | server PID ' + this.rpc?.child.pid);
             this.emit('aiHistory', { messages: this.history });
         }
@@ -82,10 +84,12 @@ class Session {
         else
             this.status(this.state === 'closed' ? 'Dump closed. Start a new CLI session to reopen.' : this.state.toUpperCase() + ' | server PID ' + (this.rpc?.child.pid || 'pending'));
     }
-    async analyze() {
+    async analyze(mode = this.mode) {
         if (['loading', 'queued'].includes(this.state))
             return;
         const generation = ++this.generation;
+        this.mode = mode;
+        const shallow = mode === 'shallow';
         this.stopAi();
         this.chatGrant = null;
         this.history = [];
@@ -96,6 +100,7 @@ class Session {
         this.purge();
         this.state = 'queued';
         this.host.changed();
+        this.emit('analysisStarting',{analysisScope:mode});
         this.emit('analysisProgress', { stage: 'loading', phase: 1, totalPhases: 4, fileMetadata: { file_size: this.file.size } });
         this.status('Waiting for analysis slot. Other dumps remain available.');
         await this.host.slot(async () => {
@@ -114,14 +119,14 @@ class Session {
                 if (generation !== this.generation || this.state !== 'loading' || message.params?.request_id !== this.analysisId)
                     return;
                 const p = message.params;
-                if (message.method === 'heap_analysis_progress')
-                    this.emit('analysisProgress', { stage: p.stage, phase: p.phase, totalPhases: p.total_phases, summary: p.summary });
-                if (message.method === 'heap_analysis_complete') {
+                if (message.method === (shallow ? 'heap_scan_progress' : 'heap_analysis_progress'))
+                    this.emit('analysisProgress', { stage: p.stage, phase: p.phase, totalPhases: p.total_phases, summary: p.summary, snapshot: p.snapshot, fileMetadata: p.file_metadata });
+                if (message.method === (shallow ? 'heap_scan_complete' : 'heap_analysis_complete')) {
                     if (p.status === 'completed') {
                         this.raw = p;
-                        this.state = 'ready';
+                        this.state = shallow ? 'shallow-ready' : 'ready';
                         try {
-                            this.snapshot = snapshot(p);
+                            this.snapshot = shallow ? null : snapshot(p);
                         }
                         catch {
                             this.snapshot = null;
@@ -141,7 +146,7 @@ class Session {
                 }
             });
             try {
-                const started = rpc.request('analyze_heap', { path: this.file.path }, 30000);
+                const started = rpc.request(shallow ? 'scan_heap' : 'analyze_heap', { path: this.file.path }, 30000);
                 this.analysisId = started.id;
                 await started.promise;
                 await completed;

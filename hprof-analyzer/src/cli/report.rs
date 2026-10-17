@@ -6,11 +6,28 @@ use hprof_analyzer::{
 };
 use serde_json::{json, Value};
 
-pub const WARNINGS: [&str; 3] = [
+pub const WARNINGS: [&str; 4] = [
     "Retained memory is evidence for investigation, not proof of a leak.",
     "Class retained sets can overlap across classes; their sizes are not additive.",
-    "Output limits do not bound parsing, graph or query-evaluation memory; no disk indexes are reused.",
+    "Output limits do not bound parsing, graph or query-evaluation memory.",
+    "Shallow and retained bytes are JVM-layout estimates: VM-injected fields and contended padding can be omitted. Retention uses strong references, including runtime classes; JDK Reference.referent is excluded.",
 ];
+
+pub const SCAN_WARNINGS: [&str; 3] = [
+    "Reachability, retained memory, references and waste have not been calculated. Request full analysis separately if needed.",
+    "Shallow counts concern allocation records, not validated unique object IDs; reference targets are not checked.",
+    "Sizes use the shared estimated JVM layout. Metadata limits and --rows are not a total resident-memory budget; no disk indexes are reused.",
+];
+
+pub fn scan(mut scan: hprof_analyzer::quick_scan::ShallowScan, rows: usize) -> Value {
+    let total = scan.class_histogram.len();
+    scan.class_histogram.truncate(rows);
+    json!({"analysis_scope":"shallow", "counts_scope":"allocation_records_and_declared_class_ids",
+        "summary":scan.summary, "class_histogram":scan.class_histogram,
+        "readiness":{"summary":"ready","shallow_histogram":"ready","reachability":"not_calculated",
+            "retained":"not_calculated","references":"not_calculated","waste":"not_calculated"},
+        "selection":{"rows_per_section":rows,"class_histogram_total":total}, "truncated":total>rows})
+}
 
 pub fn analyze(state: &dyn HeapAnalysis, rows: usize) -> Value {
     let mut histogram = state.get_class_histogram().to_vec();
@@ -44,9 +61,11 @@ pub fn analyze(state: &dyn HeapAnalysis, rows: usize) -> Value {
     suspects.truncate(rows);
     object_suspects.truncate(rows);
     json!({
+        "storage": state.storage_report(),
         "summary": state.get_summary(), "class_histogram": histogram,
         "top_objects": objects, "leak_suspects": suspects, "object_leak_suspects": object_suspects,
-        "waste_totals": hprof_analyzer::comparison::WasteTotals::from(state.get_waste_analysis()),
+        "waste_totals": state.cached_waste_analysis().map(hprof_analyzer::comparison::WasteTotals::from),
+        "waste_status": if state.cached_waste_analysis().is_some() { "ready" } else { "not_calculated" },
         "selection": {"rows_per_section": rows, "class_histogram_total": hist_total,
             "leak_suspects_total": suspect_total, "object_leak_suspects_total": object_suspect_total,
             "top_objects_available": obj_total, "top_objects_scope": "Depth-3 dominator traversal, at most 50 candidates"},
@@ -59,7 +78,7 @@ pub fn snapshot(state: &dyn HeapAnalysis) -> Result<ComparisonSnapshot, Failure>
         summary: state.get_summary().into(),
         class_histogram: state.get_class_histogram().to_vec(),
         leak_suspects: state.get_leak_suspects().to_vec(),
-        waste_analysis: state.get_waste_analysis().into(),
+        waste_analysis: Some(state.get_waste_analysis().into()),
     };
     // The shared comparator represents deltas as i64. Validate operands, not
     // object IDs (which can validly use the whole u64 range).

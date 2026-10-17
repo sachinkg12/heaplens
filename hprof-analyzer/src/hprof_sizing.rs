@@ -3,7 +3,7 @@
 use crate::object_layout::ObjectLayout;
 use anyhow::{bail, Result};
 use jvm_hprof::heap_dump::{FieldType, SubRecord};
-use jvm_hprof::{parse_hprof, IdSize};
+use jvm_hprof::{parse_hprof, IdSize, RecordTag};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -95,14 +95,92 @@ impl LayoutEvidence {
     }
 }
 
+/// Validated record counts from the existing sizing scan, not file-size guesses.
+/// Counts are reservation hints: duplicate objects/roots can share one node.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RecordCounts {
+    pub strings: usize,
+    pub string_bytes: usize,
+    /// Upper bound: object-array slots, instance bytes / HPROF ID width, statics.
+    pub reference_slots: usize,
+    pub load_classes: usize,
+    pub classes: usize,
+    pub instances: usize,
+    pub object_arrays: usize,
+    pub primitive_arrays: usize,
+    pub roots: usize,
+}
+impl RecordCounts {
+    fn increment(count: &mut usize) -> Result<()> {
+        *count = count.checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("HPROF record count overflow"))?;
+        Ok(())
+    }
+    pub fn node_capacity(&self) -> Result<usize> {
+        [self.classes, self.instances, self.object_arrays, self.primitive_arrays, self.roots]
+            .into_iter().try_fold(1usize, |sum, count| {
+                sum.checked_add(count).ok_or_else(|| anyhow::anyhow!("HPROF node capacity overflow"))
+            })
+    }
+    pub fn reference_capacity(&self) -> Result<usize> {
+        self.reference_slots.checked_add(self.node_capacity()?)
+            .and_then(|n| n.checked_add(self.load_classes))
+            .and_then(|n| self.classes.checked_mul(8).and_then(|k| n.checked_add(k)))
+            .ok_or_else(|| anyhow::anyhow!("Reference capacity overflow"))
+    }
+    fn observe(&mut self, record: &SubRecord<'_>) -> Result<()> {
+        if crate::gc_roots::object_id(record).is_some() {
+            return Self::increment(&mut self.roots);
+        }
+        match record {
+            SubRecord::Class(_) => Self::increment(&mut self.classes),
+            SubRecord::Instance(_) => Self::increment(&mut self.instances),
+            SubRecord::ObjectArray(_) => Self::increment(&mut self.object_arrays),
+            SubRecord::PrimitiveArray(_) | SubRecord::PrimitiveArrayNoData(_) => Self::increment(&mut self.primitive_arrays),
+            _ => Ok(()),
+        }
+    }
+}
+
 pub(crate) struct HprofSizing {
     pub layout: ObjectLayout,
     pub class_sizes: HashMap<u64, u64>,
     pub metadata: crate::object_layout::SizeModel,
+    pub record_counts: RecordCounts,
     payload_only: bool,
 }
 impl HprofSizing {
     pub fn read(data: &[u8], explicit: Option<ObjectLayout>) -> Result<Self> {
+        Self::read_cancellable(data, explicit, &|| false)
+    }
+    pub fn read_cancellable(
+        data: &[u8],
+        explicit: Option<ObjectLayout>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self> {
+        Self::read_observed(data, explicit, cancelled, None, None, None)
+    }
+    pub(crate) fn read_tracked(
+        data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
+        progress: &mut dyn FnMut(RecordCounts),
+    ) -> Result<Self> { Self::read_observed(data, explicit, cancelled, observe, Some(progress), None) }
+    pub(crate) fn read_mapped_tracked(
+        mapping: &memmap2::Mmap, explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        observe: Option<&mut dyn FnMut(u64) -> Result<()>>, progress: &mut dyn FnMut(RecordCounts),
+    ) -> Result<Self> {
+        let mut ahead = crate::indexed::read_ahead::ReadAhead::new(Some(mapping));
+        Self::read_observed(mapping, explicit, cancelled, observe, Some(progress), Some(&mut |offset| ahead.observe(offset)))
+    }
+    fn read_observed(
+        data: &[u8], explicit: Option<ObjectLayout>, cancelled: &dyn Fn() -> bool,
+        mut observe: Option<&mut dyn FnMut(u64) -> Result<()>>,
+        mut progress: Option<&mut dyn FnMut(RecordCounts)>,
+        mut read_ahead: Option<&mut dyn FnMut(usize)>,
+    ) -> Result<Self> {
+        if cancelled() {
+            bail!("Sizing cancelled");
+        }
         let hprof =
             parse_hprof(data).map_err(|e| anyhow::anyhow!("Invalid sizing header: {e:?}"))?;
         let id_bytes = if matches!(hprof.header().id_size(), IdSize::U32) {
@@ -117,15 +195,86 @@ impl HprofSizing {
         let payload_only =
             hprof.header().label().ok() == Some("JAVA PROFILE 1.0.3") && explicit.is_none();
         let mut declared_sizes = HashMap::new();
+        let mut record_counts = RecordCounts::default();
+        let mut producer = crate::hprof_producer::Metadata::default();
+        let mut observed = 0usize;
+        let mut last_progress = std::time::Instant::now();
         for record in hprof.records_iter() {
+            if cancelled() {
+                bail!("Sizing cancelled");
+            }
             let record = record.map_err(|e| anyhow::anyhow!("Invalid sizing record: {e:?}"))?;
+            if let Some(observe) = observe.as_mut() {
+                if let Some(class) = record.as_load_class() {
+                    let class = class.map_err(|e| anyhow::anyhow!("Invalid sizing class: {e:?}"))?;
+                    observe(class.class_obj_id().id())?;
+                }
+            }
+            if !payload_only { producer.record(&record)?; }
+            match record.tag() {
+                RecordTag::Utf8 => {
+                    RecordCounts::increment(&mut record_counts.strings)?;
+                    let string = record.as_utf_8().unwrap().map_err(|e| anyhow::anyhow!("Invalid sizing string: {e:?}"))?;
+                    record_counts.string_bytes = record_counts.string_bytes.checked_add(string.text().len())
+                        .ok_or_else(|| anyhow::anyhow!("String extent overflow"))?;
+                }
+                RecordTag::LoadClass => RecordCounts::increment(&mut record_counts.load_classes)?,
+                _ => {},
+            }
             if let Some(heap) = record.as_heap_dump_segment() {
-                for sub in heap
-                    .map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?
-                    .sub_records()
-                {
-                    match sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))? {
+                let mut subs = heap.map_err(|e| anyhow::anyhow!("Invalid sizing segment: {e:?}"))?.sub_records();
+                let mut page_records = 0;
+                loop {
+                    if !payload_only && page_records == 0 { producer.checkpoint(subs.clone()); }
+                    let Some(sub) = subs.next() else { break; };
+                    if cancelled() {
+                        bail!("Sizing cancelled");
+                    }
+                    let sub = sub.map_err(|e| anyhow::anyhow!("Invalid sizing object: {e:?}"))?;
+                    if !payload_only { producer.observe(&sub); }
+                    page_records = (page_records + 1) % crate::hprof_producer::Metadata::page_records();
+                    record_counts.observe(&sub)?;
+                    observed += 1;
+                    if observed % 8192 == 0 {
+                        if let Some(hint) = read_ahead.as_mut() {
+                            let bytes = match &sub {
+                                SubRecord::Instance(v) => Some(*v.fields()),
+                                SubRecord::ObjectArray(v) => Some(v.raw_contents()),
+                                SubRecord::PrimitiveArray(v) => Some(v.contents()),
+                                _ => None,
+                            };
+                            if let Some(bytes) = bytes {
+                                // The parser skips array payloads. Hint at their end,
+                                // not at the start of bytes the structural scan skips.
+                                if let Some(position) = (bytes.as_ptr() as usize).checked_sub(data.as_ptr() as usize)
+                                    .and_then(|start| start.checked_add(bytes.len())) {
+                                    if position <= data.len() { hint(position); }
+                                }
+                            }
+                        }
+                    }
+                    // Clock and serialization overhead are outside the per-object hot path.
+                    if observed % 65536 == 0 && last_progress.elapsed().as_secs() >= 1 {
+                        if let Some(progress) = progress.as_mut() { progress(record_counts); }
+                        last_progress = std::time::Instant::now();
+                    }
+                    if let Some(observe) = observe.as_mut() {
+                        let id = crate::gc_roots::object_id(&sub).or_else(|| match &sub {
+                            SubRecord::Class(v) => Some(v.obj_id().id()),
+                            SubRecord::Instance(v) => Some(v.obj_id().id()),
+                            SubRecord::ObjectArray(v) => Some(v.obj_id().id()),
+                            SubRecord::PrimitiveArray(v) => Some(v.obj_id().id()),
+                            SubRecord::PrimitiveArrayNoData(v) => Some(v.obj_id().id()),
+                            _ => None,
+                        });
+                        if let Some(id) = id { observe(id)?; }
+                    }
+                    match sub {
                         SubRecord::Class(class) => {
+                            for field in class.static_fields() {
+                                field.map_err(|e| anyhow::anyhow!("Invalid static field: {e:?}"))?;
+                                RecordCounts::increment(&mut record_counts.reference_slots)?;
+                            }
                             if payload_only {
                                 declared_sizes.insert(
                                     class.obj_id().id(),
@@ -150,9 +299,16 @@ impl HprofSizing {
                             }
                             classes.insert(class.obj_id().id(), shape);
                             evidence.observe(class.obj_id().id(), None)?;
+                            if !payload_only { producer.class(class); }
                         }
-                        SubRecord::Instance(o) => evidence.observe(o.obj_id().id(), None)?,
+                        SubRecord::Instance(o) => {
+                            record_counts.reference_slots = record_counts.reference_slots.checked_add(o.fields().len() / id_bytes as usize)
+                                .ok_or_else(|| anyhow::anyhow!("Reference extent overflow"))?;
+                            evidence.observe(o.obj_id().id(), None)?;
+                        }
                         SubRecord::ObjectArray(a) => {
+                            record_counts.reference_slots = record_counts.reference_slots.checked_add(a.num_elements() as usize)
+                                .ok_or_else(|| anyhow::anyhow!("Reference extent overflow"))?;
                             evidence.observe(a.obj_id().id(), Some((a.num_elements(), None)))?
                         }
                         SubRecord::PrimitiveArray(a) => evidence.observe(
@@ -164,20 +320,35 @@ impl HprofSizing {
                 }
             }
         }
+        if let Some(progress) = progress.as_mut() { progress(record_counts); }
         let layout = if payload_only {
             ObjectLayout::new(id_bytes, id_bytes, id_bytes, 8)?
         } else {
             explicit.unwrap_or_else(|| evidence.finish())
         };
+        let detection = if payload_only || layout.word_bytes != 8 {
+            None
+        } else {
+            Some(producer.detect(data, hprof.header().id_size(), cancelled)?)
+        };
+        if let Some(detection) = &detection {
+            for (&class, &injected) in &detection.injected {
+                let shape = classes.get_mut(&class)
+                    .ok_or_else(|| anyhow::anyhow!("Missing profiled class"))?;
+                shape.primitive_bytes = shape.primitive_bytes.checked_add(injected.bytes(layout)?)
+                    .ok_or_else(|| anyhow::anyhow!("Profiled field extent overflow"))?;
+            }
+        }
+        drop(producer);
         let class_sizes = if payload_only {
             declared_sizes
         } else {
-            resolve_classes(&classes, layout)?
+            resolve_classes_cancellable(&classes, layout, cancelled)?
         };
         if payload_only {
             log::info!("Shallow sizes: legacy Android payload-only estimate; headers and alignment excluded.");
         } else {
-            log::info!("Shallow sizes: estimated conventional JVM layout; word={} reference={} class_pointer={} alignment={} bytes; {}. Class metadata/hidden fields excluded.",
+            log::info!("Shallow sizes: estimated conventional JVM layout; word={} reference={} class_pointer={} alignment={} bytes; {}. Class metadata excluded; VM additions require a matched producer profile.",
             layout.word_bytes,layout.reference_bytes,layout.class_pointer_bytes,layout.alignment,
             if explicit.is_some() {"explicit widths"} else {"inferred widths, ambiguous layouts use larger feasible widths"});
         }
@@ -185,7 +356,7 @@ impl HprofSizing {
             name: if payload_only {
                 "legacy-payload-v0"
             } else {
-                "conventional-jvm-v1"
+                "conventional-jvm-v2"
             },
             estimated: true,
             layout,
@@ -197,11 +368,15 @@ impl HprofSizing {
                 "address-inference-with-defaults"
             },
             incomplete_classes: classes.len() - class_sizes.len(),
+            retained_size_policy: Some(crate::reference_strength::RETAINED_SIZE_POLICY.into()),
+            instance_layout_policy: detection.as_ref().map(|d| d.profile.unwrap_or("java-fields-only-v1").to_owned()),
+            producer_detection: detection.as_ref().map(|d| d.status.to_owned()),
         };
         Ok(Self {
             layout,
             class_sizes,
             metadata,
+            record_counts,
             payload_only,
         })
     }
@@ -234,12 +409,23 @@ impl HprofSizing {
     }
 }
 
+#[cfg(test)]
 fn resolve_classes(
     classes: &HashMap<u64, ClassShape>,
     layout: ObjectLayout,
 ) -> Result<HashMap<u64, u64>> {
+    resolve_classes_cancellable(classes, layout, &|| false)
+}
+fn resolve_classes_cancellable(
+    classes: &HashMap<u64, ClassShape>,
+    layout: ObjectLayout,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<HashMap<u64, u64>> {
     let mut extents: HashMap<u64, Option<u64>> = HashMap::new();
     for &start in classes.keys() {
+        if cancelled() {
+            bail!("Sizing cancelled");
+        }
         if extents.contains_key(&start) {
             continue;
         }
@@ -248,6 +434,9 @@ fn resolve_classes(
         let mut current = Some(start);
         let mut extent = Some(layout.object_header());
         while let Some(id) = current {
+            if cancelled() {
+                bail!("Sizing cancelled");
+            }
             if let Some(cached) = extents.get(&id) {
                 extent = *cached;
                 break;
@@ -278,7 +467,7 @@ fn resolve_classes(
         .collect()
 }
 
-fn field_bytes(kind: FieldType) -> u64 {
+pub(crate) fn field_bytes(kind: FieldType) -> u64 {
     match kind {
         FieldType::Boolean | FieldType::Byte => 1,
         FieldType::Char | FieldType::Short => 2,
@@ -298,8 +487,85 @@ pub(crate) fn primitive_bytes(kind: jvm_hprof::heap_dump::PrimitiveArrayType) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn record(data: &mut Vec<u8>, tag: u8, body: &[u8]) {
+        data.push(tag);
+        data.extend(0u32.to_be_bytes());
+        data.extend((body.len() as u32).to_be_bytes());
+        data.extend(body);
+    }
+
+    pub(crate) fn count_fixture_32(payload: u32) -> Vec<u8> {
+        let mut data = b"JAVA PROFILE 1.0.3\0".to_vec();
+        data.extend(4u32.to_be_bytes()); data.extend(0u64.to_be_bytes());
+        let mut name = 1u32.to_be_bytes().to_vec(); name.extend(b"Example");
+        record(&mut data, 1, &name);
+        let mut load = 1u32.to_be_bytes().to_vec(); load.extend(10u32.to_be_bytes());
+        load.extend(0u32.to_be_bytes()); load.extend(1u32.to_be_bytes());
+        record(&mut data, 2, &load);
+        let mut heap = Vec::new();
+        // Repeated roots reserve conservatively but still describe one node.
+        for _ in 0..2 { heap.push(0xff); heap.extend(20u32.to_be_bytes()); }
+        // A newly attached JNI thread may have no object ID.
+        heap.push(0x08); heap.extend(0u32.to_be_bytes()); heap.extend(1u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.push(0x20); heap.extend(10u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend([0u8; 24]); heap.extend(0u32.to_be_bytes()); heap.extend([0u8; 6]);
+        heap.push(0x21); heap.extend(20u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(10u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        record(&mut data, 0x1c, &heap);
+        // A separate segment exercises accumulative counts.
+        let mut heap = vec![0x22]; heap.extend(30u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(3u32.to_be_bytes()); heap.extend(10u32.to_be_bytes());
+        for id in [20u32, 0, 999] { heap.extend(id.to_be_bytes()); }
+        heap.push(0x23); heap.extend(40u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(payload.to_be_bytes()); heap.push(8); heap.resize(heap.len() + payload as usize, 0);
+        heap.push(0xc3); heap.extend(50u32.to_be_bytes()); heap.extend(0u32.to_be_bytes());
+        heap.extend(3u32.to_be_bytes()); heap.push(8);
+        heap.push(0xfe); heap.extend(0u32.to_be_bytes()); heap.extend(1u32.to_be_bytes());
+        record(&mut data, 0x1c, &heap); record(&mut data, 0x2c, &[]);
+        data
+    }
+
+    #[test]
+    fn counts_include_32_bit_arrays_segments_and_only_resolvable_roots() {
+        let sizing = HprofSizing::read(&count_fixture_32(0), None).unwrap();
+        let counts = sizing.record_counts;
+        assert_eq!(counts.strings, 1); assert_eq!(counts.load_classes, 1);
+        assert_eq!(counts.classes, 1); assert_eq!(counts.instances, 1);
+        assert_eq!(counts.object_arrays, 1); assert_eq!(counts.primitive_arrays, 2);
+        assert_eq!(counts.roots, 2); assert_eq!(counts.node_capacity().unwrap(), 8);
+    }
+
+    #[test]
+    fn counts_include_64_bit_records_without_treating_roots_as_unique_nodes() {
+        let sizing = HprofSizing::read(&crate::indexed::waste::tests::string_fixture(), None).unwrap();
+        let counts = sizing.record_counts;
+        assert_eq!(counts.strings, 2); assert_eq!(counts.load_classes, 1);
+        assert_eq!(counts.classes, 1); assert_eq!(counts.instances, 5);
+        assert_eq!(counts.object_arrays, 0); assert_eq!(counts.primitive_arrays, 5);
+        assert_eq!(counts.roots, 5); assert_eq!(counts.node_capacity().unwrap(), 17);
+    }
+
+    #[test]
+    fn capacity_hints_depend_on_records_not_primitive_payload_length() {
+        let small = HprofSizing::read(&count_fixture_32(0), None).unwrap().record_counts;
+        let large = HprofSizing::read(&count_fixture_32(8 * 1024 * 1024), None).unwrap().record_counts;
+        assert_eq!(small.node_capacity().unwrap(), large.node_capacity().unwrap());
+        assert_eq!(small.strings, large.strings); assert_eq!(small.classes, large.classes);
+        assert_eq!(small.instances, large.instances);
+    }
+
+    #[test]
+    fn record_count_overflow_and_truncated_inputs_fail_closed() {
+        let mut count = usize::MAX;
+        assert!(RecordCounts::increment(&mut count).is_err()); assert_eq!(count, usize::MAX);
+        assert!(RecordCounts { instances: usize::MAX, ..Default::default() }.node_capacity().is_err());
+        let bytes = count_fixture_32(0);
+        assert!(HprofSizing::read(&bytes[..bytes.len() - 1], None).is_err());
+        assert!(HprofSizing::read_cancellable(&bytes, None, &|| true).is_err());
+    }
     #[test]
     fn reference_and_class_pointer_evidence_are_independent() {
         let mut evidence = LayoutEvidence::new(8);

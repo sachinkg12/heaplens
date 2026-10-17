@@ -1,5 +1,11 @@
 export function getHtmlTemplate(): string {
     return `
+    <div class="analysis-mode-bar">
+        <button class="btn" id="quick-scan-btn">Quick Scan</button>
+        <button class="btn" id="analyze-retained-btn" disabled>Analyze Retained</button>
+        <span id="analysis-mode-status" role="status" aria-live="polite">Preparing analysis…</span>
+        <span id="analysis-elapsed" class="file-meta-item" aria-label="Analysis elapsed time"></span>
+    </div>
     <div class="tab-bar" role="tablist" aria-label="Analysis tabs">
         <button class="tab-btn active" data-tab="overview" role="tab" aria-selected="true" aria-controls="tab-overview" id="tabBtn-overview" tabindex="0">Overview</button>
         <button class="tab-btn" data-tab="histogram" role="tab" aria-selected="false" aria-controls="tab-histogram" id="tabBtn-histogram" tabindex="-1">Histogram</button>
@@ -17,7 +23,7 @@ export function getHtmlTemplate(): string {
     <!-- Tab 1: Overview -->
     <div id="tab-overview" class="tab-content active" role="tabpanel" aria-labelledby="tabBtn-overview">
         <div id="file-metadata" class="file-metadata" style="display:none;"></div>
-        <div id="progress-bar" class="progress-bar-container" role="status" aria-live="polite" style="display:none;"></div>
+        <div id="progress-bar" class="progress-bar-container" role="status" aria-live="polite"><div class="progress-message">Opening heap dump…</div></div>
         <div class="stats-bar" id="stats-bar">
             <div class="loading">Waiting for analysis...</div>
         </div>
@@ -37,6 +43,7 @@ export function getHtmlTemplate(): string {
     <div id="tab-histogram" class="tab-content" role="tabpanel" aria-labelledby="tabBtn-histogram">
         <input type="text" class="search-box" id="histogram-search" placeholder="Filter by class name...">
         <div id="histogram-table"></div>
+        <div id="shallow-histogram"></div>
         <div id="histogram-instances-panel"></div>
     </div>
 

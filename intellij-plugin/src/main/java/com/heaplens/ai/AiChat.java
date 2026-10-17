@@ -48,6 +48,7 @@ public final class AiChat implements AutoCloseable {
             }
         });
     }
+    public synchronized void waste(JsonElement value) {if(!closed)context=ChatContext.withWaste(context,value);}
     public synchronized void unavailable() { reset(); context=null; }
     public synchronized void clear() {
         reset();long clearedGeneration=generation;

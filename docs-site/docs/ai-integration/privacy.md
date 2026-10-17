@@ -3,7 +3,7 @@ sidebar_position: 4
 title: AI data sharing and privacy
 ---
 
-Policy scope: current editor/browser implementation, reviewed October 11, 2026. Analysis is local; **AI requests are optional but can send data to a model service**. Telemetry has a [separate policy](../runbook/telemetry.md).
+Policy scope: current editor/browser implementation, reviewed October 16, 2026. Analysis is local; **AI requests are optional but can send data to a model service**. Telemetry has a [separate policy](../runbook/telemetry.md).
 
 For IntelliJ IDEA, see the [HeapLens IntelliJ Privacy Policy](../runbook/intellij-privacy-policy.md), including local storage, Azure retention, IP handling, and the privacy contact.
 
@@ -43,3 +43,11 @@ Top-N metadata cannot reveal unprovided objects, lifecycle intent, allocation hi
 Your configured service/client's retention, training, logging, account policy, and jurisdiction apply to transmitted data. HeapLens does not certify those policies. Disabling telemetry does not disable AI, and approving telemetry does not approve source upload.
 
 Keep credentials out of settings JSON, Git, command lines, screenshots, and logs. Review local reports before support sharing. For security reports use [support and security](../runbook/support.md), without attaching dumps or source publicly.
+
+## Local structural caches
+
+Optional **Disk-backed references** persist private local structural indexes. These can contain HPROF metadata strings, class/field names, object identifiers, modeled sizes, array lengths, byte locations, reference relationships, component checksums and a full-content fingerprint of the capture. They do not store raw primitive-array buffers or duplicate-string previews. They are not encrypted or automatically uploaded by index construction; the original capture is still required.
+
+Completed indexes remain in the analysis host's platform cache directory for reuse, including on a remote extension host. Memory storage is the default and does not create these reusable indexes. Switching back to Memory does not delete existing indexes. Close all analyses using an entry before removing it; never modify a mapped index or capture. See [cache locations and cleanup](../api-reference/cli.md#disk-reference-storage).
+
+Resource admission also uses local coordination files containing reservation counts; these are not a copy of the dump. Index storage and resource coordination do not authorize AI requests or change telemetry permissions.

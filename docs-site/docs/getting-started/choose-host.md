@@ -7,16 +7,16 @@ HeapLens shares analysis, not every host responsibility. Installation, credentia
 
 ## Availability
 
-Checked **October 11, 2026** against source and public release assets; this is not platform certification.
+Package versions and publication steps are separate for each host. The release workflow targets the platforms below; package availability is not certification of every feature on every OS.
 
 | Host | Distribution | Current scope |
 | --- | --- | --- |
-| VS Code / compatible editors | Public Marketplace, Open VSX, four v1.0.33 VSIX targets | macOS ARM64/x64, Windows x64, Linux x64 packages |
-| IntelliJ | Implemented, install-from-disk candidate; no public listing promised here | Current candidate: macOS Apple Silicon; check candidate IDE build range |
+| VS Code / compatible editors | Marketplace, Open VSX and platform-specific VSIX packages | macOS ARM64/x64, Windows x64, Linux x64 targets; 1.0.34 introduces the new analysis/storage controls |
+| IntelliJ | [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/35004-heaplens) and separately versioned release ZIPs | macOS Apple Silicon, IntelliJ IDEA 2026.1–2026.2; new controls require a matching updated plugin package |
 | Terminal/browser | Implemented portable/npm/Homebrew candidate packaging | Current candidate: macOS Apple Silicon; packaged npm/browser needs native ARM64 Node 22+ |
 | MCP clients | Trusted native `hprof-server --mcp` plus client configuration | Depends on server target and client validation |
 
-A source merge does not publish a package. npm is cross-platform but an ARM64-only native payload is not. Verify [release assets](https://github.com/sachinkg12/heaplens/releases).
+The VS Code main/tag workflow builds and publishes its selected targets after checks. IntelliJ CI prepares a ZIP but does not upload it to Marketplace; standalone candidate CI prepares archives/formulas but does not publish an npm package or tap. npm is cross-platform but an ARM64-only native payload is not. Verify [release assets](https://github.com/sachinkg12/heaplens/releases) and each host's listing.
 
 ## What stays shared?
 

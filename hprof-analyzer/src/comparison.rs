@@ -29,14 +29,14 @@ pub struct ComparisonSnapshot {
     pub summary: SummaryTotals,
     pub class_histogram: Vec<ClassHistogramEntry>,
     pub leak_suspects: Vec<LeakSuspect>,
-    pub waste_analysis: WasteTotals,
+    pub waste_analysis: Option<WasteTotals>,
 }
 
 pub fn compare_snapshots(baseline: &ComparisonSnapshot, current: &ComparisonSnapshot,
     baseline_label: &str, current_label: &str) -> HeapComparisonResult {
     compare_parts(&baseline.summary, &current.summary, &baseline.class_histogram,
         &current.class_histogram, &baseline.leak_suspects, &current.leak_suspects,
-        &baseline.waste_analysis, &current.waste_analysis, baseline_label, current_label)
+        baseline.waste_analysis.as_ref(), current.waste_analysis.as_ref(), baseline_label, current_label)
 }
 
 /// Bounded additive protocol; existing compare_heaps continues using the same calculation.
@@ -151,7 +151,7 @@ pub struct HeapComparisonResult {
     pub summary_delta: HeapSummaryDelta,
     pub histogram_delta: Vec<ClassHistogramDelta>,
     pub leak_suspect_changes: Vec<LeakSuspectChange>,
-    pub waste_delta: WasteDelta,
+    pub waste_delta: Option<WasteDelta>,
 }
 
 /// Compares two heap analysis states and returns a detailed delta.
@@ -163,14 +163,14 @@ pub fn compare_heaps(
 ) -> HeapComparisonResult {
     compare_parts(&SummaryTotals::from(baseline.get_summary()), &SummaryTotals::from(current.get_summary()),
         baseline.get_class_histogram(), current.get_class_histogram(), baseline.get_leak_suspects(),
-        current.get_leak_suspects(), &WasteTotals::from(baseline.get_waste_analysis()),
-        &WasteTotals::from(current.get_waste_analysis()), baseline_path, current_path)
+        current.get_leak_suspects(), Some(&WasteTotals::from(baseline.get_waste_analysis())),
+        Some(&WasteTotals::from(current.get_waste_analysis())), baseline_path, current_path)
 }
 
 fn compare_parts(bs: &SummaryTotals, cs: &SummaryTotals,
     baseline_histogram: &[ClassHistogramEntry], current_histogram: &[ClassHistogramEntry],
     baseline_leak_suspects: &[LeakSuspect], current_leak_suspects: &[LeakSuspect],
-    bw: &WasteTotals, cw: &WasteTotals, baseline_path: &str, current_path: &str) -> HeapComparisonResult {
+    bw: Option<&WasteTotals>, cw: Option<&WasteTotals>, baseline_path: &str, current_path: &str) -> HeapComparisonResult {
 
     // Summary delta
     let summary_delta = HeapSummaryDelta {
@@ -330,7 +330,7 @@ fn compare_parts(bs: &SummaryTotals, cs: &SummaryTotals,
     }
 
     // Waste delta
-    let waste_delta = WasteDelta {
+    let waste_delta = bw.zip(cw).map(|(bw, cw)| WasteDelta {
         baseline_total_wasted_bytes: bw.total_wasted_bytes,
         current_total_wasted_bytes: cw.total_wasted_bytes,
         total_wasted_delta: cw.total_wasted_bytes as i64 - bw.total_wasted_bytes as i64,
@@ -345,7 +345,7 @@ fn compare_parts(bs: &SummaryTotals, cs: &SummaryTotals,
             - bw.over_allocated_wasted_bytes as i64,
         boxed_primitive_wasted_delta: cw.boxed_primitive_wasted_bytes as i64
             - bw.boxed_primitive_wasted_bytes as i64,
-    };
+    });
 
     HeapComparisonResult {
         baseline_path: baseline_path.to_string(),

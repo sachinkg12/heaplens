@@ -10,6 +10,7 @@ class BrowserHost {
         this.telemetry=new Telemetry({context:{host:'browser',version:require('../package.json').version,os:platform(process.platform),arch:architecture(process.arch)},
             level:options.telemetry??'all',disabled:!!process.env.CI || process.env.DO_NOT_TRACK==='1',...(options.telemetrySend?{send:options.telemetrySend}:{})});
         this.legacy = options.legacy;
+        this.quickScan = !!options.quickScan;
         this.sourceRoots = options.roots || [];
         this.sources = new Sources(this.sourceRoots);
         this.sessions = new Map();
@@ -134,6 +135,8 @@ function options(argv) {
         const flag = argv[i];
         if (flag === '--legacy')
             out.legacy = true;
+        else if (flag === '--quick-scan')
+            out.quickScan = true;
         else if (flag === '--no-browser')
             out.browser = false;
         else if (['--server', '--source-root', '--port', '--dump', '--telemetry'].includes(flag)) {

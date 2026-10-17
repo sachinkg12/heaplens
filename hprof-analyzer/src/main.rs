@@ -7,6 +7,9 @@
 //! for use with AI clients like Claude Desktop.
 
 use anyhow::{Context, Result};
+mod scan_server;
+mod waste_server;
+mod read_jobs;
 use clap::Parser;
 use hprof_analyzer::{build_graph, calculate_dominators_with_state, compare_heaps, FieldInfo, HprofLoader, WasteAnalysis};
 use hprof_analyzer::indexed::types::HeapAnalysis;
@@ -19,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Global flag: use the indexed (CSR-based) analysis backend.
 static USE_INDEXED: AtomicBool = AtomicBool::new(false);
+static STORAGE: std::sync::OnceLock<hprof_analyzer::indexed::storage::StorageOptions> = std::sync::OnceLock::new();
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::signal;
@@ -40,6 +44,14 @@ struct Cli {
     /// Use the legacy petgraph-based analysis backend
     #[arg(long)]
     legacy: bool,
+    /// Reference storage; memory remains the default. Disk indices are private and reusable.
+    #[arg(long, value_parser = ["memory", "disk"])]
+    storage: Option<String>,
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
+    /// Disk edge-sort buffer only, not a total RAM limit.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=1024))]
+    edge_buffer_mib: Option<u64>,
 }
 
 /// JSON-RPC 2.0 Request structure.
@@ -72,6 +84,8 @@ struct TimingBreakdown {
 /// Result of heap analysis.
 #[derive(Debug, Clone, Serialize)]
 struct AnalyzeHeapResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    storage: Option<hprof_analyzer::indexed::storage::StorageReport>,
     request_id: u64,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,7 +100,6 @@ struct AnalyzeHeapResult {
     leak_suspects: Option<Vec<hprof_analyzer::LeakSuspect>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     object_leak_suspects: Option<Vec<hprof_analyzer::LeakSuspect>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     waste_analysis: Option<WasteAnalysis>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timing: Option<TimingBreakdown>,
@@ -141,15 +154,14 @@ impl FileAnalysisState {
 /// This function is meant to be called from `tokio::task::spawn_blocking`
 /// to avoid blocking the async runtime.
 ///
-/// For the indexed backend, this uses a two-phase approach:
-/// 1. Phase 1 (~1.4s): sends initial results immediately via `result_tx`
-/// 2. Phase 2 (~38s): runs in the same task, then sends `heap_analysis_phase2_complete`
+/// The indexed path emits borrowed staged observations during this same job;
+/// the returned terminal result contains only completed retained analysis.
 fn analyze_heap_blocking(
     path: PathBuf,
     request_id: u64,
     analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_token: Arc<AtomicBool>,
-    result_tx: mpsc::UnboundedSender<AnalyzeHeapResult>,
+    _result_tx: mpsc::UnboundedSender<AnalyzeHeapResult>,
 ) -> AnalyzeHeapResult {
     log::info!("Starting heap analysis for: {:?} (request_id: {})", path, request_id);
 
@@ -172,6 +184,7 @@ fn analyze_heap_blocking(
                 .collect();
 
             let phase1_result = AnalyzeHeapResult {
+                storage: analysis_state.storage_report().cloned(),
                 request_id,
                 status: "completed".to_string(),
                 top_objects: Some(top_objects),
@@ -180,7 +193,7 @@ fn analyze_heap_blocking(
                 class_histogram: Some(analysis_state.get_class_histogram().to_vec()),
                 leak_suspects: Some(analysis_state.get_leak_suspects().to_vec()),
                 object_leak_suspects: Some(analysis_state.get_object_leak_suspects().to_vec()),
-                waste_analysis: Some(analysis_state.get_waste_analysis().clone()),
+                waste_analysis: analysis_state.cached_waste_analysis().cloned(),
                 timing: Some(timing.clone()),
                 error: None,
             };
@@ -191,6 +204,7 @@ fn analyze_heap_blocking(
             if cancel_token.load(Ordering::Relaxed) {
                 log::info!("Heap analysis cancelled (request_id: {})", request_id);
                 return AnalyzeHeapResult {
+                    storage: None,
                     request_id,
                     status: "cancelled".to_string(),
                     top_objects: None,
@@ -204,9 +218,12 @@ fn analyze_heap_blocking(
                     error: None,
                 };
             }
-            let error_msg = format!("Heap analysis failed: {}", e);
+            let error_msg = if let Some(resource) = e.downcast_ref::<hprof_analyzer::indexed::storage::ResourceError>() {
+                format!("Heap analysis failed: {resource}")
+            } else { format!("Heap analysis failed: {}", e) };
             log::error!("{} (request_id: {})", error_msg, request_id);
             AnalyzeHeapResult {
+                storage: None,
                 request_id,
                 status: "error".to_string(),
                 top_objects: None,
@@ -344,7 +361,7 @@ fn run_phase2_background(
     let object_leak_suspects = full_state_arc.get_object_leak_suspects().to_vec();
     let class_histogram = full_state_arc.get_class_histogram().to_vec();
     let summary = full_state_arc.get_summary().clone();
-    let waste_analysis = full_state_arc.get_waste_analysis().clone();
+    let waste_analysis = full_state_arc.cached_waste_analysis().cloned();
 
     // Replace Phase1AnalysisState with full IndexedAnalysisState
     {
@@ -453,8 +470,22 @@ fn analyze_heap_internal(
         }));
 
         let phase_start = Instant::now();
-        let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1(&mmap[..])
-            .context("Indexed Phase 1 parse failed")?;
+        let options = STORAGE.get().cloned().unwrap_or_default();
+        let mut observe = |event: hprof_analyzer::indexed::progress::Observation<'_>| {
+            if cancel_token.load(Ordering::Relaxed) { return; }
+            let mut params = event.payload();
+            params["request_id"] = serde_json::json!(request_id);
+            let _ = send_stdout(&serde_json::json!({"jsonrpc":"2.0","method":"heap_analysis_progress","params":params}));
+        };
+        let (phase1, deferred, cached_phase2, storage_report) = if options.mode == hprof_analyzer::indexed::storage::StorageMode::Disk {
+            let (phase1, phase2, report) = hprof_analyzer::indexed::storage::load_structure_observed(mmap.clone(), &options, cancel_token, &mut observe)
+                .context("Disk structural index validation or construction failed; check private cache permissions and free space")?;
+            (phase1, None, Some(phase2), report)
+        } else {
+            let (phase1, deferred) = hprof_analyzer::indexed::parse::parse_indexed_phase1_observed(mmap.clone(), None, cancel_token, &mut observe)
+                .context("Indexed Phase 1 parse failed")?;
+            (phase1, Some(deferred), None, hprof_analyzer::indexed::storage::StorageReport { mode: "memory", cache_status: "disabled", edge_buffer_bytes: 0 })
+        };
         let graph_ms = phase_start.elapsed().as_millis() as u64;
 
         eprintln!("[Progress] Phase 1 complete: {} nodes ({} ms)", phase1.node_store.len(), graph_ms);
@@ -464,8 +495,7 @@ fn analyze_heap_internal(
             "method": "heap_analysis_progress",
             "params": {
                 "request_id": request_id,
-                "stage": "graph_built", "phase": 3, "total_phases": 4,
-                "summary": phase1.summary
+                "stage": "edges", "phase": 3, "total_phases": 4
             }
         }));
 
@@ -473,23 +503,15 @@ fn analyze_heap_internal(
 
         // Phase 2: edges + dominators (~1s after file rescan elimination)
         eprintln!("[Progress] Step 3/4: Extracting edges + computing dominators...");
-        let _ = send_stdout(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "heap_analysis_progress",
-            "params": {
-                "request_id": request_id,
-                "stage": "dominators", "phase": 4, "total_phases": 4
-            }
-        }));
-
         let phase_start = Instant::now();
-        let phase2 = hprof_analyzer::indexed::parse::parse_indexed_phase2(&phase1, deferred)
-            .context("Indexed Phase 2 failed")?;
+        let phase2 = match cached_phase2 { Some(phase2) => phase2, None => hprof_analyzer::indexed::parse::parse_indexed_phase2_cancellable(&phase1, deferred.expect("memory mode deferred data"), cancel_token)
+            .context("Indexed Phase 2 failed")? };
+        observe(hprof_analyzer::indexed::progress::Observation::Stage("dominators"));
         if cancel_token.load(Ordering::Relaxed) {
             anyhow::bail!("Analysis cancelled");
         }
         let indexed_state = hprof_analyzer::indexed::IndexedAnalysisState::from_phases(phase1, phase2)
-            .context("Indexed analysis state construction failed")?;
+            .context("Indexed analysis state construction failed")?.with_storage_report(storage_report);
         if cancel_token.load(Ordering::Relaxed) {
             anyhow::bail!("Analysis cancelled");
         }
@@ -848,8 +870,7 @@ fn format_analyze_result(
     }
 
     // Waste analysis
-    let w = state.get_waste_analysis();
-    if w.total_wasted_bytes > 0 {
+    if let Some(w) = state.cached_waste_analysis().filter(|w| w.total_wasted_bytes > 0) {
         out.push_str("\n## Waste Analysis\n\n");
         out.push_str(&format!("- **Total Waste:** {} ({:.1}% of heap)\n", fmt_bytes(w.total_wasted_bytes), w.waste_percentage));
         out.push_str(&format!("- **Duplicate Strings:** {}\n", fmt_bytes(w.duplicate_string_wasted_bytes)));
@@ -1122,7 +1143,7 @@ fn format_comparison_result(result: &hprof_analyzer::HeapComparisonResult) -> St
     }
 
     // Waste delta
-    let wd = &result.waste_delta;
+    if let Some(wd) = &result.waste_delta {
     out.push_str("### Waste Delta\n\n");
     out.push_str(&format!("- **Total Waste:** {} -> {} ({})\n",
         fmt_bytes(wd.baseline_total_wasted_bytes), fmt_bytes(wd.current_total_wasted_bytes),
@@ -1133,6 +1154,9 @@ fn format_comparison_result(result: &hprof_analyzer::HeapComparisonResult) -> St
         fmt_delta_bytes(wd.duplicate_string_wasted_delta)));
     out.push_str(&format!("- **Empty Collections Delta:** {}\n",
         fmt_delta_bytes(wd.empty_collection_wasted_delta)));
+    } else {
+        out.push_str("### Waste Delta\n\nNot calculated for both snapshots.\n");
+    }
 
     out
 }
@@ -1443,6 +1467,8 @@ fn run_mcp_server() -> Result<()> {
 
 /// Runs the JSON-RPC server for VS Code extension communication.
 async fn run_jsonrpc_server() -> Result<()> {
+    let scan_readiness = scan_server::Readiness::default();
+    let read_jobs = read_jobs::ReadJobs::default();
     let (result_tx, mut result_rx) = mpsc::unbounded_channel::<AnalyzeHeapResult>();
     let request_id_counter = Arc::new(AtomicU64::new(1));
     let analysis_states: Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>> =
@@ -1523,10 +1549,20 @@ async fn run_jsonrpc_server() -> Result<()> {
                 };
 
                 // Dispatch RPC method
+                match scan_readiness.reject_read(&request) {
+                    Ok(true) => continue,
+                    Err(error) => { eprintln!("Readiness check failed: {error}"); continue; }
+                    Ok(false) => {}
+                }
                 let method = request.method.clone();
+                if read_jobs::handles(&method) {
+                    read_jobs.start(request, &analysis_states, &cancel_tokens);
+                    continue;
+                }
                 let result = match method.as_str() {
+                    "scan_heap" => scan_server::start(request, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness, read_jobs.engine_gate()),
                     "analyze_heap" => handle_analyze_heap_request(
-                        request, &result_tx, &request_id_counter, &analysis_states, &cancel_tokens,
+                        request, &result_tx, &request_id_counter, &analysis_states, &cancel_tokens, &scan_readiness, read_jobs.engine_gate(),
                     ).await,
                     "cancel_analysis" => handle_cancel_analysis_request(request, &cancel_tokens).await,
                     "ping" => {
@@ -1537,26 +1573,7 @@ async fn run_jsonrpc_server() -> Result<()> {
                             send_stdout(&response).map_err(|e| e.into())
                         } else { Ok(()) }
                     }
-                    "get_children" => handle_get_children_request(request, &analysis_states).await,
-                    "get_referrers" => handle_get_referrers_request(request, &analysis_states).await,
-                    "export_json" => handle_export_json_request(request, &analysis_states).await,
-                    "gc_root_path" => handle_gc_root_path_request(request, &analysis_states).await,
-                    "inspect_object" => handle_inspect_object_request(request, &analysis_states).await,
-                    "execute_query" => handle_execute_query_request(request, &analysis_states).await,
                     "list_analyzed_files" => handle_list_analyzed_files_request(request, &analysis_states).await,
-                    "compare_heaps" => handle_compare_heaps_request(request, &analysis_states).await,
-                    "compare_snapshots" => {
-                        if let Some(id) = request.id {
-                            let response = match hprof_analyzer::comparison::compare_snapshot_request(
-                                request.params.unwrap_or(serde_json::Value::Null)) {
-                                Ok(result) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
-                                Err(message) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}),
-                            };
-                            send_stdout(&response).map_err(|e| e.into())
-                        } else { Ok(()) }
-                    }
-                    "get_dominator_subtree" => handle_get_dominator_subtree_request(request, &analysis_states).await,
-                    "get_timeline_data" => handle_get_timeline_data_request(request, &analysis_states).await,
                     _ => {
                         if let Some(id) = request.id {
                             let error_response = serde_json::json!({
@@ -1610,6 +1627,8 @@ async fn handle_analyze_heap_request(
     request_id_counter: &Arc<AtomicU64>,
     analysis_states: &Arc<RwLock<HashMap<PathBuf, FileAnalysisState>>>,
     cancel_tokens: &Arc<RwLock<HashMap<String, AnalysisControl>>>,
+    scan_readiness: &scan_server::Readiness,
+    engine_gate: Arc<tokio::sync::RwLock<()>>,
 ) -> Result<()> {
     // Extract parameters
     let params = request.params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
@@ -1626,14 +1645,11 @@ async fn handle_analyze_heap_request(
 
     // Create cancel token for this analysis
     let cancel_token = Arc::new(AtomicBool::new(false));
-    {
-        let mut tokens = cancel_tokens.write()
-            .map_err(|e| anyhow::anyhow!("Failed to write cancel tokens: {}", e))?;
-        tokens.insert(path_key.clone(), AnalysisControl {
-            request_id,
-            cancel_token: cancel_token.clone(),
-        });
-    }
+    if !scan_server::claim(cancel_tokens, &path_key, request_id, cancel_token.clone())? { return Ok(()); }
+    // A failed/cancelled reanalysis must not expose a previous snapshot as if
+    // it belonged to the new job. Queued readers pin and check identity.
+    scan_readiness.scan(&path_key);
+    analysis_states.write().map_err(|_|anyhow::anyhow!("Analysis registry unavailable"))?.remove(&path_buf);
 
     // Respond immediately with processing status
     let processing_response = serde_json::json!({
@@ -1650,10 +1666,13 @@ async fn handle_analyze_heap_request(
     let result_tx = result_tx.clone();
     let analysis_states = analysis_states.clone();
     let cancel_tokens_cleanup = cancel_tokens.clone();
+    let scan_readiness = scan_readiness.clone();
 
     // Spawn blocking task for CPU-intensive work
     task::spawn_blocking(move || {
+        let _engine = engine_gate.blocking_write();
         let result = analyze_heap_blocking(path_buf, request_id, analysis_states, cancel_token, result_tx.clone());
+        if result.status == "completed" { scan_readiness.full(&path_key); }
 
         // Clean up cancel token
         if let Ok(mut tokens) = cancel_tokens_cleanup.write() {
@@ -1944,15 +1963,15 @@ async fn handle_inspect_object_request(
     };
     let path_owned = path.to_string();
 
-    // Run in blocking task since inspect_object_bytes scans the full HPROF file
-    let fields = task::spawn_blocking(move || {
+    // Already running on a bounded read worker; do not spawn a second pool.
+    let fields = {
         if let Some(ref cached_mmap) = mmap_clone {
             analysis_state.inspect_object_bytes(&cached_mmap[..], object_id)
         } else {
             let hprof_path = std::path::Path::new(&path_owned);
             analysis_state.inspect_object(hprof_path, object_id)
         }
-    }).await.map_err(|e| anyhow::anyhow!("Inspect task failed: {}", e))?;
+    };
 
     let response = serde_json::json!({
         "jsonrpc": "2.0",
@@ -2189,6 +2208,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let mut storage = hprof_analyzer::indexed::storage::StorageOptions::from_env()?;
+    if let Some(mode) = &cli.storage { storage.mode = hprof_analyzer::indexed::storage::StorageMode::parse(mode)?; }
+    if let Some(directory) = &cli.cache_dir { storage.cache_dir = Some(directory.clone()); }
+    if let Some(mib) = cli.edge_buffer_mib { storage.set_buffer_mib(mib as usize)?; }
+    anyhow::ensure!(!cli.legacy || storage.mode == hprof_analyzer::indexed::storage::StorageMode::Memory, "Disk storage requires the indexed backend");
+    let _ = STORAGE.set(storage);
 
     if cli.legacy {
         USE_INDEXED.store(false, Ordering::Relaxed);

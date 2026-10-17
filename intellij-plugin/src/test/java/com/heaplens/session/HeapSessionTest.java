@@ -23,7 +23,7 @@ class HeapSessionTest {
         @Override public void start(Listener value) { listener = value; }
         @Override public CompletableFuture<JsonObject> request(long id, String method, JsonObject p, Duration timeout) {
             params.put(method, p); methods.add(method);
-            if (method.equals("analyze_heap")) { analysisId = id; return ack; }
+            if (method.equals("analyze_heap") || method.equals("scan_heap")) { analysisId = id; return ack; }
             if (method.equals("execute_query") && queryReply != null) return queryReply;
             return CompletableFuture.completedFuture(new JsonObject());
         }
@@ -66,6 +66,56 @@ class HeapSessionTest {
         assertFalse(observed.toString().contains("private-canary"));
     }
     boolean hasEvent(String command) { return events.stream().anyMatch(e -> command.equals(e.get("command").getAsString())); }
+
+    @Test void stagedSnapshotIsForwardedWithoutMarkingAnalysisReady() {
+        Fake f=started();
+        JsonObject params=JsonParser.parseString("{\"stage\":\"shallow_ready\",\"snapshot\":{\"kind\":\"shallow\",\"summary\":{\"reachable_heap_size\":null},\"class_histogram\":[]}}").getAsJsonObject();
+        params.addProperty("request_id",f.analysisId);
+        f.listener.notification("heap_analysis_progress",params);
+        await(()->events.stream().anyMatch(e->e.has("snapshot")));
+        assertEquals(HeapSession.State.ANALYZING,session.state());
+        assertTrue(events.stream().filter(e->e.has("snapshot")).findFirst().orElseThrow().getAsJsonObject("snapshot").getAsJsonObject("summary").get("reachable_heap_size").isJsonNull());
+        assertEquals(1,f.methods.stream().filter(m->m.equals("analyze_heap")).count());
+        assertFalse(f.methods.contains("scan_heap"));
+        session.read("get_children",new JsonObject(),(v,error)->assertNotNull(error));
+        await(()->f.methods.size()==1);
+        f.complete();await(()->session.state()==HeapSession.State.READY);
+    }
+
+    @Test void shallowReadinessBlocksGraphReadsUntilExplicitEscalation() {
+        session.start(AnalysisMode.SHALLOW);
+        await(()->!clients.isEmpty() && clients.getFirst().analysisId>0);
+        Fake first=clients.getFirst();
+        first.notify("heap_analysis_complete","completed",first.analysisId);
+        first.notify("heap_scan_complete","completed",first.analysisId+1);
+        session.query("ignored",1);await(()->hasEvent("queryError"));
+        assertEquals(HeapSession.State.ANALYZING,session.state());
+        first.notify("heap_scan_complete","completed",first.analysisId);
+        await(()->session.state()==HeapSession.State.SHALLOW_READY && hasEvent("shallowScanComplete"));
+        assertFalse(hasEvent("analysisComplete"));
+        events.clear();session.query("ignored",1);await(()->hasEvent("queryError"));
+        List<String> reads=new CopyOnWriteArrayList<>();session.read("get_children",new JsonObject(),(r,e)->reads.add(e));await(()->!reads.isEmpty());
+        assertEquals(List.of("scan_heap"),first.methods);
+        session.analyze(AnalysisMode.FULL);await(()->clients.size()==2 && clients.get(1).analysisId>0);
+        assertTrue(first.closed);first.notify("heap_scan_complete","completed",first.analysisId);
+        Fake full=clients.get(1);assertTrue(full.methods.contains("analyze_heap"));full.complete();
+        await(()->session.state()==HeapSession.State.READY);session.query("SELECT * FROM instances",1);
+        await(()->full.methods.contains("execute_query"));
+    }
+
+    @Test void shallowCancelAndCrashRetryPreserveModeAndFenceOldEvents() {
+        session.start(AnalysisMode.SHALLOW);await(()->!clients.isEmpty() && clients.getFirst().analysisId>0);
+        Fake first=clients.getFirst();session.cancel();await(()->first.methods.contains("cancel_analysis"));
+        first.notify("heap_scan_complete","cancelled",first.analysisId);
+        await(()->session.state()==HeapSession.State.CANCELLED);session.retry();
+        await(()->clients.size()==2 && clients.get(1).analysisId>0);
+        assertTrue(clients.get(1).methods.contains("scan_heap"));
+        first.listener.failed("retired");clients.get(1).notify("heap_scan_complete","completed",clients.get(1).analysisId);
+        await(()->session.state()==HeapSession.State.SHALLOW_READY);
+        clients.get(1).listener.failed("crash");await(()->session.state()==HeapSession.State.FAILED);
+        session.retry();await(()->clients.size()==3 && clients.get(2).analysisId>0);
+        assertTrue(clients.get(2).methods.contains("scan_heap"));
+    }
 
     @Test void earlyCompletionDoesNotDependOnAckOrderAndStartIsIdempotent() {
         Fake f = started(); session.start(); f.complete();

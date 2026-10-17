@@ -21,6 +21,16 @@ Keep the terminal running. HeapLens opens your default browser and prints a priv
 
 ## Investigate and export
 
+### Quick Scan and retained analysis
+
+Use `heaplens open "/absolute/path/app.hprof" --quick-scan --telemetry off` to begin with shallow allocation totals and a class histogram. Overview labels reachable heap as **Not calculated** and the class count as **Declared classes**. The shallow histogram supports filtering, 200-row pages and CSV export; it has no object-instance index or retained percentages.
+
+Choose **Analyze Retained** to start a fresh full analysis and unlock the remaining views and actions below. Viewing or exporting shallow results does not start it. Retry repeats the selected mode. **Quick Scan** can start a new shallow session after completion or cancellation. Full analysis remains the default. It displays progress and shallow results before retained analysis completes; **Calculate Waste** is a separate action after full analysis. Neither mode guarantees a total RAM bound. Use a complete package with a matching CLI, server and browser host; older packages may lack these controls.
+
+### Reference storage
+
+Memory storage is the default. Launch with `heaplens open "/absolute/path/app.hprof" --storage disk --telemetry off` to build or reuse a private structural index. The status identifies Memory or Disk and whether an index was built or reused. Index verification reads the capture and stored components; dominators are recomputed before retained results are ready. See [disk reference storage](../api-reference/cli.md#disk-reference-storage) for cache locations, free-space needs and cleanup.
+
 | View or action | What you can do |
 | --- | --- |
 | Overview | Read summary and charts; copy an incident report or download the Markdown fallback. |

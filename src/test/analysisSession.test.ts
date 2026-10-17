@@ -8,6 +8,7 @@ import {
 } from '../analysisSession';
 import {
     deliverOrBufferWebviewMessage,
+    deliverOrBufferProgress,
     markWebviewReadyAndFlush
 } from '../webviewMessageDelivery';
 
@@ -17,7 +18,7 @@ class FakeClient implements AnalysisRpcClient {
 
     public async sendRequest(method: string, params?: any, timeoutMs?: number): Promise<any> {
         this.requests.push({ method, params, timeoutMs });
-        if (method === 'analyze_heap') {
+        if (method === 'analyze_heap' || method === 'scan_heap') {
             return { status: 'processing', request_id: 42 };
         }
         if (method === 'cancel_analysis') {
@@ -124,6 +125,34 @@ async function drainMicrotasks(): Promise<void> {
     await Promise.resolve();
 }
 
+test('shallow session uses isolated correlated events; full and ID-less notifications cannot complete it', async () => {
+    const client = new FakeClient();
+    const session = new AnalysisSession(client, '/tmp/scan.hprof', {longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const pending=session.run(); await drainMicrotasks();
+    assert.equal(client.requests[0].method,'scan_heap');
+    assert.equal(client.hasHandler('heap_analysis_complete'),false);
+    client.emit('heap_analysis_complete',{request_id:42,status:'completed'});
+    client.emit('heap_scan_complete',{status:'completed'});
+    client.emit('heap_scan_complete',{request_id:41,status:'completed'});
+    assert.equal(client.hasHandler('heap_scan_complete'),true);
+    client.emit('heap_scan_complete',{request_id:42,status:'completed',summary:{reachable_heap_size:null}});
+    assert.equal((await pending).status,'completed');
+    assert.equal(client.hasHandler('heap_scan_complete'),false);
+});
+
+test('shallow Cancel waits for its terminal event and a new session can retry the same mode', async () => {
+    const client=new FakeClient();
+    const session=new AnalysisSession(client,'/tmp/scan.hprof',{longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const pending=session.run(); await drainMicrotasks(); await session.cancel();
+    assert.equal(client.requests.at(-1)?.params.analysis_request_id,42);
+    client.emit('heap_scan_complete',{request_id:42,status:'cancelled'});
+    assert.equal((await pending).status,'cancelled');
+    const retry=new AnalysisSession(client,'/tmp/scan.hprof',{longRunningWarningMs:0,operation:'scan_heap'},callbacks());
+    const restarted=retry.run(); await drainMicrotasks(); client.emit('heap_scan_complete',{request_id:42,status:'completed'});
+    assert.equal((await restarted).status,'completed');
+    assert.equal(client.requests.filter(r=>r.method==='analyze_heap').length,0);
+});
+
 test('buffers cancellation until the webview is ready and delivers it once', () => {
     const state = { webviewReady: false, pendingWebviewMessage: null as any };
     const posted: any[] = [];
@@ -162,6 +191,21 @@ test('posts a terminal analysis message immediately when the webview is ready', 
     assert.equal(delivery, 'posted');
     assert.deepEqual(posted, [completion]);
     assert.equal(state.pendingWebviewMessage, null);
+});
+
+test('terminal delivery supersedes buffered partial data, while stage updates preserve its snapshot', () => {
+    const state = { webviewReady:false, pendingWebviewMessage:null as any, pendingProgressMessage:null as any };
+    const posted:any[]=[];
+    deliverOrBufferWebviewMessage(state,{command:'analysisStarting'},m=>posted.push(m));
+    deliverOrBufferProgress(state,{command:'analysisProgress',stage:'shallow_ready',snapshot:{kind:'shallow'}},m=>posted.push(m));
+    for(let i=0;i<1000;i++)deliverOrBufferProgress(state,{command:'analysisProgress',stage:'edges'},m=>posted.push(m));
+    markWebviewReadyAndFlush(state,m=>posted.push(m));
+    assert.equal(posted.length,2);assert.equal(posted[1].snapshot.kind,'shallow');
+    state.webviewReady=false;
+    deliverOrBufferProgress(state,{command:'analysisProgress',snapshot:{kind:'shallow'}},m=>posted.push(m));
+    deliverOrBufferWebviewMessage(state,{command:'analysisComplete'},m=>posted.push(m));
+    markWebviewReadyAndFlush(state,m=>posted.push(m));
+    assert.equal(posted.at(-1).command,'analysisComplete');assert.equal(posted.length,3);
 });
 
 test('delivers a successful result after the long-running warning', async () => {

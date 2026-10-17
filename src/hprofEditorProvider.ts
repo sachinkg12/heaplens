@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { RustClient } from './rustClient';
+import { analysisStorageArguments, analysisStorageReport } from './analysisStorage';
+import { readAnalysisStorage } from './vscodeAnalysisStorage';
 import { getWebviewContent } from './webviewProvider';
 import { AnalysisData, formatAnalysisContext } from './analysisContext';
 import { streamLlmResponse, LlmConfig, ChatMessage } from './llmClient';
@@ -14,7 +16,7 @@ import { friendlyError } from './errorMessages';
 import { executeAiFix } from './aiFixProvider';
 import { trackEvent, classifyError } from './telemetry';
 import { AnalysisSession } from './analysisSession';
-import { deliverOrBufferWebviewMessage, guardWebviewMessages } from './webviewMessageDelivery';
+import { deliverOrBufferWebviewMessage, deliverOrBufferProgress, guardWebviewMessages } from './webviewMessageDelivery';
 import { EditorServerConnection } from './editorServerConnection';
 import { LlmConfigurationService } from './llmConfigurationService';
 
@@ -79,6 +81,8 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         document: vscode.CustomDocument,
         webviewPanel: vscode.WebviewPanel
     ): Promise<void> {
+        const openedAt = Date.now();
+        let initialAnalysisPending = true;
         webviewPanel.webview.options = {
             enableScripts: true,
             localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'media')]
@@ -90,17 +94,13 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         this.outputChannel.show(true);
         this.outputChannel.appendLine(`[HeapLens] Opening HPROF file: ${hprofPath}`);
         this.outputChannel.appendLine(`[HeapLens] File exists: ${fs.existsSync(hprofPath)}`);
-
-        webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri);
+        this.outputChannel.appendLine('[HeapLens] Editor startup: paint-before-analysis handshake');
 
         // Create a per-editor Rust client (each editor gets its own server subprocess)
         const client = this.createClient(hprofPath);
         if (!client) {
             this.outputChannel.appendLine('[HeapLens] ERROR: Failed to create Rust client');
-            webviewPanel.webview.postMessage({
-                command: 'error',
-                message: 'Failed to start analysis server'
-            });
+            webviewPanel.webview.html = '<!DOCTYPE html><html><body><p role="alert">HeapLens could not start the analysis server. Check the HeapLens output, then close and reopen this editor to try again.</p></body></html>';
             return;
         }
         this.outputChannel.appendLine('[HeapLens] Per-editor Rust client created successfully');
@@ -118,6 +118,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             fixedClasses: new Set()
         };
         this.editors.set(hprofPath, editorState);
+        editorState.analysisMode = vscode.workspace.getConfiguration('heaplens').get<string>('analysis.initialMode', 'full') === 'shallow' ? 'shallow' : 'full';
 
         // Clean up when the editor tab is closed
         webviewPanel.onDidDispose(() => {
@@ -139,6 +140,10 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             const state = this.editors.get(hprofPath);
             if (state !== editorState) { return; } // editor was disposed/replaced
             const requestClient = state.client;
+            if ((state.analysisMode === 'shallow' || this.analysisSessions.has(hprofPath)) && !['ready', 'tabViewed', 'quickScan', 'analyzeRetained', 'cancelAnalysis', 'retryAnalysis', 'exportHistogramCsv'].includes(message.command)) {
+                webviewPanel.webview.postMessage({ command: 'analysisModeStatus', message: 'Choose Analyze Retained before using this action. No full analysis was started.' });
+                return;
+            }
             const currentPanel = guardWebviewMessages(webviewPanel, () =>
                 this.editors.get(hprofPath) === state && state.client === requestClient
             );
@@ -154,10 +159,23 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     provider: this
                 });
             }
+            if (message.command === 'ready' && initialAnalysisPending) {
+                initialAnalysisPending = false;
+                if (state.client !== client || client.isDisposed) { return; }
+                this.outputChannel.appendLine(`[HeapLens] Webview initialized in ${Date.now() - openedAt}ms; starting analysis`);
+                void this.analyzeFile(hprofPath, webviewPanel, client).catch(error => {
+                    if (this.editors.get(hprofPath) !== editorState) { return; }
+                    this.outputChannel.appendLine(`[HeapLens] Analysis startup failed: ${error}`);
+                    deliverOrBufferWebviewMessage(editorState, {
+                        command: 'analysisFailed', message: 'Analysis could not start. Retry is available.'
+                    }, pending => webviewPanel.webview.postMessage(pending));
+                });
+            }
         });
 
-        // Start analysis
-        await this.analyzeFile(hprofPath, webviewPanel, client);
+        // Install the receiver before loading HTML. The first painted webview
+        // starts the one analysis job; resolving the editor never awaits it.
+        webviewPanel.webview.html = getWebviewContent(webviewPanel.webview, this.context.extensionUri);
     }
 
     private createClient(hprofPath: string): RustClient | null {
@@ -168,7 +186,9 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     const serverPath = this.getServerPath();
                     this.outputChannel.appendLine(`[HeapLens] Server binary path: ${serverPath}`);
                     if (!fs.existsSync(serverPath)) { throw new Error(`HeapLens server not found at ${serverPath}`); }
-                    const client = new RustClient(serverPath);
+                    const storage = readAnalysisStorage();
+                    this.outputChannel.appendLine(`[HeapLens] Reference storage: ${storage.mode}`);
+                    const client = new RustClient(serverPath, analysisStorageArguments(storage));
                     this.outputChannel.appendLine(`[HeapLens] Rust server process spawned for: ${hprofPath} (pid: ${client.processId ?? 'unavailable'})`);
                     return client;
                 }, {
@@ -209,15 +229,27 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         client: RustClient
     ): Promise<void> {
         const owner = this.editors.get(hprofPath);
+        const shallow = owner?.analysisMode === 'shallow';
+        const operation = shallow ? 'scan_heap' : 'analyze_heap';
+        if (owner) {
+            deliverOrBufferWebviewMessage(owner, { command: 'analysisStarting', analysisScope: shallow ? 'shallow' : 'full' },
+                message => webviewPanel.webview.postMessage(message));
+        }
         const isCurrent = () => this.editors.get(hprofPath) === owner
             && owner?.client === client && this.serverConnections.get(hprofPath)?.isCurrent(client);
         const phaseMessages: Record<string, string> = {
             loading: 'Loading file...',
             graph_building: 'Building heap graph...',
             graph_built: 'Graph built, preparing...',
-            dominators: 'Computing dominator tree...'
+            dominators: 'Computing dominator tree...',
+            sizing: 'Reading heap records...',
+            catalog_building: 'Building object catalogs...',
+            shallow_ready: 'Overview and shallow histogram ready; building references...',
+            edges: 'Building references...',
+            index_verifying: 'Verifying reusable index...',
+            index_publishing: 'Validating and publishing index...',
+            quick_scan: 'Scanning shallow allocations...'
         };
-        let lastPhase = 0;
         let progressRef: vscode.Progress<{ increment?: number; message?: string }> | null = null;
 
         this.outputChannel.appendLine(`[HeapLens] Sending analyze_heap request for: ${hprofPath}`);
@@ -239,12 +271,14 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         const session = new AnalysisSession(
             client,
             hprofPath,
-            { longRunningWarningMs: warningMinutes * 60_000 },
+            { longRunningWarningMs: warningMinutes * 60_000, operation },
             {
                 onProgress: (params: any) => {
                     if (!isCurrent()) { return; }
                     const state = this.editors.get(hprofPath);
-                    this.outputChannel.appendLine(`[HeapLens] Progress: stage=${params.stage}, phase=${params.phase}/${params.total_phases}`);
+                    const phase = Number.isSafeInteger(params.phase) && Number.isSafeInteger(params.total_phases)
+                        ? `, phase=${params.phase}/${params.total_phases}` : '';
+                    this.outputChannel.appendLine(`[HeapLens] Progress: stage=${params.stage}${phase}`);
 
                     const progressMsg: any = {
                         command: 'analysisProgress',
@@ -254,15 +288,12 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     };
                     if (params.summary) { progressMsg.summary = params.summary; }
                     if (params.file_metadata) { progressMsg.fileMetadata = params.file_metadata; }
-                    if (state?.webviewReady) {
-                        webviewPanel.webview.postMessage(progressMsg);
-                    }
+                    if (params.snapshot) { progressMsg.snapshot = params.snapshot; }
+                    if (state) { deliverOrBufferProgress(state, progressMsg, message => webviewPanel.webview.postMessage(message)); }
 
-                    const phase = params.phase || 0;
                     const msg = phaseMessages[params.stage] || 'Analyzing...';
-                    const increment = Math.max(0, (phase - lastPhase) * 25);
-                    lastPhase = phase;
-                    progressRef?.report({ increment, message: msg });
+                    // Stages are not equal work units: do not invent a percentage.
+                    progressRef?.report({ message: `${msg} (${Math.floor((Date.now() - analysisStartTime) / 1000)}s elapsed)` });
                 },
                 onLongRunning: async elapsedMs => {
                     if (!isCurrent()) { return 'continue'; }
@@ -315,12 +346,18 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     if (!isCurrent()) { return; }
 
                     if (outcome.status === 'completed') {
-                        this.handleCompletedAnalysis(
+                        if (shallow && owner) {
+                            const result = outcome.result;
+                            deliverOrBufferWebviewMessage(owner, {
+                                command: 'shallowScanComplete', summary: result.summary,
+                                classHistogram: result.class_histogram, readiness: result.readiness
+                            }, message => webviewPanel.webview.postMessage(message));
+                        } else { this.handleCompletedAnalysis(
                             hprofPath,
                             webviewPanel,
                             outcome.result,
                             analysisStartTime
-                        );
+                        ); }
                         this.outputChannel.appendLine(`[HeapLens] Analysis completed in ${Date.now() - analysisStartTime}ms`);
                         progress.report({ increment: 100, message: 'Done!' });
                     } else if (outcome.status === 'cancelled') {
@@ -394,6 +431,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         if (state) { state.analysisData = analysisData; }
 
         const webviewMessage = {
+            storage: analysisStorageReport(params.storage),
             command: 'analysisComplete',
             topObjects: params.top_objects || [],
             topLayers: params.top_layers || [],
@@ -427,7 +465,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         await session.cancel();
     }
 
-    public async retryAnalysis(hprofPath: string): Promise<void> {
+    public async retryAnalysis(hprofPath: string, mode?: 'full' | 'shallow'): Promise<void> {
         if (this.analysisSessions.has(hprofPath)) {
             this.outputChannel.appendLine(`[HeapLens] Analysis is already active for: ${hprofPath}`);
             return;
@@ -435,6 +473,13 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
 
         const state = this.editors.get(hprofPath);
         if (!state) { return; }
+        state.analysisMode = mode ?? state.analysisMode ?? 'full';
+        if (mode !== undefined) {
+            // Mode changes retire the entire process generation, including old
+            // object reads. Ordinary Cancel/Retry still reuses a live server.
+            this.serverConnections.get(hprofPath)?.dispose();
+            this.serverConnections.delete(hprofPath);
+        }
         trackEvent('analysis/retry');
         // No await before ownership/session installation: repeated clicks cannot spawn twice.
         state.analysisData = null;
@@ -622,6 +667,9 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
 
         // Waste Analysis
+        if (!data.wasteAnalysis) {
+            lines.push('## Waste Analysis', '', 'Not calculated. Use Calculate Waste in the Waste tab before including these results.', '');
+        }
         if (data.wasteAnalysis && data.wasteAnalysis.total_wasted_bytes > 0) {
             const w = data.wasteAnalysis;
             lines.push('## Waste Analysis');

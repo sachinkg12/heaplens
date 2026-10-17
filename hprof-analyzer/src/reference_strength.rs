@@ -5,6 +5,9 @@
 //! Keeping this policy separate lets every graph backend apply the same rule
 //! without embedding Java-library class-name checks in parser loops.
 
+/// Versioned interpretation of retained byte estimates, not a VM measurement.
+pub(crate) const RETAINED_SIZE_POLICY: &str = "strong-v3-runtime-class-links-root-normalization";
+
 /// Whether an instance field keeps its target strongly reachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReferenceStrength {

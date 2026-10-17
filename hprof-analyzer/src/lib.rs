@@ -14,7 +14,10 @@ pub(crate) mod classloader_leaks;
 pub(crate) mod reference_strength;
 pub(crate) mod gc_roots;
 pub mod object_layout;
+pub mod quick_scan;
 mod hprof_sizing;
+mod hprof_producer;
+mod jvm_layout_profile;
 #[cfg(test)]
 mod gc_root_regression;
 pub mod dominator;
@@ -183,7 +186,7 @@ impl HprofLoader {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// use hprof_analyzer::HprofLoader;
     /// use std::path::PathBuf;
     ///
@@ -533,6 +536,12 @@ pub enum EdgeLabel {
     SuperClass,
     /// Class → class-loader edge.
     ClassLoader,
+    /// Object → runtime class mirror (including arrays and class objects).
+    RuntimeClass,
+    /// Class → signers array.
+    ClassSigners,
+    /// Class → protection domain.
+    ProtectionDomain,
     /// SuperRoot → GC root edge.
     GcRoot,
     /// Fallback extraction (no field type info available).
@@ -587,7 +596,7 @@ pub struct FieldInfo {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
 ///
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 /// println!("Graph has {} nodes and {} edges", 
 ///          graph.graph().node_count(), 
 ///          graph.graph().edge_count());
@@ -726,7 +735,7 @@ pub struct HeapGraphParts {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
 ///
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 /// println!("Graph: {} nodes, {} edges", 
 ///          graph.node_count(), 
 ///          graph.edge_count());
@@ -1211,6 +1220,8 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
         .map(|(id, name, ps)| (*id, (*name, *ps))).collect();
 
     let mut waste_data = WasteRawData {
+        mapped_arrays: None,
+        lazy_contents: None,
         reference_bytes: sizing.layout.reference_bytes(),
         string_instances: Vec::new(),
         backing_arrays: HashMap::new(),
@@ -1224,6 +1235,25 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
     // Use HashSet for O(1) edge deduplication instead of graph.contains_edge() which is O(E)
     let mut added_edges: std::collections::HashSet<(NodeIndex, NodeIndex)> =
         std::collections::HashSet::with_capacity(estimated_nodes * 2);
+
+    let primitive_classes: HashMap<_, _> = class_name_map.iter()
+        .filter(|(_, name)| matches!(name.as_ref(), "boolean[]" | "byte[]" | "char[]" | "short[]" | "int[]" | "float[]" | "long[]" | "double[]"))
+        .filter_map(|(id, name)| id_to_node.get(id).map(|&node| (name.as_ref(), node)))
+        .collect();
+    let mirror = class_name_map.iter().find(|(_, name)| name.as_ref() == "java.lang.Class")
+        .and_then(|(id, _)| id_to_node.get(id).copied());
+    for source in graph.node_indices() {
+        let class = match &graph[source] {
+            NodeData::Class => mirror,
+            NodeData::Array { class_name, .. } => primitive_classes.get(class_name.as_ref()).copied(),
+            _ => None,
+        };
+        if let Some(target) = class {
+            if added_edges.insert((source, target)) {
+                graph.add_edge(source, target, EdgeLabel::RuntimeClass); edge_count += 1;
+            }
+        }
+    }
 
     // Connect SuperRoot to all GC roots
     for gc_root_id in &gc_root_ids {
@@ -1261,6 +1291,12 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let class_obj_id = instance.class_obj_id().id();
 
                             if let Some(&instance_idx) = id_to_node.get(&instance_id) {
+                                if let Some(&class_idx) = id_to_node.get(&class_obj_id) {
+                                    if added_edges.insert((instance_idx, class_idx)) {
+                                        graph.add_edge(instance_idx, class_idx, EdgeLabel::RuntimeClass);
+                                        edge_count += 1;
+                                    }
+                                }
                                 let fields = instance.fields();
 
                                 if let Some(field_layout) = class_field_layouts.get(&class_obj_id) {
@@ -1310,22 +1346,22 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                             jvm_hprof::heap_dump::FieldType::Int, 0,
                                         ) {
                                             let cname = class_name_map.get(&class_obj_id)
-                                                .map(|s| s.to_string()).unwrap_or_default();
+                                                .cloned().unwrap_or_default();
                                             let shallow = sizing.instance(class_obj_id, fields.len())?;
                                             if size_val == 0 {
                                                 waste_data.empty_collections.push(EmptyCollectionInfo {
-                                                    class_name: cname,
+                                                    class_name: cname.into(),
                                                     shallow_size: shallow,
                                                 });
                                             } else if let Some(backing_array_id) = extract_nth_field_of_type(
                                                 fields, id_size, &ft,
                                                 jvm_hprof::heap_dump::FieldType::ObjectId, 0,
                                             ) {
-                                                if let Some(&capacity) = waste_data.array_element_counts.get(&backing_array_id) {
+                                                if let Some(capacity) = waste_data.array_count(backing_array_id) {
                                                     let size_u32 = size_val as u32;
                                                     if capacity > 4 * size_u32 && capacity > 16 {
                                                         waste_data.over_allocated_collections.push(OverAllocatedCollectionInfo {
-                                                            class_name: cname,
+                                                            class_name: cname.into(),
                                                             size: size_u32,
                                                             capacity,
                                                         });
@@ -1339,7 +1375,7 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                                     if let Some(&(bp_name, _prim_size)) = boxed_ids.get(&class_obj_id) {
                                         let shallow = sizing.instance(class_obj_id, fields.len())?;
                                         waste_data.boxed_primitives.push(BoxedPrimitiveInfo {
-                                            class_name: bp_name.to_string(),
+                                            class_name: Arc::from(bp_name),
                                             shallow_size: shallow,
                                         });
                                     }
@@ -1361,6 +1397,12 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let array_id = array.obj_id().id();
 
                             if let Some(&array_idx) = id_to_node.get(&array_id) {
+                                if let Some(&class_idx) = id_to_node.get(&array.array_class_obj_id().id()) {
+                                    if added_edges.insert((array_idx, class_idx)) {
+                                        graph.add_edge(array_idx, class_idx, EdgeLabel::RuntimeClass);
+                                        edge_count += 1;
+                                    }
+                                }
                                 for element_result in array.elements(id_size) {
                                     if let Ok(Some(element_id)) = element_result {
                                         let ref_id = element_id.id();
@@ -1379,6 +1421,16 @@ pub fn build_graph_with_layout(data: &[u8], layout: Option<object_layout::Object
                             let class_id = class.obj_id().id();
 
                             if let Some(&class_idx) = id_to_node.get(&class_id) {
+                                for (target, label) in [
+                                    (class.signers_obj_id(), EdgeLabel::ClassSigners),
+                                    (class.protection_domain_obj_id(), EdgeLabel::ProtectionDomain),
+                                ] {
+                                    if let Some(target) = target.and_then(|id| id_to_node.get(&id.id()).copied()) {
+                                        if added_edges.insert((class_idx, target)) {
+                                            graph.add_edge(class_idx, target, label); edge_count += 1;
+                                        }
+                                    }
+                                }
                                 // Reference to superclass
                                 if let Some(super_class_id) = class.super_class_obj_id() {
                                     if let Some(&super_class_node) = id_to_node.get(&super_class_id.id()) {
@@ -1605,7 +1657,7 @@ impl Ord for ObjectReport {
 /// Retained size is the amount of memory that would be freed if an object
 /// were garbage collected. It is calculated as:
 ///
-/// ```
+/// ```text
 /// Retained Size(N) = Shallow Size(N) + Sum(Retained Size of all children of N in Dominator Tree)
 /// ```
 ///
@@ -1638,7 +1690,7 @@ impl Ord for ObjectReport {
 /// # fn main() -> anyhow::Result<()> {
 /// let loader = HprofLoader::new(PathBuf::from("heap.hprof"));
 /// let mmap = loader.map_file()?;
-/// let graph = build_graph(&mmap[..])?;
+/// let (graph, _waste) = build_graph(&mmap[..])?;
 ///
 /// let top_objects = calculate_dominators(&graph)?;
 /// for (i, report) in top_objects.iter().enumerate() {
@@ -1694,7 +1746,7 @@ pub use comparison::{compare_heaps, HeapComparisonResult, HeapSummaryDelta, Clas
 pub use dominator::{calculate_dominators, calculate_dominators_with_state};
 
 /// Summary statistics for the entire heap dump.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HeapSummary {
     /// Provenance for byte estimates; absent for old/synthetic analysis states.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1790,6 +1842,9 @@ impl AnalysisState {
             EdgeLabel::ArrayElement => Some("[element]".to_string()),
             EdgeLabel::SuperClass => Some("<super>".to_string()),
             EdgeLabel::ClassLoader => Some("<classloader>".to_string()),
+            EdgeLabel::RuntimeClass => Some("<class>".to_string()),
+            EdgeLabel::ClassSigners => Some("<signers>".to_string()),
+            EdgeLabel::ProtectionDomain => Some("<protection-domain>".to_string()),
             EdgeLabel::GcRoot => Some("<gc-root>".to_string()),
             EdgeLabel::Unknown => None,
         }
@@ -2843,8 +2898,9 @@ mod tests {
         assert_eq!(c_leak.change_type, "new");
 
         // Waste delta
-        assert_eq!(result.waste_delta.total_wasted_delta, 300);
-        assert_eq!(result.waste_delta.duplicate_string_wasted_delta, 300);
-        assert_eq!(result.waste_delta.empty_collection_wasted_delta, 0);
+        let waste = result.waste_delta.as_ref().unwrap();
+        assert_eq!(waste.total_wasted_delta, 300);
+        assert_eq!(waste.duplicate_string_wasted_delta, 300);
+        assert_eq!(waste.empty_collection_wasted_delta, 0);
     }
 }

@@ -13,7 +13,8 @@ import java.util.function.BiConsumer;
 
 /** One editor's state machine. Transport, UI, and IDE operations are separate ports. */
 public final class HeapSession implements AutoCloseable {
-    public enum State { NEW, ANALYZING, CANCELLING, READY, CANCELLED, FAILED, CLOSED }
+    public enum State { NEW, ANALYZING, CANCELLING, READY, SHALLOW_READY, CANCELLED, FAILED, CLOSED }
+    private AnalysisMode mode=AnalysisMode.FULL;
     private final RpcClient.Factory factory;
     private final String path;
     private final Consumer<JsonObject> output;
@@ -53,6 +54,12 @@ public final class HeapSession implements AutoCloseable {
         catch (RejectedExecutionException ignored) { /* Retired editor. */ }
     }
     public void start() { dispatch(() -> { if (state == State.NEW) begin(); }); }
+    public void start(AnalysisMode initial) { dispatch(() -> { if(state==State.NEW){mode=initial;begin();} }); }
+    public void analyze(AnalysisMode requested) { dispatch(() -> {
+        if (state == State.NEW || state == State.READY || state == State.SHALLOW_READY || state == State.CANCELLED || state == State.FAILED) {
+            mode=requested;begin();
+        }
+    }); }
     public void retry() { dispatch(() -> {
         if (state == State.FAILED || state == State.CANCELLED) {retrying=true;track("analysis/retry",Map.of(),Map.of());begin();}
     }); }
@@ -61,6 +68,7 @@ public final class HeapSession implements AutoCloseable {
         if (client != null) client.close();
         client = null; queryPending = false; readsPending = 0; state = State.ANALYZING;
         startedAt=System.nanoTime();phase="server_start";track("analysis/started",Map.of(),Map.of());
+        JsonObject starting=WebviewEvents.event("analysisStarting");starting.addProperty("analysisScope",mode.scope);output.accept(starting);
         JsonObject progress = WebviewEvents.event("analysisProgress");
         progress.addProperty("stage", "loading"); progress.addProperty("phase", 1); progress.addProperty("totalPhases", 4);
         output.accept(progress);
@@ -75,7 +83,7 @@ public final class HeapSession implements AutoCloseable {
                 } }); }
             });
             analysisId = ++nextId;
-            client.request(analysisId, "analyze_heap", params(), Duration.ofSeconds(30)).whenComplete((ack, error) -> dispatch(() -> {
+            client.request(analysisId, mode.request, params(), Duration.ofSeconds(30)).whenComplete((ack, error) -> dispatch(() -> {
                 if (current != generation || (state != State.ANALYZING && state != State.CANCELLING)) return;
                 if (error != null || ack == null || !ack.has("request_id") || ack.get("request_id").getAsLong() != analysisId)
                     fail("Analysis did not acknowledge this request. Retry is available.");
@@ -87,19 +95,20 @@ public final class HeapSession implements AutoCloseable {
     private void onNotification(String method, JsonObject p) {
         if (p == null || !p.has("request_id") || p.get("request_id").getAsLong() != analysisId) return;
         if (state != State.ANALYZING && state != State.CANCELLING) return;
-        if ("heap_analysis_progress".equals(method)) {
+        if (mode.progress.equals(method)) {
             // Cancellation progress is an acknowledgement, NOT worker termination.
             if (p.has("stage") && "cancelled".equals(p.get("stage").getAsString())) return;
             String stage=p.has("stage")?p.get("stage").getAsString():"unknown";
             String next=java.util.Set.of("loading","graph_building","graph_built","dominators").contains(stage)?stage:"unknown";
             if(!next.equals(phase)){phase=next;track("analysis/phase",Map.of("phase",phase),Map.of());}
             output.accept(WebviewEvents.progress(p));
-        } else if ("heap_analysis_complete".equals(method)) {
+        } else if (mode.completion.equals(method)) {
             String status = p.has("status") ? p.get("status").getAsString() : "error";
             if ("completed".equals(status)) {
-                state = State.READY;track("analysis/completed",Map.of(),com.heaplens.telemetry.TelemetryMetrics.completion(p,elapsed()));
+                state = mode==AnalysisMode.SHALLOW ? State.SHALLOW_READY : State.READY;
+                if(mode==AnalysisMode.FULL)track("analysis/completed",Map.of(),com.heaplens.telemetry.TelemetryMetrics.completion(p,elapsed()));
                 if(retrying){track("analysis/recovered",Map.of(),Map.of());retrying=false;}
-                output.accept(WebviewEvents.analysis(p));
+                output.accept(mode==AnalysisMode.SHALLOW ? WebviewEvents.scan(p) : WebviewEvents.analysis(p));
             }
             else if ("cancelled".equals(status) || "canceled".equals(status)) {
                 state = State.CANCELLED;track("analysis/cancelled",Map.of(),Map.of());output.accept(WebviewEvents.event("analysisCancelled"));

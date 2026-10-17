@@ -19,6 +19,7 @@ export interface AnalysisSessionCallbacks {
 }
 
 export interface AnalysisSessionOptions {
+    operation?: 'analyze_heap' | 'scan_heap';
     /**
      * Delay before presenting a non-destructive long-running warning.
      * A value of zero disables the warning. This is not an analysis deadline.
@@ -71,7 +72,7 @@ export class AnalysisSession {
     private rejectResult: ((error: Error) => void) | null = null;
 
     private readonly progressHandler = (params: any): void => {
-        if (this.queueUntilRequestKnown('heap_analysis_progress', params)) {
+        if (this.queueUntilRequestKnown(this.progressEvent, params)) {
             return;
         }
         if (!this.isCurrentRequest(params)) {
@@ -82,7 +83,7 @@ export class AnalysisSession {
     };
 
     private readonly completionHandler = (params: any): void => {
-        if (this.queueUntilRequestKnown('heap_analysis_complete', params)) {
+        if (this.queueUntilRequestKnown(this.completionEvent, params)) {
             return;
         }
         if (!this.isCurrentRequest(params)) {
@@ -120,6 +121,9 @@ export class AnalysisSession {
         private readonly timer: AnalysisTimer = systemTimer
     ) {}
 
+    private get progressEvent(): string { return this.options.operation === 'scan_heap' ? 'heap_scan_progress' : 'heap_analysis_progress'; }
+    private get completionEvent(): string { return this.options.operation === 'scan_heap' ? 'heap_scan_complete' : 'heap_analysis_complete'; }
+
     /** Starts the analysis once and resolves only after a real terminal event. */
     public run(): Promise<AnalysisSessionResult> {
         if (this.resultPromise) {
@@ -137,8 +141,8 @@ export class AnalysisSession {
 
         this.state = 'starting';
         this.startedAt = Date.now();
-        this.client.onNotification('heap_analysis_progress', this.progressHandler);
-        this.client.onNotification('heap_analysis_complete', this.completionHandler);
+        this.client.onNotification(this.progressEvent, this.progressHandler);
+        this.client.onNotification(this.completionEvent, this.completionHandler);
         void this.begin();
 
         return this.resultPromise;
@@ -184,7 +188,7 @@ export class AnalysisSession {
     private async begin(): Promise<void> {
         try {
             const response = await this.client.sendRequest(
-                'analyze_heap',
+                this.options.operation ?? 'analyze_heap',
                 { path: this.hprofPath },
                 this.options.initialRequestTimeoutMs ?? 30_000
             );
@@ -267,7 +271,7 @@ export class AnalysisSession {
         if (!Number.isSafeInteger(notificationRequestId)) {
             // Accept ID-less notifications for backward compatibility with
             // older bundled server binaries.
-            return true;
+            return this.options.operation !== 'scan_heap';
         }
         return notificationRequestId === this.requestId;
     }
@@ -286,7 +290,7 @@ export class AnalysisSession {
             if (this.isTerminal()) {
                 break;
             }
-            if (notification.method === 'heap_analysis_progress') {
+            if (notification.method === this.progressEvent) {
                 this.progressHandler(notification.params);
             } else {
                 this.completionHandler(notification.params);
@@ -319,8 +323,8 @@ export class AnalysisSession {
     private cleanup(): void {
         this.clearWarning();
         this.pendingNotifications = [];
-        this.client.offNotification('heap_analysis_progress');
-        this.client.offNotification('heap_analysis_complete');
+        this.client.offNotification(this.progressEvent);
+        this.client.offNotification(this.completionEvent);
     }
 
     private clearWarning(): void {

@@ -18,6 +18,7 @@ import { getFlamegraphJs } from './webview/js/flamegraph';
 import { getTimelineJs } from './webview/js/timeline';
 import { getProgressJs } from './webview/js/progress';
 import { getMonitorJs } from './webview/js/monitor';
+import { getProgressiveJs } from './webview/js/progressive';
 
 function getNonce(): string {
     let text = '';
@@ -85,13 +86,18 @@ ${getCompareJs()}
 ${getTimelineJs()}
 ${getProgressJs()}
 ${getMonitorJs()}
+${getProgressiveJs()}
 
         // Store analysisData for tabs that re-render on filter/sort/reset
         onMessage('analysisComplete', function(msg) {
             analysisData = msg;
         });
 
-        vscode.postMessage({ command: 'ready' });
+        // Yield a visible frame before asking the host to begin heavy analysis.
+        // A hidden editor has no visible frame to wait for.
+        function announceReady() { vscode.postMessage({ command: 'ready' }); }
+        if (document.visibilityState === 'hidden') setTimeout(announceReady, 0);
+        else requestAnimationFrame(function() { requestAnimationFrame(announceReady); });
     })();
     </script>
 </body>

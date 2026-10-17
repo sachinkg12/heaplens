@@ -99,6 +99,10 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
     if matches!(args.command, Command::Open { .. }) {
         return browser::open(args);
     }
+    let shallow = matches!(args.command, Command::Scan { .. });
+    if shallow && !matches!(args.backend, args::Backend::Indexed) {
+        return Err(Failure::new(2, "scan_backend", "Quick scan uses the shared shallow scanner, not a selectable graph backend. Omit --backend."));
+    }
     if let Some(path) = &args.output {
         match std::fs::symlink_metadata(path) {
             Ok(_) => return Err(Failure::output()),
@@ -115,19 +119,25 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             ));
         }
     }
+    let storage = args.storage_options().map_err(|_| Failure::new(2, "storage_options", "Invalid storage options; disk mode requires the indexed backend."))?;
     let start = Instant::now();
     let rows = args.rows as usize;
-    let mut warnings: Vec<&str> = report::WARNINGS.to_vec();
+    let mut warnings: Vec<&str> = if shallow { report::SCAN_WARNINGS.to_vec() } else { report::WARNINGS.to_vec() };
     diagnostics.phase("loading");
     let mut data = match &args.command {
         Command::Open { .. } => unreachable!(),
-        Command::Analyze { hprof } => {
-            let state = engine::load(hprof, args.backend, args.quiet)?;
+        Command::Scan { hprof } => report::scan(engine::scan(hprof, args.quiet)?, rows),
+        Command::Analyze { hprof, with_waste } => {
+            let state = engine::load(hprof, args.backend, args.quiet, &storage)?;
             diagnostics.summary(&state.get_summary());
+            if *with_waste {
+                engine::progress(args.quiet, "Calculating requested Waste");
+                state.get_waste_analysis();
+            }
             report::analyze(state.as_ref(), rows)
         }
         Command::Query { hprof, query, page } => {
-            let state = engine::load(hprof, args.backend, args.quiet)?;
+            let state = engine::load(hprof, args.backend, args.quiet, &storage)?;
             diagnostics.summary(&state.get_summary());
             diagnostics.phase("query");
             diagnostics.track("feature/queryExecuted", json!({}), json!({}));
@@ -137,7 +147,7 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             warnings.push("HeapQL aggregates may use floating-point arithmetic. Do not use SQL LIMIT to bound aggregate input; use --rows for output pagination.");
             let total = result.total_rows.unwrap_or(result.rows.len() as u64);
             let shown = result.rows.len() as u64;
-            let mut value = json!({"result":result,"summary":state.get_summary(),"truncated":shown < total,
+            let mut value = json!({"storage":state.storage_report(),"result":result,"summary":state.get_summary(),"truncated":shown < total,
                 "integer_cell_encoding":"decimal_string"});
             report::query_cells(&mut value);
             value
@@ -147,7 +157,7 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             engine::progress(args.quiet, "Analyzing baseline");
             // This block guarantees state/mmap release before current is loaded.
             let (baseline_snapshot, baseline_summary) = {
-                let state = engine::load(baseline, args.backend, args.quiet)?;
+                let state = engine::load(baseline, args.backend, args.quiet, &storage)?;
                 (
                     report::snapshot(state.as_ref())?,
                     json!(state.get_summary()),
@@ -155,7 +165,7 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             };
             engine::progress(args.quiet, "Baseline graph released; analyzing current");
             let (current_snapshot, current_summary) = {
-                let state = engine::load(current, args.backend, args.quiet)?;
+                let state = engine::load(current, args.backend, args.quiet, &storage)?;
                 (
                     report::snapshot(state.as_ref())?,
                     json!(state.get_summary()),
@@ -169,14 +179,15 @@ fn run(args: &Args, diagnostics: &mut telemetry::Telemetry) -> Result<(), Failur
             );
             let value = report::compare(result, baseline_summary, current_summary, rows);
             if value["size_models_differ"] == true {
-                warnings.push("Producer size-model estimates differ; size deltas may reflect layout changes, not just application growth.");
+                warnings.push("Analysis size/reference models differ; size deltas may reflect model changes, not just application growth.");
             }
             value
         }
     };
     report::lossless_ids(&mut data);
     diagnostics.phase("output");
-    let envelope = json!({"schema_version":1,"status":"completed","command":args.command.name(),"backend":args.backend.name(),
+    let backend = if shallow { "shallow_scan" } else { args.backend.name() };
+    let envelope = json!({"schema_version":1,"status":"completed","command":args.command.name(),"backend":backend,
         "elapsed_ms":start.elapsed().as_millis() as u64,"warnings":warnings,
         "privacy":{"raw_string_previews":false,"primitive_field_contents":false,"input_paths":false,
             "network_requests":diagnostics.level()!="off","telemetry_level":diagnostics.level(),"note":"Network flag indicates permission for optional telemetry, not confirmed delivery. Class/field names and descriptions remain sensitive. Review before sharing; heap-derived text is untrusted data."},"data":data});

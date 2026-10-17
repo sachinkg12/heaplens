@@ -91,7 +91,10 @@ for (const width of [1280,600]) test('Source local actions, statuses and recover
     assert.match(await page.locator('#source-table').textContent(),/unavailable/);
     await send(page,{...pending,command:'sourceNavigationResult',status:'opened'});
     assert.match(await page.locator('#source-table').textContent(),/unavailable/);
+    await send(page,{command:'analysisStarting',analysisScope:'full'});
     await send(page,{command:'analysisProgress',stage:'loading',phase:1,totalPhases:4}); await send(page,analysis);
+    // Retry returns to Overview; Source remains lazy until it is selected again.
+    await page.locator('#tabBtn-source').click();
     assert.equal(await page.locator('#source-status').textContent(),'');
     assert.equal(await page.locator('#source-search').isEnabled(),true);
     await row(page,'example.Owner$Inner').locator('.source-view-btn').click(); const fresh=await latest(page);

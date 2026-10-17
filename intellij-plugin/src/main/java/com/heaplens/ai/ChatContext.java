@@ -36,6 +36,14 @@ public final class ChatContext {
         rows(out,analysis,"leakSuspects",10,new String[]{"retained_size","retained_percentage"},new String[]{"class_name"});
         out.add("wasteTotals",fields(object(analysis.get("wasteAnalysis")),
             new String[]{"total_wasted_bytes","waste_percentage","duplicate_string_wasted_bytes","empty_collection_wasted_bytes"},new String[]{}));
+        out.addProperty("waste_status",analysis.has("wasteAnalysis") && analysis.get("wasteAnalysis").isJsonObject()?"ready":"not_calculated");
+        return out.toString();
+    }
+    public static String withWaste(String current,JsonElement waste) {
+        JsonObject out=current==null || current.isBlank()?new JsonObject():JsonParser.parseString(current).getAsJsonObject();
+        out.add("wasteTotals",fields(object(waste),
+            new String[]{"total_wasted_bytes","waste_percentage","duplicate_string_wasted_bytes","empty_collection_wasted_bytes"},new String[]{}));
+        out.addProperty("waste_status",waste!=null && waste.isJsonObject()?"ready":"not_calculated");
         return out.toString();
     }
     private static JsonObject object(JsonElement value) { return value != null && value.isJsonObject() ? value.getAsJsonObject() : new JsonObject(); }

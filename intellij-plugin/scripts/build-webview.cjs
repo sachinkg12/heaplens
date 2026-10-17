@@ -121,6 +121,8 @@ const monitor='(function(send,listen){\nconst vscode={postMessage:m=>monitorSend
   exported('js/monitor','getMonitorJs')+'\n'+adapter('monitor')+'\n})(vscode.postMessage,onMessage);';
 // Preserve DOM dependencies, but expose only implemented capabilities.
 const setup = `
+// Native adapters keep these screens read-only/configuration-only until ready.
+var loadingConfigurationTabs = ['source','chat'];
 document.querySelectorAll('.tab-btn').forEach(b => {
   if (!['overview','histogram','domtree','leaks','waste','source','query','compare','timeline','monitor','chat'].includes(b.dataset.tab)) b.remove();
 });
@@ -204,6 +206,7 @@ ${waste}
 ${compare}
 ${timeline}
 ${monitor}
+${exported('js/progressive','getProgressiveJs')}
 ${queryLifecycle}
 onMessage('analysisProgress', function(msg) {
   if (msg.stage !== 'loading') return;

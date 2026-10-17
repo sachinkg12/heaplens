@@ -6,6 +6,7 @@ import { registerChatParticipant } from './chatParticipant';
 import { DependencyResolver } from './dependencyResolver';
 import { setDependencyResolver } from './sourceResolver';
 import { initTelemetry, disposeTelemetry, trackEvent } from './telemetry';
+import { registerAnalysisStorage } from './vscodeAnalysisStorage';
 import {
     createVscodeLlmConfiguration,
     registerLlmCredentialCommands
@@ -36,6 +37,7 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine('HeapLens extension activated');
 
     initTelemetry(context);
+    registerAnalysisStorage(context);
 
     const llmConfiguration = createVscodeLlmConfiguration(context);
     registerLlmCredentialCommands(context, llmConfiguration);

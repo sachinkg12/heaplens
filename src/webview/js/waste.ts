@@ -4,6 +4,7 @@ export function getWasteJs(): string {
         // Owns waste data, sorting, filtering, and rendering with totals.
 
         var _wasteData = null;
+        var _wasteReady = false, _wasteRequest = null, _wasteSequence = 0;
         var _wasteFilter = '';
         var _wasteSortCol = { dup: 'wasted_bytes', empty: 'wasted_bytes', overalloc: 'wasted_bytes', boxed: 'wasted_bytes' };
         var _wasteSortAsc = { dup: false, empty: false, overalloc: false, boxed: false };
@@ -16,7 +17,9 @@ export function getWasteJs(): string {
 
             var summaryBar = document.getElementById('waste-summary-bar');
             if (!wasteAnalysis) {
-                summaryBar.innerHTML = '<div class="loading">No waste analysis data available</div>';
+                summaryBar.innerHTML = '<p class="scan-note">Waste: Not calculated. Content analysis runs only when requested.</p><button class="btn" id="calculate-waste-btn"' + (!_wasteReady || _wasteRequest ? ' disabled' : '') + '>' + (_wasteRequest ? 'Calculating Waste…' : 'Calculate Waste') + '</button>';
+                ['waste-dup-table','waste-empty-table','waste-overalloc-table','waste-boxed-table'].forEach(function(id) { var el=document.getElementById(id); if(el)el.textContent=''; });
+                ['waste-dup-title','waste-empty-title','waste-overalloc-title','waste-boxed-title'].forEach(function(id) { var el=document.getElementById(id); if(el)el.style.display='none'; });
                 return;
             }
 
@@ -228,6 +231,13 @@ export function getWasteJs(): string {
 
         // Delegated sort click handler for waste tables
         document.getElementById('tab-waste').addEventListener('click', function(e) {
+            if (e.target.closest('#calculate-waste-btn')) {
+                if (!_wasteReady || _wasteRequest) return;
+                _wasteRequest = 'waste-' + (++_wasteSequence);
+                renderWaste(null);
+                vscode.postMessage({ command: 'calculateWaste', requestId: _wasteRequest });
+                return;
+            }
             var th = e.target.closest('th[data-sort]');
             if (!th) return;
             var col = th.dataset.sort;
@@ -259,7 +269,25 @@ export function getWasteJs(): string {
 
         // ---- Self-register ----
         onTabMessage('waste', 'analysisComplete', function(msg) {
+            _wasteReady = true; _wasteRequest = null;
             renderWaste(msg.wasteAnalysis);
+        });
+        onMessage('wasteResult', function(msg) {
+            if (msg.requestId !== _wasteRequest || !msg.wasteAnalysis) return;
+            _wasteRequest = null;
+            if (_analysisMsg) _analysisMsg.wasteAnalysis = msg.wasteAnalysis;
+            if (analysisData) analysisData.wasteAnalysis = msg.wasteAnalysis;
+            renderWaste(msg.wasteAnalysis);
+        });
+        onMessage('wasteError', function(msg) {
+            if (msg.requestId !== _wasteRequest) return;
+            _wasteRequest = null; renderWaste(null);
+            var note=document.createElement('p');note.className='scan-note';
+            note.textContent=msg.error || 'Waste analysis failed. Retry Calculate Waste.';
+            document.getElementById('waste-summary-bar').appendChild(note);
+        });
+        ['analysisStarting','shallowScanComplete','analysisCancelled','analysisFailed','serverCrashed'].forEach(function(command) {
+            onMessage(command,function(){_wasteReady=false;_wasteRequest=null;renderWaste(null);});
         });
     `;
 }

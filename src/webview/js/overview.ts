@@ -7,7 +7,7 @@ export function getOverviewJs(): string {
             var s = data.summary;
             if (s) {
                 var statsHtml = [
-                    { label: 'Reachable Heap', value: fmt(s.reachable_heap_size || s.total_heap_size) },
+                    { label: 'Reachable Heap', value: s.reachable_heap_size == null ? 'Not calculated' : fmt(s.reachable_heap_size) },
                     { label: 'Total Heap', value: fmt(s.total_heap_size) },
                     { label: 'Objects', value: fmtNum(s.total_instances) },
                     { label: 'Classes', value: fmtNum(s.total_classes) },
@@ -16,7 +16,7 @@ export function getOverviewJs(): string {
                 ].map(function(c) { return '<div class="stat-card"><div class="label">' + c.label + '</div><div class="value">' + c.value + '</div></div>'; }).join('');
 
                 if (s.size_model && s.size_model.estimated) {
-                    statsHtml += '<div class="stat-card" title="Byte sizes are estimates; see the shallow-size documentation for model assumptions."><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
+                    statsHtml += '<div class="stat-card" title="Shallow and retained byte sizes are estimates. HPROF omits physical field offsets, VM-injected fields and contended padding. Retention follows strong references, including runtime classes; JDK Reference.referent is excluded."><div class="label">Size model</div><div class="value">' + (s.size_model.name === 'legacy-payload-v0' ? 'Payload-only estimate' : 'JVM layout estimate') + '</div></div>';
                 }
 
                 // Platform badge
@@ -283,7 +283,7 @@ export function getOverviewJs(): string {
             var s = msg.summary;
             if (!s) return;
             var progressHtml = [
-                { label: 'Reachable Heap', value: fmt(s.reachable_heap_size || s.total_heap_size) },
+                { label: 'Reachable Heap', value: 'Not calculated' },
                 { label: 'Total Heap', value: fmt(s.total_heap_size) },
                 { label: 'Objects', value: fmtNum(s.total_instances) },
                 { label: 'Classes', value: fmtNum(s.total_classes) },

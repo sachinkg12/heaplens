@@ -7,7 +7,7 @@ const { execFileSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '../..');
 const ASSETS = ['index.html', 'providers.json', 'system-prompt.txt', 'fix-system-prompt.txt', 'prompts.cjs'];
 const RUNTIME = ['server', 'sources', 'session', 'rpc', 'guards', 'object-actions', 'consent-actions', 'source-actions',
-  'ai-actions', 'ai', 'snapshot-actions', 'export-actions', 'monitor-actions', 'monitor', 'telemetry-actions'];
+  'ai-actions', 'ai', 'snapshot-actions', 'export-actions', 'monitor-actions', 'monitor', 'telemetry-actions', 'progressive-actions', 'waste-actions'];
 const { configuration, readRegular, appleSilicon, write, inventory, digest } = require('./files.cjs');
 const { dependencyNotices } = require('./licenses.cjs');
 const { homebrewFormula } = require('./homebrew.cjs');

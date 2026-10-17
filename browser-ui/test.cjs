@@ -30,7 +30,7 @@ async function until(condition, timeout = 8000) { const end = Date.now() + timeo
         throw Error('Timed out waiting for test condition');
     await new Promise(resolve => setTimeout(resolve, 20));
 } }
-async function setup(t, { legacy = false, id = 512n, count = 9 } = {}) {
+async function setup(t, { legacy = false, id = 512n, count = 9, quickScan = false } = {}) {
     const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'heaplens-browser-')));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const files = [];
@@ -39,7 +39,7 @@ async function setup(t, { legacy = false, id = 512n, count = 9 } = {}) {
         await fs.writeFile(file, fixture(id, c));
         files.push({ path: file, label: name, size: fixture(id, c).length, mtime: Date.now() + c });
     }
-    const host = await new BrowserHost({ server: SERVER, legacy, files, roots: [dir], telemetry: 'off' }).listen();
+    const host = await new BrowserHost({ server: SERVER, legacy, quickScan, files, roots: [dir], telemetry: 'off' }).listen();
     t.after(() => host.shutdown());
     const sessions = [...host.sessions.values()], view = crypto.randomUUID();
     const request = async (route, body, headers = {}) => fetch(host.origin + route, { method: body === undefined ? 'GET' : 'POST', headers: { 'X-HeapLens-Token': host.token, 'X-HeapLens-View': view, ...(body === undefined ? {} : { Origin: host.origin, 'Content-Type': 'application/json' }), ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -48,6 +48,53 @@ async function setup(t, { legacy = false, id = 512n, count = 9 } = {}) {
     return { host, sessions, dir, view, request, command, ready };
 }
 test('CLI host arguments are explicit, bounded and loopback only', () => { assert.throws(() => options(['--server', 'x', '--dump', 'x', '--port', '65536'])); assert.throws(() => options(['--server', 'x', '--dump', 'x', '--host', '0.0.0.0'])); assert.equal(options(['--server', 'x', '--dump', 'x', '--no-browser']).browser, false); });
+test('explicit Waste reads update only their dump and nullable comparison metadata', async t=>{
+    const {sessions:[a,b],ready,command}=await setup(t);
+    await ready(a);await ready(b);
+    assert.equal(a.raw.waste_analysis,null);assert.equal(a.snapshot.waste_analysis,null);
+    assert.equal(AI.context(a.raw).waste_status,'not_calculated');
+    await command(a,{command:'calculateWaste',requestId:'waste-1',path:'/untrusted'});
+    await until(()=>a.events.some(e=>e.message.requestId==='waste-1'));
+    assert.equal(a.events.find(e=>e.message.requestId==='waste-1').message.command,'wasteResult');
+    assert.equal(a.raw.waste_analysis.total_wasted_bytes,0);
+    assert.equal(a.snapshot.waste_analysis.total_wasted_bytes,0);
+    assert.equal(AI.context(a.raw).waste_status,'ready');
+    assert.equal(b.raw.waste_analysis,null);
+    await command(b,{command:'compareHeaps',requestId:'partial-waste',baselinePath:a.id});
+    await until(()=>b.events.some(e=>e.message.requestId==='partial-waste'));
+    assert.equal(b.events.find(e=>e.message.requestId==='partial-waste').message.result.waste_delta,null);
+    await command(b,{command:'calculateWaste',requestId:'waste-2'});
+    await until(()=>b.raw.waste_analysis!==null);
+    await command(b,{command:'compareHeaps',requestId:'complete-waste',baselinePath:a.id});
+    await until(()=>b.events.some(e=>e.message.requestId==='complete-waste'));
+    assert.equal(b.events.find(e=>e.message.requestId==='complete-waste').message.result.waste_delta.total_wasted_delta,0);
+});
+test('real browser host forwards a truthful shallow snapshot during one full job',async t=>{
+    const {sessions:[a],ready}=await setup(t);await ready(a);
+    const messages=a.events.map(e=>e.message),partial=messages.findIndex(m=>m.snapshot?.kind==='shallow');
+    const complete=messages.findIndex(m=>m.command==='analysisComplete');
+    assert.ok(partial>=0 && complete>partial);
+    assert.equal(messages[partial].snapshot.summary.reachable_heap_size,null);
+    assert.equal(messages[partial].snapshot.readiness.retained,'not_calculated');
+    assert.equal(messages.filter(m=>m.command==='shallowScanComplete').length,0);
+});
+test('real browser Quick Scan is isolated, cannot query, retries shallow and explicitly escalates', async t=>{
+    const {host,sessions:[a,b],command}=await setup(t,{quickScan:true});
+    await command(a,{command:'ready'});await until(()=>a.state==='shallow-ready');
+    assert.equal(a.mode,'shallow');assert.equal(a.raw.summary.reachable_heap_size,null);assert.equal(a.snapshot,null);
+    assert.equal(a.events.filter(e=>e.message.command==='analysisComplete').length,0);
+    assert.equal(host.available().length,0);
+    await assert.rejects(a.engine('execute_query',{query:'SELECT * FROM instances'}));
+    await command(b,{command:'ready'});await until(()=>b.state==='shallow-ready');
+    a.rpc.child.kill('SIGKILL');await until(()=>a.state==='failed');
+    await command(a,{command:'retryAnalysis'});await until(()=>a.state==='shallow-ready');
+    assert.equal(a.mode,'shallow');assert.equal(b.state,'shallow-ready');
+    await command(a,{command:'analyzeRetained'});await until(()=>a.state==='ready');
+    const result=await a.engine('execute_query',{query:'SELECT * FROM instances LIMIT 1'});assert.equal(result.rows.length,1);
+    assert.equal(host.available().length,1);assert.equal(b.state,'shallow-ready');
+    await command(a,{command:'quickScan'});await until(()=>a.state==='shallow-ready');
+    assert.equal(a.snapshot,null);assert.equal(host.available().length,0);
+});
 test('wide IDs stay exact through JSON RPC and typed snapshot serialization', () => { const v = parseExact('{"object_id":18446744073709551615,"class_name":"18446744073709551615"}'); assert.equal(v.object_id, '18446744073709551615'); const raw = serialize(v, true); assert.match(raw, /"object_id":18446744073709551615/); assert.match(raw, /"class_name":"18446744073709551615"/); assert.throws(() => parseExact('{"x": 01}')); });
 test('HTTP rejects absent capability, hostile Host/Origin, query tokens and arbitrary RPC', async (t) => {
     const { host, request, sessions } = await setup(t);
@@ -189,6 +236,8 @@ test('real local HTTP bodies for all ten providers honor Cancel, session consent
     await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => mock.close(resolve)));
     await ready(a);
+    await command(a,{command:'calculateWaste',requestId:'privacy-waste'});
+    await until(()=>a.raw.waste_analysis && a.events.some(e=>e.message.requestId==='privacy-waste'));
     a.raw.waste_analysis.duplicate_strings = [{ preview: 'RAW-SENTINEL' }];
     const baseUrl = 'http://127.0.0.1:' + mock.address().port;
     for (const provider of Object.keys(host.providers)) {

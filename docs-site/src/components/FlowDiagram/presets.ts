@@ -1,16 +1,22 @@
-export type FlowKind = 'architecture' | 'analysis' | 'ai' | 'source' | 'recovery';
+export type FlowKind = 'architecture' | 'analysis' | 'storage' | 'ai' | 'source' | 'recovery';
 export const flows: Record<FlowKind, {title: string; steps: {title: string; detail: string}[]; note: string}> = {
   architecture: {title: 'From local heap to investigation', steps: [
     {title: 'Local .hprof', detail: 'Completed, immutable snapshot'},
-    {title: 'Shared Rust engine', detail: 'Parse · reference graph · dominators'},
-    {title: 'Analysis results', detail: 'Metrics · objects · paths'},
-  ], note: 'The host adapters are alternatives. Terminal commands also use the engine without a browser.'},
-  analysis: {title: 'How a snapshot becomes evidence', steps: [
-    {title: 'Read records', detail: 'Map the file and decode layouts'},
-    {title: 'Build references', detail: 'Objects, roots, retaining edges'},
-    {title: 'Compute ownership', detail: 'Dominators and modeled sizes'},
-    {title: 'Investigate', detail: 'Queries, fields, and root paths'},
-  ], note: 'On-demand UI expansion does not make the initial graph analysis lazy.'},
+    {title: 'Shared Rust engine', detail: 'Quick Scan or full graph analysis'},
+    {title: 'Staged results', detail: 'Shallow first · retained when ready'},
+  ], note: 'Host adapters are alternatives. Memory is the default; optional Disk mode reuses verified structures. Terminal commands can run without a browser.'},
+  analysis: {title: 'Fresh analysis with staged results', steps: [
+    {title: 'Read records', detail: 'Map the capture · partial record counts'},
+    {title: 'Show shallow results', detail: 'Overview and Histogram · retained unavailable'},
+    {title: 'Build references', detail: 'Retaining edges · Memory or Disk storage'},
+    {title: 'Show retained results', detail: 'Dominators · suspects · object actions'},
+  ], note: 'Full analysis continues after shallow results. Quick Scan stops before graph work until Analyze Retained is chosen. Waste is a separate request after full analysis.'},
+  storage: {title: 'Disk first build and verified reopening', steps: [
+    {title: 'Identify the capture', detail: 'Read the complete input fingerprint'},
+    {title: 'Build or reuse', detail: 'Versioned index · validate every component'},
+    {title: 'Read mapped structures', detail: 'Nodes · CSR references · body/array catalogs'},
+    {title: 'Compute retained results', detail: 'Recompute dominators and summaries'},
+  ], note: 'Only structural data is reused, not completed dominator results. Keep the original capture. Indexes persist locally, contain sensitive metadata and are not encrypted. Mapped data still uses RAM.'},
   ai: {title: 'Optional AI has a separate boundary', steps: [
     {title: 'Choose an action', detail: 'Chat, Explain, or Fix with AI'},
     {title: 'Review what is shared', detail: 'Metadata; full source only if approved'},

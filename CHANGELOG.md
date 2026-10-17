@@ -4,6 +4,32 @@ All notable changes to HeapLens are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.34] - 2026-10-16
+
+### Added
+
+- Optional disk-backed reference storage with private, reusable structural indexes. Completed entries use full-content BLAKE3 fingerprints, component checksums and versioned manifests; invalid entries are rejected rather than silently reused. Memory storage remains the default.
+- Quick Scan for shallow allocation totals and a class histogram without constructing a reference graph. Choose Analyze Retained explicitly to run full analysis. Conventional HPROF 1.0.1 and 1.0.2 captures are supported by Quick Scan.
+- Staged full-analysis progress: record counts appear during parsing, followed by shallow Overview and Histogram results while reference construction and retained analysis continue. Unavailable reachable/retained values are not displayed as zero.
+- Cooperative resource admission across analysis processes, with cancellation and recovery controls. Reservations are estimates, not a hard process-memory limit.
+
+### Changed
+
+- Indexed Waste analysis runs on request. Choose Calculate Waste in the IDE/browser, or pass `--with-waste` to `heaplens analyze`. Missing Waste remains explicitly not calculated; interactive comparison requires calculated results for both snapshots.
+- Disk indexes use bounded writers, mapped node/body/array catalogs, shared metadata dictionaries and selective lossless column encoding. Reopening verifies the capture and stored components, then recomputes dominators; it is not a saved full-analysis result.
+- Analysis reuses class/field metadata and compact lookup/graph representations to reduce redundant allocations. First-open latency, reopen latency and memory use still depend on capture shape, cache state and available resources.
+
+### Fixed
+
+- Retaining graphs include runtime-class and class-definition relationships needed for class reachability. Cache policy/version checks prevent older graph representations from being silently reused.
+- Progressive Histogram readiness now follows the actual shallow histogram. Request/session routing prevents stale completion, cancellation and Waste responses from replacing newer editor state.
+
+### Documentation
+
+- Updated storage, Quick Scan, on-demand Waste, resource guidance, API contracts and local-cache privacy information, with animated analysis and index-reuse diagrams.
+
+IntelliJ plugin and standalone packages have separate versions and distribution steps. This VS Code release number does not indicate that those packages have been uploaded or approved.
+
 ## [1.0.33] - 2026-10-10
 
 This section covers the changes released as 1.0.31, 1.0.32 and 1.0.33.

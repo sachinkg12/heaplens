@@ -11,16 +11,17 @@ use jvm_hprof::heap_dump::FieldType;
 use crate::reference_strength::{classify_instance_field, ReferenceStrength};
 
 /// Descriptor for a single instance field within a class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldDescriptor {
     /// The field name (interned).
     pub name: Arc<str>,
     /// The HPROF field type.
+    #[serde(with = "field_type_codec")]
     pub field_type: FieldType,
 }
 
 /// Metadata for a single class, collected from a ClassDump sub-record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassInfo {
     /// The human-readable class name (e.g. "java.lang.String").
     pub class_name: Arc<str>,
@@ -36,23 +37,50 @@ pub struct ClassInfo {
 ///
 /// After all ClassDump records are inserted, call [`resolve_field_layouts`]
 /// to walk inheritance chains and produce complete field layouts for each class.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClassIndex {
     inner: HashMap<u64, ClassInfo>,
     /// Resolved full field layouts (own + inherited), keyed by class object ID.
     /// Populated by `resolve_field_layouts()`.
+    #[serde(skip)]
     layouts: HashMap<u64, Vec<(Arc<str>, FieldType)>>,
     /// Reference strength for each entry in `layouts`, indexed in parallel.
+    #[serde(skip)]
     field_strengths: HashMap<u64, Vec<ReferenceStrength>>,
+    #[serde(skip)]
+    reference_plans: HashMap<u64, super::reference_plan::ReferencePlans>,
+}
+
+mod field_type_codec {
+    use super::FieldType;
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &FieldType, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_u8(match value { FieldType::ObjectId => 2, FieldType::Boolean => 4, FieldType::Char => 5, FieldType::Float => 6, FieldType::Double => 7, FieldType::Byte => 8, FieldType::Short => 9, FieldType::Int => 10, FieldType::Long => 11 })
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<FieldType, D::Error> {
+        Ok(match u8::deserialize(input)? { 2 => FieldType::ObjectId, 4 => FieldType::Boolean, 5 => FieldType::Char, 6 => FieldType::Float, 7 => FieldType::Double, 8 => FieldType::Byte, 9 => FieldType::Short, 10 => FieldType::Int, 11 => FieldType::Long, _ => return Err(serde::de::Error::custom("Invalid field type")) })
+    }
 }
 
 impl ClassIndex {
+    pub(crate) fn try_with_capacity(capacity: usize) -> anyhow::Result<Self> {
+        let mut index = Self::new();
+        index.inner.try_reserve(capacity)?;
+        index.layouts.try_reserve(capacity)?;
+        index.field_strengths.try_reserve(capacity)?;
+        Ok(index)
+    }
+
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&u64, &ClassInfo)> + Clone {
+        self.inner.iter()
+    }
     /// Creates an empty `ClassIndex`.
     pub fn new() -> Self {
         Self {
             inner: HashMap::new(),
             layouts: HashMap::new(),
             field_strengths: HashMap::new(),
+            reference_plans: HashMap::new(),
         }
     }
 
@@ -62,14 +90,17 @@ impl ClassIndex {
             inner: HashMap::with_capacity(capacity),
             layouts: HashMap::with_capacity(capacity),
             field_strengths: HashMap::with_capacity(capacity),
+            reference_plans: HashMap::with_capacity(capacity),
         }
     }
 
     /// Inserts class metadata for the given class object ID.
     pub fn insert(&mut self, class_obj_id: u64, info: ClassInfo) {
         self.inner.insert(class_obj_id, info);
-        self.layouts.remove(&class_obj_id);
-        self.field_strengths.remove(&class_obj_id);
+        // Replacing a superclass also invalidates its descendants' layouts.
+        self.layouts.clear();
+        self.field_strengths.clear();
+        self.reference_plans.clear();
     }
 
     /// Returns the class metadata for the given class object ID.
@@ -91,6 +122,9 @@ impl ClassIndex {
     /// or `None` if layouts have not been resolved or the class is unknown.
     pub fn field_layout(&self, class_obj_id: u64) -> Option<&[(Arc<str>, FieldType)]> {
         self.layouts.get(&class_obj_id).map(|v| v.as_slice())
+    }
+    pub(crate) fn reference_plan(&self, class_obj_id: u64) -> Option<&super::reference_plan::ReferencePlans> {
+        self.reference_plans.get(&class_obj_id)
     }
 
     /// Returns a reference to the raw layouts map.
@@ -197,6 +231,9 @@ impl ClassIndex {
                 self.field_strengths.insert(cid, strengths);
             }
         }
+        self.reference_plans = self.layouts.iter().map(|(&id, layout)| {
+            (id, super::reference_plan::ReferencePlans::compile(layout, |index| self.is_strong_reference_field(id, index)))
+        }).collect();
     }
 }
 
@@ -351,6 +388,27 @@ mod tests {
         assert!(ci.is_strong_reference_field(2, 2));
         assert!(ci.is_strong_reference_field(999, 0));
         assert!(ci.is_strong_reference_field(2, 999));
+        for width in [jvm_hprof::IdSize::U32, jvm_hprof::IdSize::U64] {
+            let bytes: Vec<_> = [11u64, 22, 33].into_iter().flat_map(|id| match width {
+                jvm_hprof::IdSize::U32 => (id as u32).to_be_bytes().to_vec(),
+                jvm_hprof::IdSize::U64 => id.to_be_bytes().to_vec(),
+            }).collect();
+            let mut refs = Vec::new();
+            ci.reference_plan(2).unwrap().references(&bytes, width, |id| refs.push(id));
+            assert_eq!(refs, [11, 33]);
+            let mut restored: ClassIndex = serde_json::from_slice(&serde_json::to_vec(&ci).unwrap()).unwrap();
+            assert!(restored.reference_plan(2).is_none());
+            restored.resolve_field_layouts();
+            refs.clear();
+            restored.reference_plan(2).unwrap().references(&bytes, width, |id| refs.push(id));
+            assert_eq!(refs, [11, 33]);
+        }
+        ci.insert(1, make_class("example.NotAReference", 16, None, vec![("referent", FieldType::ObjectId)]));
+        assert!(ci.reference_plan(2).is_none(), "superclass replacement invalidates descendants");
+        ci.resolve_field_layouts();
+        let mut refs = Vec::new();
+        ci.reference_plan(2).unwrap().references(&[11u32.to_be_bytes(), 22u32.to_be_bytes()].concat(), jvm_hprof::IdSize::U32, |id| refs.push(id));
+        assert_eq!(refs, [11, 22]);
     }
 
     #[test]

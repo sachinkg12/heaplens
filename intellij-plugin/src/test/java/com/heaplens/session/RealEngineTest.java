@@ -36,7 +36,10 @@ class RealEngineTest {
         final List<JsonObject> events = new CopyOnWriteArrayList<>();
         final HeapSession session;
         Run(Path file, boolean legacy) {
-            session = new HeapSession(() -> new JsonLineRpcClient(legacy ? List.of(binary, "--legacy") : List.of(binary)), file, events::add);
+            this(file,legacy ? List.of(binary,"--legacy") : List.of(binary));
+        }
+        Run(Path file,List<String> command) {
+            session = new HeapSession(() -> new JsonLineRpcClient(command), file, events::add);
             session.start(); ready();
         }
         void ready() {
@@ -78,6 +81,41 @@ class RealEngineTest {
         }
         @Override public void close() { session.close(); until(() -> session.state() == HeapSession.State.CLOSED); }
     }
+    @Test void diskStorageReopensThroughTheNativeSessionAndSurvivesRetry() throws Exception {
+        Path root=Files.createTempDirectory("heaplens-native-index-");
+        Path cache=root.resolve("cache");
+        List<String> command=List.of(binary,"--storage","disk","--cache-dir",cache.toString(),"--edge-buffer-mib","1");
+        String query="SELECT object_id, class_name, shallow_size, retained_size FROM instances ORDER BY object_id LIMIT 20";
+        JsonArray expected;
+        try(Run memory=new Run(dump,false)){expected=memory.query(query).getAsJsonArray("rows");}
+        for(int pass=0;pass<2;pass++)try(Run disk=new Run(dump,command)) {
+            assertEquals(pass==0?"built":"reused",disk.analysis().getAsJsonObject("storage").get("cache_status").getAsString());
+            assertEquals(expected,disk.query(query).getAsJsonArray("rows"));
+            if(pass==0) {
+                long pid=disk.session.pid();ProcessHandle.of(pid).orElseThrow().destroyForcibly();
+                until(()->disk.session.state()==HeapSession.State.FAILED);disk.events.clear();disk.session.retry();
+                until(()->disk.session.pid()!=pid);disk.ready();
+                assertNotEquals(pid,disk.session.pid());assertEquals(expected,disk.query(query).getAsJsonArray("rows"));
+                assertEquals("reused",disk.analysis().getAsJsonObject("storage").get("cache_status").getAsString());
+            }
+        }
+        try(var entries=Files.list(cache)){assertEquals(1,entries.count());}
+        // Generated private fixture indices only; all sessions are closed first.
+        try(var paths=Files.walk(root)){for(Path path:paths.sorted(Comparator.reverseOrder()).toList())Files.delete(path);}
+    }
+    @Test void nativeSessionForwardsShallowSnapshotBeforeCompletedRetainedData() {
+        try(Run run=new Run(dump,false)) {
+            int partial=-1,complete=-1;
+            for(int i=0;i<run.events.size();i++) {
+                JsonObject e=run.events.get(i);
+                if(e.has("snapshot") && "shallow".equals(e.getAsJsonObject("snapshot").get("kind").getAsString())) {
+                    assertTrue(e.getAsJsonObject("snapshot").getAsJsonObject("summary").get("reachable_heap_size").isJsonNull());partial=i;
+                }
+                if("analysisComplete".equals(e.get("command").getAsString()))complete=i;
+            }
+            assertTrue(partial>=0 && complete>partial,"Shallow data precedes the completed analysis");
+        }
+    }
     @Test @Tag("local-fixture") void layoutDefaultMatchesFivePreviouslyMatVerifiedObjects() {
         assumeTrue(dump.getFileName().toString().equals("layout-default.hprof"));
         try (Run run = new Run(dump, false)) {
@@ -89,6 +127,27 @@ class RealEngineTest {
                 assertEquals(expected.get(cells.get(0).getAsLong()).longValue(), cells.get(1).getAsLong());
                 assertEquals(cells.get(1), cells.get(2));
             }
+        }
+    }
+    @Test void realShallowScanEscalatesAndRecoversWithoutClassifyingShallowAsFull() {
+        List<JsonObject> events=new CopyOnWriteArrayList<>();
+        try(HeapSession session=new HeapSession(()->new JsonLineRpcClient(List.of(binary)),dump,events::add)) {
+            session.start(AnalysisMode.SHALLOW);
+            until(()->session.state()==HeapSession.State.SHALLOW_READY || session.state()==HeapSession.State.FAILED);
+            assertEquals(HeapSession.State.SHALLOW_READY,session.state());
+            until(()->events.stream().anyMatch(e->"shallowScanComplete".equals(e.get("command").getAsString())));
+            JsonObject scan=events.stream().filter(e->"shallowScanComplete".equals(e.get("command").getAsString())).findFirst().orElseThrow();
+            assertTrue(scan.getAsJsonObject("summary").get("reachable_heap_size").isJsonNull());
+            assertFalse(events.stream().anyMatch(e->"analysisComplete".equals(e.get("command").getAsString())));
+            long old=session.pid();assertTrue(ProcessHandle.of(old).orElseThrow().destroyForcibly());
+            until(()->session.state()==HeapSession.State.FAILED);session.retry();
+            until(()->session.pid()!=old && session.state()==HeapSession.State.SHALLOW_READY);
+            session.analyze(AnalysisMode.FULL);until(()->session.state()==HeapSession.State.READY);
+            until(()->events.stream().anyMatch(e->"analysisComplete".equals(e.get("command").getAsString())));
+            JsonObject full=events.stream().filter(e->"analysisComplete".equals(e.get("command").getAsString())).findFirst().orElseThrow();
+            assertEquals(scan.getAsJsonObject("summary").get("total_heap_size"),full.getAsJsonObject("summary").get("total_heap_size"));
+            session.query("SELECT * FROM instances LIMIT 1",1);
+            until(()->events.stream().anyMatch(e->"queryResult".equals(e.get("command").getAsString())));
         }
     }
     @Test void killAfterCompletionRetryAndQueryUseNewProcess() {
@@ -110,7 +169,11 @@ class RealEngineTest {
     }
     @Test void comparisonSnapshotProtocolMatchesExistingEngineForSameRealDump()throws Exception {
         try(Run run=new Run(dump,false)){
-            var catalog=new com.heaplens.snapshots.SnapshotCatalog();catalog.publish("a","before",1,run.analysis());
+            assertTrue(run.analysis().get("wasteAnalysis").isJsonNull());
+            var waste=new CompletableFuture<JsonElement>();
+            run.session.read("get_waste_analysis",new JsonObject(),(v,e)->{if(e!=null)waste.completeExceptionally(new AssertionError(e));else waste.complete(v);});
+            JsonObject complete=run.analysis().deepCopy();complete.add("wasteAnalysis",waste.get(10,TimeUnit.SECONDS));
+            var catalog=new com.heaplens.snapshots.SnapshotCatalog();catalog.publish("a","before",1,complete);
             var data=catalog.get("a").data();JsonObject params=new JsonObject();params.add("baseline",data);params.add("current",data);
             params.addProperty("baseline_label",dump.toString());params.addProperty("current_label",dump.toString());
             var compact=new CompletableFuture<JsonElement>();run.session.read("compare_snapshots",params,(v,e)->{if(e!=null)compact.completeExceptionally(new AssertionError(e));else compact.complete(v);});

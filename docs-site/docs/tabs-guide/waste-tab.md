@@ -5,6 +5,18 @@ title: Waste
 
 Waste includes **duplicate strings, empty collections, over-allocated collections, and boxed primitives**. The total and category values are estimates; waste percentage uses total modeled heap.
 
+## Calculate Waste
+
+With the indexed backend, this tab initially shows **Not calculated**. Choose **Calculate Waste** after full analysis to compute the categories. Opening the tab, inspecting objects or running ordinary HeapQL does not start this computation. Quick Scan alone does not enable Waste.
+
+Results are cached for the current analysis. Retry/reanalysis resets availability; a failed calculation leaves a retryable action. A missing result is not zero waste. Older builds and the legacy backend may provide results immediately.
+
+Interactive comparisons show a Waste delta only when both selected snapshots contain calculated Waste. Calculate it in both dump editors and compare again. AI context and incident reports retain the distinction between unavailable and calculated values.
+
+Keep the original dump unchanged while its analysis is open. On-demand content access is not a persistent index or a total RAM limit.
+
+For terminal reports use `heaplens analyze "/absolute/path/app.hprof" --with-waste --telemetry off`. An indexed command without `--with-waste` reports unavailable Waste instead of zero. Terminal `compare` explicitly calculates Waste for both inputs; interactive comparison uses the results already requested in each editor.
+
 ## Investigate a group
 
 Sort the relevant table and inspect groups/instances locally. Duplicate-string previews are bounded (the backend truncates previews to 120 characters), not complete strings. Tables/top groups can be bounded too.

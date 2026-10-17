@@ -5,13 +5,13 @@
 //! `AnalysisState`, built from a `ParseResult` rather than a petgraph.
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use petgraph::graph::NodeIndex;
 
 use crate::heapql::{HeapQlError, QueryResult};
 use crate::class_histogram::{
-    aggregate_class_histogram, ClassHistogramSample, ClassHistogramTree,
+    aggregate_dense_histogram, ClassHistogramSample, ClassHistogramTree,
 };
 use crate::classloader_leaks::{
     detect_classloader_suspects, is_covered_by_classloader, ClassloaderTree,
@@ -32,10 +32,12 @@ struct IndexedClassHistogramTree<'a> {
     node_store: &'a NodeStore,
     dominator: &'a DominatorResult,
     total_heap_size: u64,
+    groups: &'a super::name_groups::NameGroups<'a>,
 }
 
 impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
     type Node = u32;
+    type Class = u32;
 
     fn root(&self) -> Self::Node {
         0
@@ -45,10 +47,9 @@ impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
         &self.dominator.dominator_children[node as usize]
     }
 
-    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample> {
-        let record = self.node_store.get_by_index(node);
+    fn sample(&self, node: Self::Node) -> Option<ClassHistogramSample<u32>> {
         let retained_size = self.dominator.retained_sizes[node as usize];
-        match record.node_type {
+        match self.node_store.kind_at(node) {
             NodeType::Instance | NodeType::ObjectArray | NodeType::PrimitiveArray => {}
             NodeType::Class => {
                 if self.total_heap_size == 0
@@ -61,8 +62,8 @@ impl ClassHistogramTree for IndexedClassHistogramTree<'_> {
         }
 
         Some(ClassHistogramSample {
-            class_name: record.class_name.clone(),
-            shallow_size: record.shallow_size as u64,
+            class_name: self.groups.at(self.node_store, node),
+            shallow_size: self.node_store.shallow_at(node),
             retained_size,
         })
     }
@@ -98,7 +99,7 @@ impl ClassloaderTree for IndexedClassloaderTree<'_> {
     }
 
     fn children(&self, node: Self::Node) -> Vec<Self::Node> {
-        self.dominator.dominator_children[node as usize].clone()
+        self.dominator.dominator_children[node as usize].to_vec()
     }
 }
 
@@ -110,6 +111,8 @@ impl ClassloaderTree for IndexedClassloaderTree<'_> {
 /// access via `OnceLock`.
 #[allow(dead_code)]
 pub struct IndexedAnalysisState {
+    object_bodies: Option<super::object_bodies::ObjectBodies>,
+    storage_report: Option<super::storage::StorageReport>,
     node_store: NodeStore,
     edge_store: EdgeStore,
     class_index: ClassIndex,
@@ -120,7 +123,7 @@ pub struct IndexedAnalysisState {
     leak_suspects: Vec<LeakSuspect>,
     object_leak_suspects: Vec<LeakSuspect>,
     waste: OnceLock<WasteAnalysis>,
-    waste_raw: WasteRawData,
+    waste_raw: Arc<WasteRawData>,
     top_objects: Vec<ObjectReport>,
 }
 
@@ -189,6 +192,90 @@ fn find_accumulation_point(
 }
 
 impl IndexedAnalysisState {
+    fn decode_fields(&self,id_size:jvm_hprof::IdSize,class_obj_id:u64,field_data:&[u8])->Option<Vec<FieldInfo>> {
+        use jvm_hprof::heap_dump::FieldType;
+        let layout=self.class_index.field_layout(class_obj_id)?;
+        let mut fields = Vec::with_capacity(layout.len());
+        let mut offset = 0;
+
+        for (name, ft) in layout {
+            let size = crate::field_type_size(ft, id_size);
+            if offset + size > field_data.len() {
+                break;
+            }
+
+            let type_str = match *ft {
+                FieldType::ObjectId => "ref",
+                FieldType::Boolean => "boolean",
+                FieldType::Byte => "byte",
+                FieldType::Char => "char",
+                FieldType::Short => "short",
+                FieldType::Int => "int",
+                FieldType::Float => "float",
+                FieldType::Long => "long",
+                FieldType::Double => "double",
+            };
+
+            let bytes = &field_data[offset..offset + size];
+            let raw_value = match size {
+                1 => bytes[0] as u64,
+                2 => u16::from_be_bytes([bytes[0], bytes[1]]) as u64,
+                4 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
+                8 => u64::from_be_bytes([
+                    bytes[0], bytes[1], bytes[2], bytes[3],
+                    bytes[4], bytes[5], bytes[6], bytes[7],
+                ]),
+                _ => 0,
+            };
+
+            let (primitive_value, ref_object_id, ref_summary) = match *ft {
+                FieldType::ObjectId => {
+                    if raw_value == 0 {
+                        (Some("null".to_string()), None, None)
+                    } else {
+                        let ref_id = raw_value;
+                        let summary = self.node_store.get_by_id(ref_id).map(|n| {
+                            let idx = self.node_store.index_of(ref_id).unwrap_or(0) as usize;
+                            let retained = self.dominator.retained_sizes[idx];
+                            let node_type_str = match n.node_type {
+                                NodeType::Instance => "Instance",
+                                NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
+                                NodeType::Class => "Class",
+                                NodeType::GcRoot => "Root",
+                                NodeType::SuperRoot => "SuperRoot",
+                            };
+                            crate::RefSummary {
+                                class_name: n.class_name.to_string(),
+                                node_type: node_type_str.to_string(),
+                                shallow_size: n.shallow_size as u64,
+                                retained_size: retained,
+                            }
+                        });
+                        (None, Some(ref_id), summary)
+                    }
+                }
+                FieldType::Boolean => (Some(if raw_value != 0 { "true" } else { "false" }.to_string()), None, None),
+                FieldType::Char => (Some(format!("'{}'", char::from_u32(raw_value as u32).unwrap_or('?'))), None, None),
+                FieldType::Float => (Some(format!("{}", f32::from_bits(raw_value as u32))), None, None),
+                FieldType::Double => (Some(format!("{}", f64::from_bits(raw_value))), None, None),
+                _ => (Some(raw_value.to_string()), None, None),
+            };
+
+            fields.push(FieldInfo {
+                name: name.to_string(),
+                field_type: type_str.to_string(),
+                primitive_value,
+                ref_object_id,
+                ref_summary,
+            });
+
+            offset += size;
+        }
+
+
+        Some(fields)
+    }
+    pub fn with_storage_report(mut self, report: super::storage::StorageReport) -> Self { self.storage_report = Some(report); self }
     /// Builds an `IndexedAnalysisState` from a `ParseResult`.
     ///
     /// This performs:
@@ -216,7 +303,10 @@ impl IndexedAnalysisState {
             .collect();
 
         // 1. Compute dominator tree
-        let dominator = compute_dominators(&node_store, &edge_store, &gc_root_indices);
+        let dominator = {
+            let _timer = super::stage_timer::StageTimer::start("analysis.dominators_total");
+            compute_dominators(&node_store, &edge_store, &gc_root_indices)
+        };
 
         // Compute reachable heap size by subtracting unreachable node sizes
         // (same logic as the legacy dominator.rs path).
@@ -235,6 +325,7 @@ impl IndexedAnalysisState {
         //    objects in a single pass over all nodes.
         use std::collections::BinaryHeap;
 
+        let selection_timer = super::stage_timer::StageTimer::start("analysis.top_object_selection");
         let reachable_heap_size = summary.reachable_heap_size;
         let threshold_bytes = if reachable_heap_size > 0 {
             (reachable_heap_size as f64 * 0.10) as u64
@@ -278,6 +369,14 @@ impl IndexedAnalysisState {
             }
 
             // Top-50 objects by retained size (BinaryHeap min-heap via ObjectReport Ord)
+            // Do not allocate output strings for objects below the current cutoff.
+            // Ties still follow ObjectReport's existing object-ID ordering.
+            if top_heap.len() == 50 && top_heap.peek().is_some_and(|cutoff| {
+                retained < cutoff.retained_size
+                    || (retained == cutoff.retained_size && node.id >= cutoff.object_id)
+            }) {
+                continue;
+            }
             let node_type_str = match node.node_type {
                 NodeType::Instance => "Instance",
                 NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
@@ -298,11 +397,18 @@ impl IndexedAnalysisState {
             }
         }
 
-        let class_histogram = aggregate_class_histogram(&IndexedClassHistogramTree {
+        drop(selection_timer);
+        let histogram_timer = super::stage_timer::StageTimer::start("analysis.retained_histogram");
+        let groups = super::name_groups::NameGroups::new(&node_store);
+        let class_histogram = aggregate_dense_histogram(&IndexedClassHistogramTree {
             node_store: &node_store,
             dominator: &dominator,
             total_heap_size: summary.total_heap_size,
-        });
+            groups: &groups,
+        }, &groups.names);
+        drop(groups);
+        drop(histogram_timer);
+        let _suspects_timer = super::stage_timer::StageTimer::start("analysis.suspects_and_reports");
 
         // 3. Build leak suspects — class-level aggregations first (matching legacy behavior),
         //    then individual suspects only if not already covered.
@@ -485,6 +591,8 @@ impl IndexedAnalysisState {
         let top_objects: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
         Ok(Self {
+            object_bodies: None,
+            storage_report: None,
             node_store,
             edge_store,
             class_index,
@@ -502,6 +610,8 @@ impl IndexedAnalysisState {
 }
 
 impl HeapAnalysis for IndexedAnalysisState {
+    fn storage_report(&self) -> Option<&super::storage::StorageReport> { self.storage_report.as_ref() }
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { self.waste.get() }
     fn get_children(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
         let node_idx = if object_id == 0 {
             0u32
@@ -587,12 +697,11 @@ impl HeapAnalysis for IndexedAnalysisState {
     }
 
     fn inspect_object(&self, hprof_path: &Path, object_id: u64) -> Option<Vec<FieldInfo>> {
-        let data = std::fs::read(hprof_path).ok()?;
+        let data = crate::HprofLoader::new(hprof_path.into()).map_file().ok()?;
         self.inspect_object_bytes(&data, object_id)
     }
 
     fn inspect_object_bytes(&self, hprof_bytes: &[u8], object_id: u64) -> Option<Vec<FieldInfo>> {
-        use jvm_hprof::heap_dump::FieldType;
         use jvm_hprof::{parse_hprof, RecordTag};
 
         // Verify object exists and is an Instance
@@ -604,10 +713,10 @@ impl HeapAnalysis for IndexedAnalysisState {
 
         let hprof = parse_hprof(hprof_bytes).ok()?;
         let id_size = hprof.header().id_size();
-        let id_bytes: usize = match id_size {
-            jvm_hprof::IdSize::U32 => 4,
-            jvm_hprof::IdSize::U64 => 8,
-        };
+        if let Some(bodies)=&self.object_bodies {
+            let (class,fields)=bodies.fields(node_idx,hprof_bytes)?;
+            return self.decode_fields(id_size,class,fields);
+        }
 
         // Scan for the Instance record with matching obj_id
         for record_result in hprof.records_iter() {
@@ -632,87 +741,9 @@ impl HeapAnalysis for IndexedAnalysisState {
                         continue;
                     }
                     let class_obj_id = instance.class_obj_id().id();
-                    let layout = self.class_index.field_layout(class_obj_id)?;
                     let field_data = instance.fields();
 
-                    let mut fields = Vec::with_capacity(layout.len());
-                    let mut offset = 0;
-
-                    for (name, ft) in layout {
-                        let size = crate::field_type_size(ft, id_size);
-                        if offset + size > field_data.len() {
-                            break;
-                        }
-
-                        let type_str = match *ft {
-                            FieldType::ObjectId => "ref",
-                            FieldType::Boolean => "boolean",
-                            FieldType::Byte => "byte",
-                            FieldType::Char => "char",
-                            FieldType::Short => "short",
-                            FieldType::Int => "int",
-                            FieldType::Float => "float",
-                            FieldType::Long => "long",
-                            FieldType::Double => "double",
-                        };
-
-                        let bytes = &field_data[offset..offset + size];
-                        let raw_value = match size {
-                            1 => bytes[0] as u64,
-                            2 => u16::from_be_bytes([bytes[0], bytes[1]]) as u64,
-                            4 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64,
-                            8 => u64::from_be_bytes([
-                                bytes[0], bytes[1], bytes[2], bytes[3],
-                                bytes[4], bytes[5], bytes[6], bytes[7],
-                            ]),
-                            _ => 0,
-                        };
-
-                        let (primitive_value, ref_object_id, ref_summary) = match *ft {
-                            FieldType::ObjectId => {
-                                if raw_value == 0 {
-                                    (Some("null".to_string()), None, None)
-                                } else {
-                                    let ref_id = raw_value;
-                                    let summary = self.node_store.get_by_id(ref_id).map(|n| {
-                                        let idx = self.node_store.index_of(ref_id).unwrap_or(0) as usize;
-                                        let retained = self.dominator.retained_sizes[idx];
-                                        let node_type_str = match n.node_type {
-                                            NodeType::Instance => "Instance",
-                                            NodeType::ObjectArray | NodeType::PrimitiveArray => "Array",
-                                            NodeType::Class => "Class",
-                                            NodeType::GcRoot => "Root",
-                                            NodeType::SuperRoot => "SuperRoot",
-                                        };
-                                        crate::RefSummary {
-                                            class_name: n.class_name.to_string(),
-                                            node_type: node_type_str.to_string(),
-                                            shallow_size: n.shallow_size as u64,
-                                            retained_size: retained,
-                                        }
-                                    });
-                                    (None, Some(ref_id), summary)
-                                }
-                            }
-                            FieldType::Boolean => (Some(if raw_value != 0 { "true" } else { "false" }.to_string()), None, None),
-                            FieldType::Char => (Some(format!("'{}'", char::from_u32(raw_value as u32).unwrap_or('?'))), None, None),
-                            FieldType::Float => (Some(format!("{}", f32::from_bits(raw_value as u32))), None, None),
-                            FieldType::Double => (Some(format!("{}", f64::from_bits(raw_value))), None, None),
-                            _ => (Some(raw_value.to_string()), None, None),
-                        };
-
-                        fields.push(FieldInfo {
-                            name: name.to_string(),
-                            field_type: type_str.to_string(),
-                            primitive_value,
-                            ref_object_id,
-                            ref_summary,
-                        });
-
-                        offset += size;
-                    }
-
-                    return Some(fields);
+                    return self.decode_fields(id_size,class_obj_id,field_data);
                 }
             }
         }
@@ -913,8 +944,7 @@ impl HeapAnalysis for IndexedAnalysisState {
             NodeIndex::new(node_idx as usize),
         );
         let child_count = self.dominator.dominator_children[node_idx as usize].len();
-        // Referrer count not available in indexed backend yet
-        let ref_count = 0;
+        let ref_count = self.edge_store.reverse_neighbors(node_idx).len();
         Some((report, child_count, ref_count))
     }
 
@@ -1025,6 +1055,11 @@ impl IndexedAnalysisState {
     ///
     /// This is the two-phase counterpart of `from_parse_result`.
     pub fn from_phases(phase1: Phase1Result, phase2: Phase2Result) -> anyhow::Result<Self> {
+        // Phase 2 already owns these candidates. Do not retain a second copy
+        // (or the shallow histogram) through dominator computation.
+        drop(phase1.waste_raw);
+        drop(phase1.class_histogram);
+        let object_bodies=phase2.object_bodies;
         let parse_result = ParseResult {
             node_store: phase1.node_store,
             edge_store: phase2.edge_store,
@@ -1035,7 +1070,7 @@ impl IndexedAnalysisState {
             summary: phase1.summary,
             waste_raw: phase2.waste_raw,
         };
-        Self::from_parse_result(parse_result)
+        let mut state=Self::from_parse_result(parse_result)?;state.object_bodies=object_bodies;Ok(state)
     }
 }
 
@@ -1055,7 +1090,7 @@ pub struct Phase1AnalysisState {
     string_table: StringTable,
     summary: HeapSummary,
     class_histogram: Vec<ClassHistogramEntry>,
-    waste_raw: WasteRawData,
+    waste_raw: Arc<WasteRawData>,
     waste: OnceLock<WasteAnalysis>,
     top_objects: Vec<ObjectReport>,
 }
@@ -1118,6 +1153,7 @@ impl Phase1AnalysisState {
 }
 
 impl HeapAnalysis for Phase1AnalysisState {
+    fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { self.waste.get() }
     fn get_children(&self, _object_id: u64) -> Option<Vec<ObjectReport>> {
         // No dominator tree in Phase 1
         None
@@ -1300,7 +1336,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         }
     }
 
@@ -1334,7 +1370,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         }
     }
 
@@ -1346,6 +1382,35 @@ mod tests {
         assert_eq!(state.summary.total_heap_size, 448);
         assert!(!state.class_histogram.is_empty());
         assert!(!state.top_objects.is_empty());
+    }
+
+    #[test]
+    fn top_objects_match_eager_selection_with_ties_and_reversed_ids() {
+        use std::collections::BinaryHeap;
+        let mut result = build_test_parse_result();
+        let mut nodes = NodeStore::new();
+        nodes.add_node(0, 0, 0, NodeType::SuperRoot, Arc::from("SuperRoot"));
+        let mut edges = EdgeBuilder::new();
+        let mut expected = BinaryHeap::new();
+        let mut roots = Vec::new();
+        let mut total = 0;
+        for i in 0..240u32 {
+            let id = (500 - i) as u64;
+            let size = [16u64, 128, 64, 128, 8, 512][i as usize % 6];
+            total += size;
+            let index = nodes.add_node(id, 0, size, NodeType::Instance, Arc::from("example.Owner"));
+            edges.add_edge(0, index, 0);
+            roots.push(id);
+            expected.push(ObjectReport::new(id, "Instance".into(), "example.Owner".into(), size, size, NodeIndex::new(index as usize)));
+            if expected.len() > 50 { expected.pop(); }
+        }
+        result.edge_store = edges.build(nodes.len());
+        result.node_store = nodes;
+        result.gc_root_ids = roots;
+        result.summary.total_heap_size = total;
+        result.summary.reachable_heap_size = total;
+        let state = IndexedAnalysisState::from_parse_result(result).unwrap();
+        assert_eq!(state.top_objects, expected.into_sorted_vec());
     }
 
     #[test]
@@ -1531,7 +1596,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         };
 
         let state = IndexedAnalysisState::from_parse_result(pr).unwrap();
@@ -1635,12 +1700,13 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: Vec::new(),
         };
         let phase2 = Phase2Result {
+            object_bodies: None,
             edge_store: edges.build(6),
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
         };
 
         (phase1, phase2)
@@ -1678,7 +1744,7 @@ mod tests {
                 heap_types: Vec::new(),
                 size_model: None,
             },
-            waste_raw: WasteRawData::new(),
+            waste_raw: WasteRawData::new().into(),
             class_histogram: vec![
                 crate::ClassHistogramEntry {
                     class_name: "byte[]".to_string(),

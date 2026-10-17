@@ -60,6 +60,11 @@ export default function FlowDiagram({kind='architecture'}: {kind?: FlowKind}) {
         {index<flow.steps.length-1 && <span className={`${styles.arrow} ${playing && index===step && !reduced?styles.moving:''}`} aria-hidden="true"><i /></span>}
       </li>)}
     </ol>
+    {kind==='storage' && <div className={styles.routes} aria-label="Alternative disk-index paths">
+      <div><strong>First build</strong><span>Parse and write in bounded batches</span><span aria-hidden="true">→</span><span>Verify persisted bytes and publish atomically</span></div>
+      <div><strong>Reopen</strong><span>Verify capture, version and component checksums</span><span aria-hidden="true">→</span><span>Load the existing mapped structure</span></div>
+      <p>Both paths → dominators and retained results. Suitable catalog columns use lossless block encoding; Waste runs only when requested.</p>
+    </div>}
     {kind==='architecture' && <>
       <svg className={styles.branch} viewBox="0 0 600 40" preserveAspectRatio="none" aria-hidden="true"><path d="M 500 0 V 12 H 300 V 22 M 100 22 H 500 M 100 22 V 36 M 300 22 V 36 M 500 22 V 36 M 96 32 L 100 36 L 104 32 M 296 32 L 300 36 L 304 32 M 496 32 L 500 36 L 504 32" /></svg>
       <div className={styles.hostLabel}>Present results through one host adapter</div>

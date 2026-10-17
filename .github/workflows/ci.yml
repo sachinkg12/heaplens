@@ -113,7 +113,7 @@ jobs:
           restore-keys: rust-test-
       - name: Run Rust tests
         working-directory: hprof-analyzer
-        run: cargo test --release --lib --bins --test integration --test shallow_size --test cli
+        run: cargo test --locked --release
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -124,6 +124,11 @@ jobs:
           cargo build --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
           node browser-ui/build.cjs
           node --test browser-ui/test.cjs browser-ui/telemetry.test.cjs
+      - name: Test VS Code storage adapter against the built server
+        run: |
+          npm run compile
+          HEAPLENS_TEST_SERVER="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server" \
+            node --test out/test/analysisStorage.integration.test.js
 
   # IntelliJ-only changes cannot publish VS Code. Shared changes test both hosts.
   test-intellij:
@@ -272,6 +277,8 @@ jobs:
 
       - name: Package VSIX
         shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
         run: npx @vscode/vsce package --target ${{ matrix.vsce_target }}
 
       - name: Upload VSIX

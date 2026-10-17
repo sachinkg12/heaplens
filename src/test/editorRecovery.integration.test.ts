@@ -10,6 +10,14 @@ import { editorHarness } from './editorHarness';
 const binary = process.env.HEAPLENS_RECOVERY_SERVER;
 const dumps: string[] = JSON.parse(process.env.HEAPLENS_RECOVERY_DUMPS || '[]');
 
+async function awaitMessage(view: {messages:any[]}, commands:string[]): Promise<void> {
+    const deadline=Date.now()+14*60_000;
+    while(!commands.includes(view.messages.at(-1)?.command)) {
+        if(Date.now()>deadline)throw Error('Analysis did not deliver a terminal message');
+        await new Promise(resolve=>setTimeout(resolve,5));
+    }
+}
+
 function canonical(value: any): any {
     if (Array.isArray(value)) {
         const items = value.map(canonical);
@@ -76,6 +84,7 @@ test('real HPROF process-kill/retry matrix preserves analysis and rebinds HeapQL
             const started = performance.now();
             await host.open(dump, view);
             await view.send({ command: 'ready' });
+            await awaitMessage(view,['analysisComplete','analysisFailed','serverCrashed']);
             const firstMs = performance.now() - started;
             const baseline = canonical(host.provider.getAnalysisData());
             assert.ok(baseline?.summary, `Analysis failed for ${dump}: ${host.errors.join('; ')}`);
@@ -152,6 +161,7 @@ test('a real process killed during analysis recovers in the same editor', {
     try {
         await host.open(dumps[0], view);
         await view.send({ command: 'ready' });
+        await awaitMessage(view,['serverCrashed']);
         assert.equal(killedDuringAnalysis, true);
         assert.equal(view.messages.at(-1).command, 'serverCrashed');
         await view.send({ command: 'retryAnalysis' });
@@ -176,6 +186,7 @@ test('real malformed dumps and their retries finish with a visible recoverable e
         try {
             await host.open(dump, view);
             await view.send({ command: 'ready' });
+            await awaitMessage(view,['analysisFailed','serverCrashed']);
             assert.match(view.messages.at(-1)?.command, /^(analysisFailed|serverCrashed)$/);
             await view.send({ command: 'retryAnalysis' });
             assert.match(view.messages.at(-1)?.command, /^(analysisFailed|serverCrashed)$/);

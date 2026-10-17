@@ -5,7 +5,7 @@ export function getDominatorTreeJs(): string {
         // Sibling cap: shows 50 at a time with "Show more" button.
 
         var _treeData = [];
-        var _totalRetained = 0;
+        var _reachableHeap = null;
         var TREE_SIBLING_CAP = 50;
         var PRIMITIVE_ARRAYS = ['byte[]', 'short[]', 'int[]', 'long[]', 'float[]', 'double[]', 'char[]', 'boolean[]'];
 
@@ -13,9 +13,11 @@ export function getDominatorTreeJs(): string {
             return PRIMITIVE_ARRAYS.indexOf(obj.class_name) !== -1;
         }
 
-        function renderDominatorTree(layers) {
+        function renderDominatorTree(layers, reachableHeap) {
             _treeData = layers.filter(function(o) { return o.node_type !== 'Class' && o.node_type !== 'SuperRoot' && o.retained_size > 0; });
-            _totalRetained = _treeData.reduce(function(sum, o) { return sum + o.retained_size; }, 0);
+            // Top layers overlap along ownership chains. Their retained sizes
+            // must never be summed to form a denominator.
+            _reachableHeap = typeof reachableHeap === 'number' && Number.isFinite(reachableHeap) && reachableHeap > 0 ? reachableHeap : null;
 
             document.getElementById('domtree-header').style.display = _treeData.length > 0 ? 'block' : 'none';
             document.getElementById('reset-tree-btn').style.display = _treeData.length > 0 ? 'inline-block' : 'none';
@@ -68,9 +70,9 @@ export function getDominatorTreeJs(): string {
             row.setAttribute('tabindex', '-1');
             if (!leaf) row.setAttribute('aria-expanded', 'false');
 
-            var pct = _totalRetained > 0 ? ((obj.retained_size / _totalRetained) * 100) : 0;
-            var pctStr = pct.toFixed(1);
-            var barWidth = Math.max(1, Math.min(100, pct));
+            var pct = _reachableHeap !== null ? ((obj.retained_size / _reachableHeap) * 100) : null;
+            var pctStr = pct === null ? 'N/A' : pct.toFixed(1) + '%';
+            var barWidth = pct === null ? 0 : Math.max(1, Math.min(100, pct));
             var displayName = obj.class_name || obj.node_type;
             var typeCls = obj.node_type === 'Array' ? 'array' : 'instance';
             var showSource = (obj.node_type === 'Instance' || obj.node_type === 'Array') && isResolvableClass(displayName);
@@ -89,7 +91,7 @@ export function getDominatorTreeJs(): string {
                 '<span class="tree-shallow">' + fmt(obj.shallow_size) + '</span>' +
                 '<span class="tree-size">' + fmt(obj.retained_size) + '</span>' +
                 '<span class="tree-bar-wrap"><div class="tree-bar" style="width:' + barWidth + '%"></div></span>' +
-                '<span class="tree-pct">' + pctStr + '%</span>' +
+                '<span class="tree-pct">' + pctStr + '</span>' +
                 '<span class="tree-actions">' +
                 '<span class="tree-action-slot tree-action-alive">' + (showPin ? '<button class="why-alive-btn" title="Show GC root path">Why alive?</button>' : '') + '</span>' +
                 '<span class="tree-action-slot tree-action-icon">' + (showInspect ? '<span class="tree-inspect" role="button" aria-label="Inspect fields for ' + escapeHtml(displayName) + '" title="Inspect fields">\\uD83D\\uDD0D</span>' : '') + '</span>' +
@@ -141,7 +143,7 @@ export function getDominatorTreeJs(): string {
                         command: 'fixWithAi',
                         className: displayName,
                         retainedSize: obj.retained_size,
-                        retainedPercentage: _totalRetained > 0 ? (obj.retained_size / _totalRetained) * 100 : 0,
+                        retainedPercentage: pct,
                         description: 'Object ' + displayName + ' retaining ' + fmt(obj.retained_size) + ' in dominator tree'
                     });
                 });
@@ -197,7 +199,7 @@ export function getDominatorTreeJs(): string {
 
         // ---- Self-register ----
         onTabMessage('domtree', 'analysisComplete', function(msg) {
-            renderDominatorTree(msg.topLayers || []);
+            renderDominatorTree(msg.topLayers || [], msg.summary && msg.summary.reachable_heap_size);
         });
 
         onMessage('childrenResponse', function(msg) {
@@ -209,7 +211,7 @@ export function getDominatorTreeJs(): string {
         });
 
         document.getElementById('reset-tree-btn').addEventListener('click', function() {
-            if (analysisData) renderDominatorTree(analysisData.topLayers || []);
+            if (analysisData) renderDominatorTree(analysisData.topLayers || [], analysisData.summary && analysisData.summary.reachable_heap_size);
         });
 
         function renderReferrersOverlay(objectId, className, referrers) {
