@@ -1,6 +1,6 @@
 # HeapLens — Java & Android Heap Dump Analyzer
 
-**The fastest way to understand Java heap dumps — right inside VS Code.**
+**Investigate heap dumps locally with a shared Rust engine and editor-native views.**
 
 [![Open VSX Version](https://img.shields.io/open-vsx/v/guptasachinn/heaplens?label=Open%20VSX)](https://open-vsx.org/extension/guptasachinn/heaplens)
 [![Open VSX Downloads](https://img.shields.io/open-vsx/dt/guptasachinn/heaplens?label=downloads)](https://open-vsx.org/extension/guptasachinn/heaplens)
@@ -19,11 +19,20 @@
 
 ## Why HeapLens?
 
-HeapLens brings Java and Android heap dump analysis into VS Code. Open any `.hprof` file and instantly explore memory usage through 11 interactive views — dominator trees, class histograms, leak suspects, waste detection, and more. No separate tools. No context switching. No uploading to cloud services.
+HeapLens brings Java and Android heap dump analysis into VS Code, with an IntelliJ adapter and standalone CLI/browser interfaces built on the same Rust engine. Open a supported `.hprof` file to investigate dominator trees, class histograms, leak suspects, estimated waste and other analysis views. Heap analysis runs locally; optional AI and telemetry have separate data-sharing controls.
 
 HeapLens includes a built-in AI assistant that explains heap analysis findings in plain English and suggests code-level fixes. Ask questions like *"Why is my app using 2 GB of memory?"* or *"What's causing this OutOfMemoryError?"* and get actionable answers powered by your choice of 10 LLM providers including local models via Ollama.
 
-Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR architecture, HeapLens handles production-sized heap dumps with ease. A 1.5 GB heap dump analyzes in about 1 second; a 14.8 GB dump completes in about 9.5 seconds on an Apple M2 Max (1,500+ MB/s throughput). HeapLens also introduces HeapQL, a SQL-like query language purpose-built for heap analysis — query any object, filter by retained size, join across tables, and export results, all without leaving your editor.
+The native engine maps the capture read-only and uses compact CSR reference graphs. HeapQL provides SQL-like queries over objects, class aggregates and ownership. Analysis time and memory depend on object/edge density, storage and cache state, not just dump size. Start with the [host and installation guides](https://sachinkg12.github.io/heaplens/docs/getting-started/choose-host/) for package availability and platform requirements.
+
+### Analysis modes
+
+- **Full analysis** is the default. The editor displays progress immediately, then shallow Overview/Histogram results when available, while references and dominators continue. Retained results appear only after they are computed.
+- **Quick Scan** returns allocation counts and shallow sizes without a reference graph. Choose **Analyze Retained** when you need ownership, paths, queries and other graph-dependent actions. Quick Scan supports conventional HPROF 1.0.1 and 1.0.2.
+- **Memory storage** is the default and rebuilds the graph for each new analysis. **Disk-backed references** build a private reusable index; reopening verifies the capture/index and recomputes dominators. Disk mode can reduce allocated working memory but can be slower on a first build and still needs RAM and free disk space.
+- **Waste is on demand.** Choose **Calculate Waste**, or use `heaplens analyze app.hprof --with-waste`. An uncalculated result is not zero waste.
+
+See [storage and resource guidance](https://sachinkg12.github.io/heaplens/docs/runbook/performance-tuning/). Completed disk indexes persist after closing the dump, contain sensitive metadata and are not encrypted or automatically uploaded.
 
 ---
 
@@ -34,7 +43,7 @@ Built on a native Rust engine using zero-copy mmap parsing with a two-phase CSR 
 | Tab | What it does |
 |-----|-------------|
 | **Overview** | Heap stats, top objects, D3.js pie & bar charts |
-| **Histogram** | Sortable class table with instance counts and sizes — click a class to list all instances |
+| **Histogram** | Sortable class table with instance counts and sizes — browse instances after full analysis |
 | **Dominator Tree** | Expandable lazy-loaded tree with retained size bars, field names, and action buttons |
 | **Leak Suspects** | Significant classloaders (5% threshold) and other large objects/classes, with adjustable threshold slider |
 | **Waste** | Duplicate strings, empty collections, over-allocated arrays, boxed primitives |
@@ -118,7 +127,7 @@ The LLM responds with explanations **and** runnable HeapQL queries. Click **Run 
 
 ### Instance Enumeration
 
-Click any class name in the **Histogram** tab to see all instances of that class. Each instance row has action buttons for inspect, show referrers, and "Why alive?" — no need to manually write queries.
+After full analysis, click a class name in **Histogram** to browse its instances. Each instance row has actions for inspection, referrers and "Why alive?". Quick Scan provides the shallow class table without an object-instance index.
 
 ![Histogram](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/histogram.png)
 
@@ -135,7 +144,7 @@ Three-tier source resolution:
 
 ### Waste Detection
 
-Finds memory waste patterns automatically:
+Choose **Calculate Waste** after full analysis to estimate these patterns:
 
 - **Duplicate strings** — identical string values held multiple times
 - **Empty collections** — `HashMap`, `ArrayList`, etc. with zero elements
@@ -146,7 +155,7 @@ Finds memory waste patterns automatically:
 
 ### Snapshot Comparison & Timeline
 
-- **Compare** two heap dumps: summary delta, class-level growth/shrinkage with change badges, leak suspect changes (new/resolved/persisted), waste delta, and a D3.js bar chart of top changes.
+- **Compare** two heap dumps: summary delta, class-level growth/shrinkage with change badges, leak suspect changes (new/resolved/persisted), and a D3.js bar chart of top changes. Waste deltas require calculated Waste in both interactive snapshots.
 - **Copy Report** copies a full markdown diff report to clipboard.
 - **Export CSV** saves all class changes to a file.
 - **Timeline** multiple snapshots: track heap growth trends over time with interactive charts.
@@ -158,8 +167,9 @@ Finds memory waste patterns automatically:
 ## Getting Started
 
 1. **Install** HeapLens from the VS Code Marketplace
-2. **Open** any `.hprof` file — HeapLens activates automatically
-3. **Explore** the 11 tabs: Overview for a summary, Histogram to find big classes, Dominator Tree to drill down
+2. **Open** a completed supported `.hprof` file — HeapLens activates automatically and shows analysis progress.
+3. **Explore** Overview and Histogram as their results become available; use Dominator Tree and the other graph-dependent actions after full analysis completes.
+4. **Choose storage** with **HeapLens: Configure Analysis Storage**. Close and reopen the dump after a change. Select **HeapLens: Analysis Initial Mode → shallow** in Settings when you want Quick Scan first.
 
 ![Loading HPROF](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/Hprof_loading.png)
 
@@ -200,23 +210,19 @@ To verify a saved credential without exposing it, run **HeapLens: Show LLM API K
 | `heaplens.sourceResolution.gradleHome` | — | Custom Gradle cache path |
 | `heaplens.sourceResolution.decompilerEnabled` | `true` | Enable CFR decompilation fallback |
 | `heaplens.analysis.longRunningWarningMinutes` | `5` | Show a Continue Waiting or Cancel warning after this many minutes; `0` disables the warning |
+| `heaplens.analysis.initialMode` | `full` | Full analysis or `shallow` Quick Scan for newly opened dump editors |
+| `heaplens.analysis.storage` | `memory` | Memory graph or `disk` reusable reference storage; applies to newly started servers |
+| `heaplens.analysis.edgeBufferMiB` | `64` | Advanced disk edge-sort buffer, 1–1024 MiB; not a total RAM limit |
 
 ---
 
 ## Architecture
 
-```
-VS Code Extension (TypeScript)
-  └─ HprofEditorProvider (custom editor for .hprof)
-      └─ RustClient (JSON-RPC 2.0 over stdin/stdout)
-          └─ hprof-server (async Rust + tokio)
-              └─ Analysis engine (petgraph dominator tree,
-                 HeapQL query engine, waste analysis)
-```
-
-- **Rust engine** — two-phase architecture with zero-copy mmap parsing, CSR edge storage, Lengauer-Tarjan dominator tree, and rayon-parallelized edge extraction
-- **TypeScript extension** — VS Code custom editor, webview UI, LLM integration
+- **Shared Rust engine** — mapped HPROF input, compact CSR storage, dominator analysis, HeapQL and on-demand Waste. Optional versioned structural indexes use bounded writing, mapped catalogs and selective lossless encoding.
+- **Host adapters** — VS Code custom editor, IntelliJ plugin, and standalone CLI/browser. Credentials, source navigation, consent and process lifecycle remain host-specific.
 - **MCP server** — `hprof-server --mcp` for use with Claude Desktop, Cline, and other AI clients
+
+See the [animated architecture and data-flow diagrams](https://sachinkg12.github.io/heaplens/docs/architecture/system-overview/).
 
 ---
 
@@ -234,6 +240,7 @@ VS Code Extension (TypeScript)
 | Command | Description |
 |---------|-------------|
 | `HeapLens: Analyze HPROF File` | Open a file picker to select and analyze a `.hprof` file |
+| `HeapLens: Configure Analysis Storage` | Choose Memory storage or Disk-backed references for newly started analysis servers |
 | `HeapLens: Export Analysis to JSON` | Export the current analysis results to a JSON file |
 | `HeapLens: Start JVM Monitor` | Connect to a running JVM over TCP and stream live heap statistics |
 
@@ -253,13 +260,15 @@ VS Code Extension (TypeScript)
 
 ## Performance
 
-HeapLens uses a native Rust binary with a two-phase CSR architecture for parsing and analysis. Benchmarks on Apple M2 Max (median of 5 runs):
+The following previously recorded figures describe selected captures on an Apple M2 Max (originally reported as the median of five runs). They are not fresh measurements of this release, cold-start guarantees or predictions for other captures:
 
 | Heap Size | Analyze Time | Throughput |
 |-----------|-------------|------------|
 | 1.5 GB | ~0.9 s | 1,687 MB/s |
 | 2 GB | ~1.2 s | 1,645 MB/s |
 | 14.8 GB | ~9.5 s | 1,558 MB/s |
+
+Object count, reference density and page-cache state can change both time and RAM substantially. Compare Memory first analysis, Disk first build and Disk reopening separately, and include Waste consistently. See [recorded measurements and their scope](https://sachinkg12.github.io/heaplens/docs/runbook/recorded-measurements/).
 
 ---
 

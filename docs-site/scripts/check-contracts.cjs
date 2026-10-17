@@ -37,9 +37,11 @@ function check(site=path.resolve(__dirname,'..'),repo=path.resolve(site,'..')){
   assert.equal(new Set([...template.matchAll(/id="tab-([a-z]+)"/g)].map(m=>m[1])).size,11,'Update tab count');
   const rpc=fs.readFileSync(path.join(site,'docs/api-reference/rpc-methods.md'),'utf8');
   assert.ok(rpc.includes('analysis_request_id'),'Wrong cancellation key');
-  for(const block of blocks(rpc).filter(b=>b.language==='json')){const message=JSON.parse(block.text);if(message.method)assert.ok(native.includes('"'+message.method+'" =>'),'Unknown RPC method '+message.method);}
+  const dispatch=native+'\n'+fs.readFileSync(path.join(repo,'hprof-analyzer/src/read_jobs.rs'),'utf8');
+  const methods=new Set([...dispatch.matchAll(/"([a-z_]+)"\s*=>/g)].map(m=>m[1]));
+  for(const block of blocks(rpc).filter(b=>b.language==='json')){const message=JSON.parse(block.text);if(message.method)assert.ok(methods.has(message.method),'Unknown RPC method '+message.method);}
   const types=fs.readFileSync(path.join(site,'docs/api-reference/data-structures.md'),'utf8');
-  for(const [name,source] of [['ObjectReport','lib.rs'],['RefSummary','lib.rs'],['FieldInfo','lib.rs'],['HeapSummary','lib.rs'],['ClassHistogramEntry','lib.rs'],['LeakSuspect','lib.rs'],['WasteAnalysis','waste.rs'],['QueryResult','heapql.rs']]){
+  for(const [name,source] of [['ObjectReport','lib.rs'],['RefSummary','lib.rs'],['FieldInfo','lib.rs'],['HeapSummary','lib.rs'],['ClassHistogramEntry','lib.rs'],['LeakSuspect','lib.rs'],['WasteAnalysis','waste.rs'],['QueryResult','heapql.rs'],['ShallowSummary','quick_scan.rs'],['ShallowClassEntry','quick_scan.rs']]){
     const rust=fs.readFileSync(path.join(repo,'hprof-analyzer/src',source),'utf8');
     const body=rust.match(new RegExp('pub struct '+name+' \\{([\\s\\S]*?)\\n\\}'))?.[1];
     const doc=types.match(new RegExp('interface '+name+' \\{([\\s\\S]*?)\\n\\}'))?.[1];
@@ -49,7 +51,7 @@ function check(site=path.resolve(__dirname,'..'),repo=path.resolve(site,'..')){
     const written=[...doc.matchAll(/^  (\w+)\??:/gm)].map(m=>m[1]).sort();
     assert.deepEqual(written,actual,'Schema drift in '+name);
   }
-  console.log(JSON.stringify({docs:docs.length,json_examples:json,query_examples:queries,tabs:11,providers:10,mcp_tools:names.length,schemas:8}));
+  console.log(JSON.stringify({docs:docs.length,json_examples:json,query_examples:queries,tabs:11,providers:10,mcp_tools:names.length,schemas:10}));
   return {docs,queries};
 }
 if(require.main===module){try{check(undefined,process.argv[2]?path.resolve(process.argv[2]):undefined);}catch(error){console.error(error.message);process.exitCode=1;}}

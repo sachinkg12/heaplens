@@ -13,7 +13,35 @@ Start `hprof-server` in its default mode, not --mcp. Messages are newline-delimi
 
 Returns a processing acknowledgement with request_id, then asynchronous heap_analysis_complete notification. Progress/summary notifications can arrive before completion. Route by current process/session and request identity; acknowledgement is not success.
 
-A completed payload includes status, summary, top_objects, top_layers, class_histogram, leak_suspects, object_leak_suspects where available, and waste_analysis. Error/cancellation fields differ; do not assume completion always carries data. See [types](./data-structures.md).
+A completed payload includes status, summary, top_objects, top_layers, class_histogram, leak_suspects, object_leak_suspects where available, optional storage metadata, and waste_analysis. Indexed Waste is normally null until explicitly requested. Error/cancellation fields differ; do not assume completion always carries data. See [types](./data-structures.md).
+
+### Progressive full-analysis results
+
+`heap_analysis_progress` carries the current `request_id` and `stage`. Not every event has numeric `phase` or `total_phases`; use the stage label rather than inventing a percentage.
+
+- A `sizing` snapshot with `kind: records` contains partial instance/array/class/root record counts and `complete: false`. It does not establish heap sizes or reachability.
+- A `shallow_ready` snapshot with `kind: shallow` contains a shallow summary, class histogram and readiness labels. Reachable heap is null and histogram entries omit retained sizes. Full analysis continues automatically; do not launch another job.
+- Stages such as `index_verifying`, `edges`, `index_publishing` and `dominators` describe ongoing work. Only a successful completion establishes full retained results.
+
+Route every event by active process/session and request identity. Cancellation or failure does not promote the last shallow snapshot to a completed full analysis.
+
+## scan_heap
+
+```json
+{"jsonrpc":"2.0","id":8,"method":"scan_heap","params":{"path":"/absolute/path/app.hprof"}}
+```
+
+Returns a processing acknowledgement with `request_id` and `analysis_scope: shallow`, then `heap_scan_progress` and `heap_scan_complete` notifications. A successful completion contains `analysis_scope: shallow`, `counts_scope: allocation_records_and_declared_class_ids`, a shallow summary/class histogram and readiness labels. The summary uses `declared_classes`, not full-analysis `total_classes`.
+
+The scan supports conventional HPROF 1.0.1 and 1.0.2. It never installs a graph or silently starts retained analysis. Counts describe allocation records, not validated unique object IDs. After scanning, graph-dependent requests return error `-32002` until a separate explicit `analyze_heap` succeeds. Starting a scan replaces any older cached full state for that path. Overlapping analysis is rejected with `-32001`; cancel and await completion before starting another request.
+
+## get_waste_analysis
+
+```json
+{"jsonrpc":"2.0","id":9,"method":"get_waste_analysis","params":{"path":"/absolute/path/app.hprof"}}
+```
+
+Requires completed full analysis. Explicitly calculates Waste on first request and returns a `WasteAnalysis` object; later requests reuse that analysis's result. Ordinary queries, object inspection and tab navigation do not trigger it. Keep the original capture unchanged for deferred content reads. Quick Scan does not enable this method.
 
 ## cancel_analysis and ping
 
@@ -71,7 +99,7 @@ Takes path and output_path; returns success true after writing. Native export co
 {"jsonrpc":"2.0","id":7,"method":"compare_heaps","params":{"current_path":"/absolute/path/current.hprof","baseline_path":"/absolute/path/baseline.hprof"}}
 ```
 
-Both must be analyzed in this server. Returns baseline_path, current_path, summary_delta, histogram_delta, a flat leak_suspect_changes array, and waste_delta. Deltas are current minus baseline. See [types](./data-structures.md).
+Both must be fully analyzed in this server. Returns baseline_path, current_path, summary_delta, histogram_delta, a flat leak_suspect_changes array, and waste_delta. Waste delta is null unless both analyses have calculated Waste; comparison does not request it implicitly. Deltas are current minus baseline. See [types](./data-structures.md).
 
 ## list_analyzed_files
 
@@ -87,7 +115,7 @@ Takes paths and optional top_n (default 10). Returns snapshots sorted by file mo
 
 ## compare_snapshots
 
-Adapter-oriented bounded comparison accepts baseline/current compact snapshots and labels. Each snapshot contains summary totals, class_histogram, leak_suspects, and waste_analysis totals. It does not need both full graphs resident. Row/string/numeric bounds are validated; labels/paths remain sensitive.
+Adapter-oriented bounded comparison accepts baseline/current compact snapshots and labels. Each snapshot contains summary totals, class_histogram, leak_suspects, and optional waste_analysis totals. If either Waste result is unavailable, waste_delta is null, not zero. It does not need both full graphs resident. Row/string/numeric bounds are validated; labels/paths remain sensitive.
 
 ## Failures and lifetime
 

@@ -35,6 +35,10 @@ heaplens compare "/absolute/path/baseline.hprof" "/absolute/path/current.hprof" 
 
 Results go to stdout, progress/errors to stderr. `--quiet` suppresses progress only. Exit codes: 0 success, 2 usage/configuration, 3 input, 4 heap analysis, 5 query, 6 output failure. Each command loads separately; Compare releases the baseline graph before loading current and compares compact results.
 
+For shallow counts and sizes without retained analysis, use `heaplens scan "/absolute/path/app.hprof" --telemetry off`. See the [shallow-scan reference](../api-reference/cli.md#shallow-scan) for supported captures and result availability. Older standalone packages may lack this command; check `heaplens --help`.
+
+Memory storage remains the default. Add `--storage disk` to full-analysis commands for reusable structural indexes. Reopening verifies the capture/index and recomputes dominators; keep the original dump. Use `heaplens analyze "/absolute/path/app.hprof" --with-waste --telemetry off` when you also need Waste totals. An ordinary indexed analysis leaves Waste uncalculated. See [storage options and limits](../api-reference/cli.md#disk-reference-storage).
+
 ## Browser with all eleven views
 
 ```bash

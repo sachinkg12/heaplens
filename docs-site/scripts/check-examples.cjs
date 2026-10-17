@@ -20,7 +20,21 @@ async function check(server){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'he
     const docs=walk(path.resolve(__dirname,'../docs')).filter(f=>/\.mdx?$/.test(f));
     for(const file of docs){for(const block of blocks(fs.readFileSync(file,'utf8'))){
       if(['sql','heapql'].includes(block.language)){const response=await rpc.request('execute_query',{path:a,query:block.text.replace(/123456/g,'512')});assert.ok(!response.error,file+': '+response.error?.message);assert.ok(Array.isArray(response.result.columns)&&Array.isArray(response.result.rows),'Query result schema');queries++;}
-      if(block.language==='json'&&file.endsWith('rpc-methods.md')){const message=JSON.parse(block.text);if(message.method&&message.method!=='analyze_heap'){const params=JSON.parse(JSON.stringify(message.params||{}).replace(/\/absolute\/path\/app\.hprof|\/absolute\/path\/current\.hprof/g,a).replace(/\/absolute\/path\/baseline\.hprof/g,b));if(params.object_id)params.object_id=512;const response=await rpc.request(message.method,params);assert.ok(!response.error,'RPC example '+message.method);rpcExamples++;}}
+      if(block.language==='json'&&file.endsWith('rpc-methods.md')){const message=JSON.parse(block.text);if(message.method&&message.method!=='analyze_heap'){const params=JSON.parse(JSON.stringify(message.params||{}).replace(/\/absolute\/path\/app\.hprof|\/absolute\/path\/current\.hprof/g,a).replace(/\/absolute\/path\/baseline\.hprof/g,b));if(params.object_id)params.object_id=512;const before=rpc.notifications.length,response=await rpc.request(message.method,params);assert.ok(!response.error,'RPC example '+message.method);
+        if(message.method==='scan_heap'){
+          const id=response.result.request_id;
+          await wait(()=>rpc.notifications.slice(before).some(n=>n.method==='heap_scan_complete'&&n.params.request_id===id));
+          const scan=rpc.notifications.slice(before).find(n=>n.method==='heap_scan_complete'&&n.params.request_id===id).params;
+          assert.equal(scan.status,'completed');assert.equal(scan.analysis_scope,'shallow');assert.equal(scan.summary.reachable_heap_size,null);
+          assert.equal(scan.readiness.retained,'not_calculated');assert.ok(scan.class_histogram.every(row=>!('retained_size' in row)));
+          assert.equal((await rpc.request('get_children',{path:a,object_id:512})).error.code,-32002,'Quick Scan must not expose the old full state');
+          // Restore full analysis for subsequent graph-dependent examples.
+          const start=rpc.notifications.length,full=await rpc.request('analyze_heap',{path:a});assert.ok(full.result,'Full-analysis acknowledgement after scan');
+          await wait(()=>rpc.notifications.slice(start).some(n=>n.method==='heap_analysis_complete'&&n.params.request_id===full.result.request_id));
+          assert.equal(rpc.notifications.slice(start).find(n=>n.method==='heap_analysis_complete'&&n.params.request_id===full.result.request_id).params.status,'completed');
+        }
+        if(message.method==='get_waste_analysis')assert.equal(typeof response.result.total_wasted_bytes,'number');
+        rpcExamples++;}}
     }}
     assert.equal((await rpc.request('execute_query',{path:a,query:'SELECT * FROM objects'})).error.code,-32000,'Invalid query must fail');
     assert.ok(Array.isArray((await rpc.request('get_children',{path:a,object_id:512})).result));

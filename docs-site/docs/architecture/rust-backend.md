@@ -12,11 +12,11 @@ The analyzer library is shared; command-line/server entry points adapt it to dif
 ## Pipeline
 
 1. Open a completed immutable HPROF and map it read-only.
-2. Decode strings/class/heap records and field layouts, including inherited fields.
-3. Build nodes and retaining references. Primitive bytes are not object edges merely because their values resemble IDs.
-4. Compute root reachability, dominators, and retained totals.
-5. Produce histogram, suspect, waste, and bounded entry-point results.
-6. Retain graph/mapping state for subsequent query/inspection requests.
+2. Read metadata and allocation records, emitting partial record counts. Estimate full-analysis resource needs before allocating count-sized working tables.
+3. Build nodes and the shallow histogram. Hosts can show these results while graph-dependent values remain unavailable.
+4. Build retaining references, or load a verified disk-backed structure. Primitive bytes are not object edges merely because their values resemble IDs.
+5. Compute root reachability, dominators, retained totals, suspects and bounded object results. These results replace the shallow-only view for the current request.
+6. Retain graph/mapping state for subsequent query/inspection requests. Calculate Waste only when requested with the indexed backend.
 
 The indexed path can parallelize edge extraction. Retained propagation follows the computed dominator tree. Complexity/resource use depends on the actual representation and graph shape—not only the algorithm's name.
 
@@ -26,9 +26,19 @@ Packed object IDs map to node indexes. CSR stores edge offsets/targets contiguou
 
 `memmap2`, the HPROF parser, Rayon, serialization, and graph/dominator code have distinct roles; licenses/notices remain distributed with packages.
 
-## Memory and lazy loading
+## Memory and disk storage
 
-Mapping avoids a full eager user-buffer copy, but resident pages, object indexes, edges, dominator arrays, and scratch allocations consume RAM. “Indexed” here does not mean persistent on-disk indices. Disk-backed graph analysis and a configurable analysis-memory budget are not currently available.
+Memory storage is the default and rebuilds the structure for each analysis. Optional Disk storage persists versioned structural indexes with mapped nodes, body/array catalogs and forward/reverse CSR references. Shared dictionaries and selectively encoded columns avoid expanding every persisted table before use. Writers use bounded batches; this does not make every phase constant-memory.
+
+<FlowDiagram kind="storage" />
+
+A fresh disk build verifies the persisted components before publishing an index directory atomically. Reopening checks the complete capture fingerprint, component checksums and version/policy identity before mapping the structure. Dominators and derived retained results are recomputed; they are not persisted completed results. Waste candidate metadata can be loaded or decoded as needed, while content reads still use the original capture.
+
+Mapping avoids a full eager user-buffer copy, but resident pages, lookup construction, metadata, dominator arrays and scratch allocations consume RAM. Cooperative cross-process admission reserves estimated working memory against OS availability; it is not a hard RSS limit. Closing a dump releases its process/state but leaves completed disk indexes available for reuse.
+
+## Staged results and Quick Scan
+
+Full analysis emits shallow results as an intermediate stage and continues automatically. Standalone **Quick Scan** is a different operation: it collects allocation totals and a shallow histogram without installing a reference graph. **Analyze Retained** starts a fresh full analysis explicitly. Neither path substitutes shallow bytes for retained bytes.
 
 Lazy tree/table loading limits UI output; it does not defer all initial graph/dominator construction. A --rows/LIMIT flag does not impose an analysis RAM budget.
 

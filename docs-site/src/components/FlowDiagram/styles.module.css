@@ -26,12 +26,18 @@
 .hosts a {display:flex;gap:.5rem;align-items:center;justify-content:center;font-size:.85rem;border:1px solid var(--ifm-color-emphasis-300);border-radius:10px;padding:.8rem;color:var(--ifm-font-color-base);}
 .hosts span {font-size:1.4rem;color:var(--flow-accent);}
 .optional {font-size:.85rem;border:1px dashed var(--ifm-color-emphasis-400);border-radius:9px;padding:.8rem 1rem;line-height:1.6;}
+.routes {margin-top:1.5rem;display:grid;gap:.7rem;font-size:.85rem;line-height:1.5;}
+.routes > div {display:grid;grid-template-columns:6rem minmax(0,1fr) auto minmax(0,1fr);gap:.8rem;align-items:center;border:1px solid var(--ifm-color-emphasis-300);border-radius:10px;padding:.85rem;}
+.routes > div > span[aria-hidden] {color:var(--flow-accent);font-size:1.4rem;}
+.routes p {margin:.2rem 0 0;font-size:.8rem;color:var(--ifm-color-emphasis-700);}
 .note {font-size:.8rem;line-height:1.6;color:var(--ifm-color-emphasis-700);margin:1.2rem 0 0;}
 @keyframes travel {from {left:0;}to {left:calc(100% - 7px);}}
 @media(max-width:760px) {.four {grid-template-columns:1fr;gap:3rem;}.four .stepTitle {min-height:0;}.four .arrow {left:50%;top:calc(100% + 8px);height:24px;width:2px;}.four .arrow::after {top:auto;bottom:0;right:-4px;transform:rotate(135deg);}.four .moving i {animation:none;}}
 @media(max-width:600px) {.steps {grid-template-columns:1fr;gap:3rem;}.stepTitle {min-height:0;}.plate {max-width:160px;}.arrow {left:50%;top:calc(100% + 8px);height:24px;width:2px;}.arrow::after {top:auto;bottom:0;right:-4px;transform:rotate(135deg);}.moving i {animation:none;}.hosts {grid-template-columns:1fr;gap:.6rem;}.detail {max-width:30ch;}}
 @media(prefers-reduced-motion:reduce) {.moving i {animation:none;}}
+@media(max-width:600px) {.routes > div {grid-template-columns:1fr;gap:.4rem;}.routes > div > span[aria-hidden] {display:none;}}
 .figure {container-type:inline-size;}
+@container(max-width:600px) {.routes > div {grid-template-columns:1fr;gap:.4rem;}.routes > div > span[aria-hidden] {display:none;}}
 @container(max-width:600px) {.steps {grid-template-columns:1fr;gap:3rem;}.stepTitle {min-height:0;}.plate {max-width:160px;}.arrow {left:50%;top:calc(100% + 8px);height:24px;width:2px;}.arrow::after {top:auto;bottom:0;right:-4px;transform:rotate(135deg);}.moving i {animation:none;}.hosts {grid-template-columns:1fr;gap:.6rem;}.detail {max-width:30ch;}}
 @container(max-width:600px) {.branch {display:none;}.hostLabel {margin:1.5rem 0 .7rem;}}
 @media(max-width:600px) {.branch {display:none;}.hostLabel {margin:1.5rem 0 .7rem;}}
