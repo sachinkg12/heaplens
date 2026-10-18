@@ -61,7 +61,9 @@ test('unsupported platforms are rejected before starting the native binary', t =
     assert.throws(() => launchPlan(root, ['--help'], { platform, arch }), /Apple Silicon/);
 });
 test('configuration rejects unsupported targets and formula or package name injection', () => {
-  assert.equal(configuration(config).version, '0.1.0');
+  // The released CLI version changes every train; assert the exact-semver contract, not one number.
+  assert.match(config.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+  assert.equal(configuration(config).version, config.version);
   for (const change of [{ target: 'linux-x64' }, { version: '0.1.0"\n' }, { repository: 'owner/repo"' },
     { npm_name: '../heaplens' }, { npm_name: '$(command)' }, { npm_name: 'x'.repeat(215) }])
     assert.throws(() => configuration({ ...config, ...change }), /configuration/);
@@ -99,8 +101,8 @@ test('dependency notices retain upstream text and include normal and build depen
   assert.throws(() => dependencyNotices(metadata, path.join(root, 'other-stage')), /Missing bundled/);
 });
 test('Homebrew adapter uses its own CLI release namespace and no publication commands', () => {
-  const source = homebrewFormula(config, 'heaplens-cli-0.1.0-darwin-arm64.tar.gz', 'a'.repeat(64));
-  assert.match(source, /releases\/download\/cli-v0\.1\.0\//);
+  const source = homebrewFormula(config, `heaplens-cli-${config.version}-darwin-arm64.tar.gz`, 'a'.repeat(64));
+  assert.ok(source.includes(`releases/download/cli-v${config.version}/heaplens-cli-${config.version}-darwin-arm64.tar.gz`));
   assert.match(source, /depends_on arch: :arm64/); assert.match(source, /depends_on "node"/);
   assert.match(source, /chmod 0755/);
   assert.match(source, /Telemetry is on by default/); assert.match(source, /DO_NOT_TRACK/);
