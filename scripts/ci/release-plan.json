@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "repository": "sachinkg12/heaplens",
+  "source": "20fe00b83e5f4acb6e12ef6901572d732e2a39d4",
+  "date": "2026-10-17",
+  "versions": {
+    "vscode": "1.0.35",
+    "intellij": "0.1.17",
+    "cli": "0.1.1"
+  },
+  "notes": {
+    "vscode": {
+      "baseline": {
+        "version": "1.0.34",
+        "commit": "6e454f3ec0e6098940c3799ac6e17ffb0c18b07b",
+        "evidence": "VS Code 1.0.34: tag v1.0.34 points at this commit; published by the former auto-version job (CI run on 2026-10-17); Marketplace and Open VSX packages verified byte-identical to the GitHub release assets on 2026-10-17"
+      },
+      "entries": []
+    },
+    "intellij": {
+      "baseline": {
+        "version": "0.1.16",
+        "commit": "0e7b58ca85f7d50fe369b1aab9346b83186a8d8f",
+        "evidence": "IntelliJ 0.1.16: commit 'intellij: prepare the 0.1.16 release package' is the only commit setting Gradle version 0.1.16; the ZIP was uploaded to JetBrains Marketplace by hand and 0.1.16 is the approved listed version"
+      },
+      "entries": [
+        {
+          "title": "Disk-backed reference storage, Quick Scan and on-demand Waste",
+          "sha": "faa5a9f4fb616ad72349798b8fac733e4ccf4fef",
+          "pr": 11,
+          "shared": true
+        }
+      ]
+    },
+    "cli": {
+      "baseline": {
+        "version": "0.1.0",
+        "commit": "20fe00b83e5f4acb6e12ef6901572d732e2a39d4",
+        "evidence": "CLI 0.1.0: heaplens-cli@0.1.0 published to npm by hand on 2026-10-18 from the cli-package.yml run 39087930400 candidate built at this commit (npm archive sha256 8f82c58a9a0cc57c614fecddcf8d10b0bc34e99c7e75586d64f323dafe4bd92a); registry tarball verified identical"
+      },
+      "entries": []
+    }
+  }
+}
