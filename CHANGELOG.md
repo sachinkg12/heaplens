@@ -4,6 +4,26 @@ All notable changes to HeapLens are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.35] - 2026-10-17
+
+### VS Code extension 1.0.35
+
+Changes since 1.0.34 (source 6e454f3ec0e6).
+
+- Coordinated maintenance release; no new user-facing changes in this range.
+
+### IntelliJ plugin 0.1.17
+
+Changes since 0.1.16 (source 0e7b58ca85f7).
+
+- Disk-backed reference storage, Quick Scan and on-demand Waste [shared engine] ([#11](https://github.com/sachinkg12/heaplens/pull/11))
+
+### Standalone CLI 0.1.1
+
+Changes since 0.1.0 (source 20fe00b83e5f).
+
+- Coordinated maintenance release; no new user-facing changes in this range.
+
 ## [1.0.34] - 2026-10-16
 
 ### Added

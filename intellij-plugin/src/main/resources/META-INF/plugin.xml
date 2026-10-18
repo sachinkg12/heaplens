@@ -18,12 +18,10 @@
     <p><a href="https://sachinkg12.github.io/heaplens/">Documentation</a> · <a href="https://sachinkg12.github.io/heaplens/docs/ai-integration/privacy/">AI data sharing</a> · <a href="https://sachinkg12.github.io/heaplens/docs/runbook/telemetry/">Telemetry policy</a> · <a href="https://github.com/sachinkg12/heaplens/issues">Support</a></p>
     ]]></description>
     <change-notes><![CDATA[
-    <p>Light-theme contrast correction for macOS Apple Silicon and IntelliJ IDEA 2026.1–2026.2.</p>
-    <ul>
-      <li>Keep Fix with AI, Configure AI and other shared buttons readable while hovered, focused or pressed.</li>
-      <li>Use paired foreground/background colours for AI Chat errors in both light and dark appearances, including live theme changes.</li>
-      <li>Retain the same analysis server, consent rules, telemetry policy and reviewed proposal/Undo flow.</li>
-    </ul>
+<p>Changes since 0.1.16 (source 0e7b58ca85f7).</p>
+<ul>
+<li>Disk-backed reference storage, Quick Scan and on-demand Waste [shared engine] (<a href="https://github.com/sachinkg12/heaplens/pull/11">#11</a>)</li>
+</ul>
     ]]></change-notes>
     <depends>com.intellij.modules.platform</depends>
     <dependencies>
