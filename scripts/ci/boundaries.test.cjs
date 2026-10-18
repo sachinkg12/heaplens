@@ -15,12 +15,13 @@ test('Rust accuracy gate discovers every maintained integration suite and doctes
   assert.doesNotMatch(step.run, /--test\s|--lib\b|--bins\b/);
 });
 
-test('release selection is explicit, and all required checks precede versioning', () => {
+test('ordinary merges never version, tag or publish and release consistency is mandatory', () => {
   assert.ok(jobs.changes, 'CI needs a changed-path routing job');
-  assert.deepEqual(jobs['auto-version'].needs, ['changes', 'checks']);
-  assert.match(jobs['auto-version'].if, /needs\.changes\.outputs\.auto_release == 'true'/);
-  assert.match(runs(jobs['auto-version']), /git push --atomic/);
-  assert.doesNotMatch(runs(jobs['auto-version']), /--force/);
+  assert.equal(jobs['auto-version'], undefined);
+  assert.equal(jobs.changes.outputs.auto_release, undefined);
+  assert.doesNotMatch(JSON.stringify(workflow), /PAT_TOKEN|npm version|git push|git tag/);
+  assert.match(runs(jobs['boundary-tests']), /validate-release\.cjs/);
+  assert.equal(jobs['boundary-tests'].steps[0].with['fetch-depth'], 0);
 });
 
 test('stable aggregate gate handles skipped host jobs without hiding failures', () => {
@@ -83,6 +84,15 @@ test('VSIX build and publication use the selected VS Code path and aggregate gat
   assert.deepEqual(jobs.publish.needs, ['changes', 'checks', 'build']);
   assert.match(jobs.publish.if, /needs\.changes\.outputs\.publish_vscode == 'true'/);
   assert.match(jobs.publish.if, /needs\.build\.result == 'success'/);
+  assert.match(runs(jobs.build), /vscode-candidate\.cjs/);
+  assert.match(runs(jobs.build), /vscode-tools\.cjs package/);
+  assert.doesNotMatch(runs(jobs.build), /npx.*vsce/);
+  assert.match(runs(jobs.publish), /release-vscode\.cjs/);
+  assert.doesNotMatch(runs(jobs.publish), /cargo build|vsce package|npm version|--skip-duplicate/);
+  assert.equal(jobs.publish.concurrency.group,'vscode-release');
+  assert.equal(jobs.publish.concurrency['cancel-in-progress'],false);
+  const publishStep=jobs.publish.steps.find(step=>/release-vscode/.test(step.run||''));
+  assert.equal(publishStep.env.HEAPLENS_RELEASE_VERIFY_SECONDS,"${{ vars.HEAPLENS_RELEASE_VERIFY_SECONDS || '900' }}");
   assert.doesNotMatch(JSON.stringify(workflow), /publishPlugin/);
   for (const [name, job] of Object.entries(jobs))
     if (name !== 'publish-intellij') assert.doesNotMatch(JSON.stringify(job), /JETBRAINS_MARKETPLACE_TOKEN/, name + ' must not see the Marketplace token');

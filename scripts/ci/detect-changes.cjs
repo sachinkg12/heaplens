@@ -29,7 +29,7 @@ function main() {
   // Tags have explicit plans; do not infer scope from an arbitrary previous tag.
   const paths = eventName === 'push' && ref.startsWith('refs/tags/') ? [] :
     changedPaths(eventName, event, process.env.GITHUB_SHA);
-  const plan = planChanges(paths, {eventName,ref,message:event.head_commit?.message});
+  const plan = planChanges(paths, {eventName,ref});
   fs.appendFileSync(process.env.GITHUB_OUTPUT,
     Object.entries(plan).map(([key,value]) => key + '=' + value + '\n').join(''));
   console.log('Selected checks and release policy:', JSON.stringify(plan));

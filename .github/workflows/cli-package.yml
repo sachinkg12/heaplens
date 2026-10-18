@@ -107,6 +107,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -121,6 +122,7 @@ jobs:
             hprof-analyzer/target
           key: cli-release-${{ runner.os }}-${{ hashFiles('hprof-analyzer/Cargo.lock') }}
       - run: npm ci
+      - run: node scripts/ci/validate-release.cjs
       - run: npm run test:boundaries
       - name: Run the shared engine suite on the release platform
         working-directory: hprof-analyzer

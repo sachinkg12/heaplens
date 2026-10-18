@@ -17,7 +17,6 @@ jobs:
       vscode: ${{ steps.route.outputs.vscode }}
       intellij: ${{ steps.route.outputs.intellij }}
       rust: ${{ steps.route.outputs.rust }}
-      auto_release: ${{ steps.route.outputs.auto_release }}
       publish_vscode: ${{ steps.route.outputs.publish_vscode }}
       publish_intellij: ${{ steps.route.outputs.publish_intellij }}
     steps:
@@ -36,50 +35,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Validate manifest, lockfile and prepared release consistency
+        run: node scripts/ci/validate-release.cjs
       - run: npm run test:boundaries
-
-  # Version only VS Code-relevant changes, after the selected checks pass.
-  auto-version:
-    needs: [changes, checks]
-    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.changes.outputs.auto_release == 'true' }}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: vscode-auto-version
-      cancel-in-progress: false
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Bump patch version, commit & tag
-        run: |
-          # Never tag an untested newer main or force-push over concurrent work.
-          git fetch origin main
-          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
-            echo "::error::main moved after this run. Release stopped; validate the current main before releasing."
-            exit 1
-          fi
-          git config user.name "sachinkg12"
-          git config user.email "61034758+sachinkg12@users.noreply.github.com"
-          NEW_VERSION=$(npm version patch --no-git-tag-version --ignore-scripts)
-          git add package.json package-lock.json
-          git commit -m "chore(release): ${NEW_VERSION}"
-          git tag "${NEW_VERSION}"
-          git push --atomic origin HEAD:refs/heads/main "refs/tags/${NEW_VERSION}"
 
   # ── Extension checks (compile + lint + maintained test suite) ──────
   lint:
@@ -288,13 +253,20 @@ jobs:
         shell: bash
         env:
           CARGO_BUILD_TARGET: ${{ matrix.rust_target }}
-        run: npx @vscode/vsce package --target ${{ matrix.vsce_target }}
+        run: node scripts/ci/vscode-tools.cjs package ${{ matrix.vsce_target }}
+
+      - name: Record the exact platform candidate before upload
+        env:
+          VSCE_TARGET: ${{ matrix.vsce_target }}
+        run: node scripts/ci/vscode-candidate.cjs
 
       - name: Upload VSIX
         uses: actions/upload-artifact@v4
         with:
           name: vsix-${{ matrix.vsce_target }}
-          path: '*.vsix'
+          path: |
+            *.vsix
+            vsix-${{ matrix.vsce_target }}.json
 
   # ── Publish to Marketplace + GitHub Release (tags only) ────────────
   publish:
@@ -303,31 +275,34 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: vscode-release
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - uses: actions/download-artifact@v4
         with:
           pattern: vsix-*
           merge-multiple: true
+          path: ${{ runner.temp }}/vscode-candidate
 
-      - name: Publish platform-specific builds to VS Code Marketplace
-        run: npx @vscode/vsce publish --packagePath *.vsix
+      - name: Publish or safely resume the exact verified platform packages
         env:
+          ARTIFACT_DIR: ${{ runner.temp }}/vscode-candidate
+          GH_TOKEN: ${{ github.token }}
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-
-      - name: Publish to Open VSX Registry
-        run: npx ovsx publish --packagePath *.vsix
-        env:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: '*.vsix'
-          generate_release_notes: true
+          HEAPLENS_RELEASE_VERIFY_SECONDS: ${{ vars.HEAPLENS_RELEASE_VERIFY_SECONDS || '900' }}
+        run: |
+          git fetch --no-tags origin main
+          node scripts/ci/release-vscode.cjs
 
   # ── Publish the verified IntelliJ ZIP (exact intellij-vMAJOR.MINOR.PATCH tags only) ──
   # The ZIP that test-intellij built, tested and verified is uploaded unchanged; nothing is rebuilt here.

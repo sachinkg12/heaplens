@@ -9,7 +9,7 @@ const {changedPaths} = require('./detect-changes.cjs');
 const {checkResults} = require('./check-results.cjs');
 const main = {eventName:'push',ref:'refs/heads/main',message:'fix: behavior'};
 const expected = (vscode,intellij,rust,auto_release,publish_vscode=false,publish_intellij=false) =>
-  ({vscode,intellij,rust,auto_release,publish_vscode,publish_intellij});
+  ({vscode,intellij,rust,publish_vscode,publish_intellij});
 
 for (const [label,files,plan] of [
   ['shared telemetry contract', ['telemetry/contract.json'], expected(true,true,true,true)],
@@ -28,11 +28,12 @@ for (const [label,files,plan] of [
 ]) {
   test('routing: '+label, () => assert.deepEqual(planChanges(files,main), plan));
 }
-test('PRs, release commits and unrelated branches cannot auto-bump', () => {
+test('no event or merge-commit title can auto-bump', () => {
   for (const event of [
     {...main,eventName:'pull_request'}, {...main,ref:'refs/heads/feature'},
+    main, {...main,message:'Merge pull request #13'},
     {...main,message:'chore(release): v1.0.32'}, {...main,eventName:'workflow_dispatch'}
-  ]) assert.equal(planChanges(['src/extension.ts'],event).auto_release,false);
+  ]) assert.equal(Object.hasOwn(planChanges(['src/extension.ts'],event), 'auto_release'),false);
 });
 test('stable VS Code tags select every compatibility check and only VS Code publication', () => {
   assert.deepEqual(planChanges([],{...main,ref:'refs/tags/v1.0.32'}),expected(true,true,true,false,true));
@@ -129,7 +130,7 @@ test('the workflow CLI emits false release outputs for a real IntelliJ-only push
       GITHUB_EVENT_NAME:'push',GITHUB_REF:'refs/heads/main',GITHUB_SHA:head}
   });
   assert.match(fs.readFileSync(output,'utf8'),/^intellij=true$/m);
-  assert.match(fs.readFileSync(output,'utf8'),/^auto_release=false$/m);
+  assert.doesNotMatch(fs.readFileSync(output,'utf8'),/^auto_release=/m);
   assert.match(fs.readFileSync(output,'utf8'),/^publish_vscode=false$/m);
   assert.match(fs.readFileSync(output,'utf8'),/^publish_intellij=false$/m);
 });
