@@ -129,6 +129,13 @@ test('release tools are exact pins shared by build and publish, with only the se
     assert.deepEqual(call.slice(0,2),['npx',['--yes',pin,'--version']]);
   }
   assert.throws(()=>runTool('untrusted',['publish']),/Unknown release tool/);
+  // npx.cmd needs a shell on Windows runners; elsewhere no shell is involved.
+  let call;
+  runTool('ovsx',['publish','--packagePath','/tmp/heaplens-win32-x64-1.0.35.vsix'],{},(...args)=>{call=args;return '';},'win32');
+  assert.equal(call[2].shell,true);
+  runTool('ovsx',['--version'],{},(...args)=>{call=args;return '';},'linux');
+  assert.equal(call[2].shell,undefined);
+  assert.throws(()=>runTool('ovsx',['--packagePath','a b.vsix'],{},()=>'' ,'win32'),/Unsafe release tool argument/);
   const env=publicationEnvironment({PATH:'/bin',GH_TOKEN:'github',VSCE_PAT:'market',OVSX_PAT:'openvsx',NODE_AUTH_TOKEN:'npm'},'VSCE_PAT');
   assert.deepEqual(env,{PATH:'/bin',VSCE_PAT:'market'});
 });
