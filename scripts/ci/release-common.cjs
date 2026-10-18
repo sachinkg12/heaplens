@@ -104,15 +104,16 @@ function ensureRelease({repository, tag, directory, assets, sums, notes, gh = (a
 function uploadReleaseAsset({repository, tag, file, gh = (args, options) => run('gh', args, options)}) {
   gh(['release', 'upload', tag, '--repo', repository, '--clobber', file]);
 }
-async function retry(attempt, {attempts = 6, delayMs = 10000, log = console.log} = {}) {
+async function retry(attempt, {attempts = 6, delayMs = 10000, log = console.log, retryIf = () => true} = {}) {
   let failure;
   for (let index = 1; index <= attempts; index += 1) {
     try { return await attempt(); }
     catch (error) {
       failure = error;
+      if (!retryIf(error)) throw error;
       if (index < attempts) { log(`Attempt ${index} failed (${error.message}); retrying`); await new Promise(resolve => setTimeout(resolve, delayMs)); }
     }
   }
   throw failure;
 }
-module.exports = {SEMVER, sha256, run, tagVersion, commitSha, requireAncestry, compareVersions, declaredVersion, readChecksums, releaseNotes, ensureRelease, uploadReleaseAsset, retry};
+module.exports = {SEMVER, sha256, run, tagVersion, commitSha, requireAncestry, compareVersions, declaredVersion, readChecksums, releaseNotes, ensureRelease, uploadReleaseAsset, assetDigest, retry};

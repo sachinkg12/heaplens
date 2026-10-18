@@ -8,6 +8,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const common = require('./release-common.cjs');
+const {hostNotes} = require('./release-publication-notes.cjs');
+const {publishRecord} = require('./release-baselines.cjs');
 const {homebrewFormula} = require('../distribution/homebrew.cjs');
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const FORMULA = 'Formula/heaplens.rb';
@@ -119,6 +121,7 @@ async function release(env, {fetchImpl = fetch, gh, git, brew, npm, log = consol
   if (!env.HOMEBREW_TAP_TOKEN) throw new Error('HOMEBREW_TAP_TOKEN is not configured');
   acceptance({formula: localFormula, label:'heaplens-release-local', brew, git, log});
   const notes = common.releaseNotes({tag, sha, sums, lines:[
+    hostNotes(root, 'cli', version),
     `Standalone CLI ${version} for macOS Apple Silicon (Node.js 22 or newer for the browser host). CLI versions are independent of VS Code and IntelliJ versions.`,
     `Install: \`npm install -g ${config.npm_name}@${version}\` or \`brew install sachinkg12/heaplens/heaplens\`.`]});
   common.ensureRelease({repository: env.GITHUB_REPOSITORY, tag, directory, assets:[portable, npmArchive, 'SHA256SUMS'], sums, notes, gh, log});
@@ -127,6 +130,7 @@ async function release(env, {fetchImpl = fetch, gh, git, brew, npm, log = consol
   await publishNpm({name: config.npm_name, version, archive: path.join(directory, npmArchive), fetchImpl, npm, log});
   updateTap({tapRepository: env.TAP_REPOSITORY || 'sachinkg12/homebrew-heaplens', formula, version, log,
     gh: (args, options) => gh(args, {env:{...process.env, GH_TOKEN: env.HOMEBREW_TAP_TOKEN}, ...options})});
+  publishRecord({host:'cli', version, commit:sha, repository:env.GITHUB_REPOSITORY, directory, gh});
   return 'published';
 }
 if (require.main === module) {

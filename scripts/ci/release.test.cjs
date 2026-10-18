@@ -18,6 +18,11 @@ function temporary(t) {
 }
 function write(dir, name, data) { fs.mkdirSync(path.dirname(path.join(dir, name)), {recursive:true}); fs.writeFileSync(path.join(dir, name), data); }
 function checksums(dir, names) { write(dir, 'SHA256SUMS', names.map(name => `${common.sha256(fs.readFileSync(path.join(dir, name)))}  ${name}\n`).join('')); }
+function releaseNotesFixture(root, values) {
+  const versions = {vscode:'1.0.35',intellij:'0.1.17',cli:'0.1.1',...values};
+  const notes = Object.fromEntries(Object.keys(versions).map(host => [host,{baseline:{version:'0.0.0',commit:SHA,evidence:'test-only verified source'},entries:[]}]));
+  write(root, 'scripts/ci/release-plan.json', JSON.stringify({schema:1,repository:'owner/repo',versions,notes}));
+}
 function repository(t) {
   const cwd = temporary(t);
   const git = (...args) => execFileSync('git', args, {cwd, encoding:'utf8', stdio:['ignore','pipe','pipe']}).trim();
@@ -47,6 +52,7 @@ function fakeGh(state = {}) {
       if (!state.downloads || !state.downloads[pattern]) throw new Error('no such asset');
       fs.writeFileSync(path.join(dir, pattern), state.downloads[pattern]); return '';
     }
+    if (command === 'release' && rest[0] === 'create') state.release = {id:99,draft:false};
     return '';
   };
   return {gh, calls};
@@ -121,6 +127,7 @@ function zipCandidate(t, version, {descriptorVersion = version, jarVersion = ver
 function intellijEnvironment(t, version = '0.1.17', candidate = zipCandidate(t, version)) {
   const r = repository(t);
   write(r.cwd, 'intellij-plugin/build.gradle.kts', `group = "com.heaplens"\nversion = "${version}"\n`);
+  releaseNotesFixture(r.cwd, {intellij:version});
   return {env:{GITHUB_REF:'refs/tags/intellij-v' + version, GITHUB_SHA: r.base, GITHUB_WORKSPACE: r.cwd, GITHUB_REPOSITORY:'owner/repo',
     ARTIFACT_DIR: candidate.dir, JETBRAINS_MARKETPLACE_TOKEN:'secret-token', RELEASE_BASE:'main'}, candidate, r};
 }
@@ -202,6 +209,7 @@ function cliEnvironment(t, version = '0.1.1', overrides = {}) {
   const r = repository(t);
   write(r.cwd, 'scripts/distribution/config.json', JSON.stringify({schema_version:1, version, npm_name:'heaplens-cli', repository:'owner/repo', target:'darwin-arm64'}));
   write(r.cwd, 'hprof-analyzer/Cargo.toml', `[package]\nname = "hprof-analyzer"\nversion = "${version}"\n`);
+  releaseNotesFixture(r.cwd, {cli:version});
   const candidate = cliCandidate(t, version, r.base, overrides);
   return {env:{GITHUB_REF:'refs/tags/cli-v' + version, GITHUB_SHA: r.base, GITHUB_WORKSPACE: r.cwd, GITHUB_REPOSITORY:'owner/repo',
     CANDIDATE_DIR: candidate.dir, HOMEBREW_TAP_TOKEN:'tap-token', TAP_REPOSITORY:'owner/homebrew-heaplens', RELEASE_BASE:'main'}, candidate, r};

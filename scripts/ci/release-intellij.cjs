@@ -6,6 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const common = require('./release-common.cjs');
+const {hostNotes} = require('./release-publication-notes.cjs');
+const {publishRecord} = require('./release-baselines.cjs');
 const MARKETPLACE = 'https://plugins.jetbrains.com';
 const XML_ID = 'com.heaplens.analyzer';
 const PLUGIN_ID = 35004;
@@ -73,6 +75,7 @@ async function release(env, {fetchImpl = fetch, gh, git, commands = {}, log = co
   const directory = env.ARTIFACT_DIR;
   const {name, sums, size} = candidate(directory, version, commands);
   const notes = common.releaseNotes({tag, sha, sums, lines:[
+    hostNotes(root, 'intellij', version),
     'IntelliJ IDEA 2026.1–2026.2 on macOS Apple Silicon. IntelliJ versions are independent of VS Code and CLI versions.',
     'The same ZIP is uploaded to JetBrains Marketplace, which runs its own verification before listing it.']});
   common.ensureRelease({repository: env.GITHUB_REPOSITORY, tag, directory, assets:[name, 'SHA256SUMS'], sums, notes, gh, log});
@@ -81,7 +84,10 @@ async function release(env, {fetchImpl = fetch, gh, git, commands = {}, log = co
     const receipt = receiptFor({repository: env.GITHUB_REPOSITORY, tag, directory, gh});
     const recognized = receipt && receipt.version === version && receipt.sha256 === sums[name] &&
       receipt.update_id !== undefined && receipt.update_id !== null && String(receipt.update_id) === String(existing.id);
-    if (recognized) { log(`Marketplace already holds ${name} from a previous run (update ${existing.id}); upload skipped`); return 'unchanged'; }
+    if (recognized) {
+      publishRecord({host:'intellij', version, commit:sha, repository:env.GITHUB_REPOSITORY, directory, gh, updateId:existing.id});
+      log(`Marketplace already holds ${name} from a previous run (update ${existing.id}); upload skipped`); return 'unchanged';
+    }
     throw new Error(`Marketplace already lists ${version} without a matching upload receipt; resolve this manually before rerunning`);
   }
   if (!env.JETBRAINS_MARKETPLACE_TOKEN) throw new Error('JETBRAINS_MARKETPLACE_TOKEN is not configured');
@@ -91,6 +97,7 @@ async function release(env, {fetchImpl = fetch, gh, git, commands = {}, log = co
   const receiptFile = path.join(directory, RECEIPT);
   fs.writeFileSync(receiptFile, JSON.stringify(receipt, null, 2) + '\n');
   common.uploadReleaseAsset({repository: env.GITHUB_REPOSITORY, tag, file: receiptFile, gh});
+  publishRecord({host:'intellij', version, commit:sha, repository:env.GITHUB_REPOSITORY, directory, gh, updateId:receipt.update_id});
   log(`Uploaded ${name} to JetBrains Marketplace (update ${receipt.update_id}); it is listed after Marketplace verification`);
   return 'uploaded';
 }

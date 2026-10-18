@@ -1,6 +1,6 @@
 # Host boundaries and release routing
 
-Current workflow checked October 11, 2026. [CI/CD run 38182258035](https://github.com/sachinkg12/heaplens/actions/runs/38182258035) at commit `ea56dd6` completed successfully, including extension validation, boundary tests, Rust tests, IntelliJ candidate checks and all four VSIX builds. Automatic versioning and publication were skipped on that run; successful validation is not a new release or Marketplace approval.
+Historical remote workflow result, October 11, 2026: [CI/CD run 38182258035](https://github.com/sachinkg12/heaplens/actions/runs/38182258035) at commit `ea56dd6` completed successfully, including extension validation, boundary tests, Rust tests, IntelliJ candidate checks and all four VSIX builds. Automatic versioning and publication were skipped on that run; it predates the coordinated release train described below. Successful validation is not a new release or Marketplace approval.
 
 The IntelliJ candidate is **macOS Apple Silicon only**, with IntelliJ 2026.1–2026.2 metadata. `test-intellij` uses `macos-14`, rejects a non-ARM64 runner, builds the checkout's server and plugin ZIP, extracts that exact ZIP, runs required process/recovery tests and API verification, then uploads the candidate and reports. It makes no JetBrains upload, tag or Git push. The remote job passed in the run above; it does not establish native GUI acceptance or other-platform compatibility.
 
@@ -18,16 +18,16 @@ API verification uses JetBrains' documented `-ignore-os-arch` mode for virtual p
 
 Boundary tests and VS Code npm test run on every CI event. The table shows additional selection and VS Code packaging/release eligibility.
 
-| Changed paths or event | IntelliJ checks | Rust unit/integration checks | VSIX build | Automatic VS Code version bump |
+| Changed paths or event | IntelliJ checks | Rust unit/integration checks | VSIX build | Publication |
 |---|---|---|---|---|
 | intellij-plugin only, including its build/docs | Yes | No; shared server still built for IntelliJ process tests | No | No |
-| VS Code host src outside src/webview, compiler config or VSIX packaging | No | No on this branch/PR run | Yes | On main after checks |
-| src/webview, D3 or root npm manifests | Yes | No on this branch/PR run | Yes | On main after checks |
-| Shared Rust or server binaries | Yes | Yes | Yes | On main after checks |
-| CI/workflow policy | Yes | Yes | Yes | No, unless combined with release-relevant files |
+| VS Code host src outside src/webview, compiler config or VSIX packaging | No | No on this branch/PR run | Yes | No |
+| src/webview, D3 or root npm manifests | Yes | No on this branch/PR run | Yes | No |
+| Shared Rust or server binaries | Yes | Yes | Yes | No |
+| CI/workflow policy | Yes | Yes | Yes | No |
 | Documentation-only outside intellij-plugin / CI directories | No | No | No | No |
 | Unknown paths | Yes | Yes | Yes | No; explicit release decision needed |
-| Stable vMAJOR.MINOR.PATCH tag | Yes | Yes | Yes, then VS Code publication after passing checks | No recursive bump |
+| Stable vMAJOR.MINOR.PATCH tag | Yes | Yes | Yes | VS Code after passing checks |
 | Exact intellij-vMAJOR.MINOR.PATCH tag | Yes | Yes | No | No; the tested IntelliJ ZIP is published after passing checks |
 | Other intellij-v... tags (prerelease or malformed) | Yes | Yes | No | No; validation only |
 | cli-v... tag | No | Yes | No | No; CLI publication runs in the standalone workflow with its own gates |
@@ -38,23 +38,68 @@ The existing stable v1.0.x format is retained. Other v-prefixed tags, including 
 
 ## Tagged IntelliJ and CLI releases
 
-Pull requests and pushes to main only build and test candidates. A deliberate exact release tag on a commit that is already on main turns the candidate that CI tested into a published package. Version bumps and changelog entries stay manual.
+Pull requests and pushes to main only build and test candidates. A deliberate exact release tag on a commit that is already on main starts the corresponding build, test and publication workflow. The publish job downloads the exact artifact from that tag run; it does not publish the earlier PR artifact or rebuild during publication. Prepare versions and notes together using the local commands below.
 
 **IntelliJ, tag `intellij-vMAJOR.MINOR.PATCH`.** Set `version` in `intellij-plugin/build.gradle.kts` first; the tag must equal it. The run executes the boundary, Rust and IntelliJ jobs. `test-intellij` writes `SHA256SUMS` next to the ZIP it tested and uploads both. `publish-intellij` then runs on `ubuntu-latest` with `contents: write` only, downloads that artifact, and `scripts/ci/release-intellij.cjs` checks the tag syntax, the ancestry of the tagged commit on `origin/main`, the Gradle version, the ZIP name, the embedded plugin descriptor version and the checksums. It creates the GitHub release `intellij-v...` with the ZIP and `SHA256SUMS`, uploads the identical ZIP to JetBrains Marketplace through the documented upload API with `JETBRAINS_MARKETPLACE_TOKEN`, and attaches `marketplace-receipt.json` to the release. Marketplace verifies and lists the update itself; a green job is an accepted upload, not an approved listing. No Gradle task runs in the publish job, so nothing can be rebuilt or repackaged.
 
 **CLI, tag `cli-vMAJOR.MINOR.PATCH`.** See [the standalone packaging guide](../distribution/README.md#publish-after-acceptance) for the version coupling and the publication order.
 
-**Reruns.** Every publication step checks before it acts. A GitHub release asset, npm version or tap formula that already exists with identical content is skipped; one with different content stops the job for a person to resolve. Marketplace re-packages uploads, so an IntelliJ rerun recognizes a previous upload only through the receipt on the GitHub release; a listed version without a matching receipt stops the job.
+**Reruns.** GitHub release assets, npm versions and tap formulas are checked before writing. Matching content is skipped; conflicting content stops the job. VS Code candidates carry per-platform source/version/checksum records. Both extension registries are checked separately, including a SHA-256 of each downloaded package. Only missing targets are uploaded. A lost upload response is resolved by verifying registry state, not by blindly uploading again. A delayed or unverifiable upload fails closed; rerun the failed publish job after it becomes visible. IntelliJ recognizes previous uploads through its matching receipt; an existing version without that receipt stops for manual reconciliation. Rerun failed publication jobs with their original artifacts, not all build jobs. Rebuilding can change archive bytes and correctly trigger a conflict. If Actions artifacts expire, the original checksummed GitHub release assets must be recovered and verified before an operator retries; do not substitute a rebuild.
 
-**Secrets.** `JETBRAINS_MARKETPLACE_TOKEN` is read only by `publish-intellij`. `HOMEBREW_TAP_TOKEN`, a fine-grained token limited to the tap repository's contents, is read only by `publish-cli`. npm uses trusted publishing with the job's short-lived identity token, so no npm secret exists. The VS Code tokens and `PAT_TOKEN` are not available to either release job.
+VS Code/Open VSX visibility checks allow approximately 15 minutes per pending platform, with a 20-second polling interval. Set `HEAPLENS_RELEASE_VERIFY_SECONDS` to an integer from 1 to 3600 to override that nominal window; CI reads the repository variable with the same name. Request durations add to the polling time. A confirmed byte conflict stops immediately instead of waiting through that window. Marketplace delays can exceed the window, so a failed verification still requires a safe rerun with the original package. The direct tooling pins in `vscode-tools.cjs` are `@vscode/vsce@3.6.2` for both packaging and publication and `ovsx@1.3.0` for Open VSX publication. VSCE retains the Node 20 packaging-runner requirement; Open VSX publication runs on Node 22. Pins are deliberate source changes, not floating `npx` selections.
 
-The first boundary-infrastructure commit also changes package.json/package-lock.json and tsconfig.json. It is therefore not an IntelliJ-only commit and can still legitimately trigger a VS Code patch release when merged to main. The no-release guarantee applies to commits whose entire relevant diff is IntelliJ-only.
+**Secrets.** `JETBRAINS_MARKETPLACE_TOKEN` is read only by `publish-intellij`. `HOMEBREW_TAP_TOKEN`, a fine-grained token limited to the tap repository's contents, is read only by `publish-cli`. npm uses trusted publishing with the job's short-lived identity token. `VSCE_PAT` and `OVSX_PAT` belong only to VS Code publication. The retired auto-version job no longer needs `PAT_TOKEN`. These edits do not delete or revoke any existing secret.
+
+## Coordinated release preparation
+
+From a clean tracked checkout on a release branch, run:
+
+~~~bash
+node scripts/ci/prepare-release.cjs --preview
+node scripts/ci/prepare-release.cjs
+node scripts/ci/validate-release.cjs
+~~~
+
+Preparation defaults to patch bumps for all three hosts. Override with `--vscode X.Y.Z`, `--intellij X.Y.Z` and `--cli X.Y.Z`. It checks fresh remote tags with `git ls-remote`, not a potentially stale local tag list; this requires read access to origin. The changelog date defaults to the operator's local calendar day; use `--date YYYY-MM-DD` for an explicit reproducible date. The date is stored in the plan, so CI does not recalculate it in another time zone. The command updates both npm manifests, the Gradle version, CLI configuration, Cargo manifest/lockfile, plugin change notes, the changelog and `scripts/ci/release-plan.json`. It never creates a commit, tag, PR or remote write. `--preview` calculates the same result without editing files. Unrelated files are preserved; existing untracked release targets are not overwritten.
+
+Baselines come from `release-record.json` attached only after a host's publication completes. IntelliJ records an accepted submission separately from public listing: preparation also requires that exact update ID to be approved, listed, visible and on Stable before using it as a baseline. Pending or failed releases and bare version tags are not assumed to have shipped. For historical manual packages without a record, confirm the actual source once and supply `--baseline-HOST FULL_COMMIT_SHA --baseline-HOST-evidence "Verified package/source evidence"` for each missing host. Do not substitute an inferred version-setting commit. Manual overrides and their evidence are preserved in the plan. The CLI bootstrap needs this explicit source too if it predates publication records.
+
+For the first train, all three historical packages lack these new records. Replace every source/evidence placeholder below before running the preview:
+
+~~~bash
+node scripts/ci/prepare-release.cjs \
+  --vscode 1.0.35 --intellij 0.1.17 --cli 0.1.1 \
+  --baseline-vscode VERIFIED_FULL_VSCODE_1_0_34_SHA \
+  --baseline-vscode-evidence "REPLACE_WITH_VSCODE_ARTIFACT_AND_SOURCE_EVIDENCE" \
+  --baseline-intellij VERIFIED_FULL_INTELLIJ_0_1_16_SHA \
+  --baseline-intellij-evidence "REPLACE_WITH_INTELLIJ_ARTIFACT_AND_SOURCE_EVIDENCE" \
+  --baseline-cli FULL_SHA_USED_FOR_MANUAL_NPM_0_1_0_PUBLICATION \
+  --baseline-cli-evidence "REPLACE_WITH_NPM_ARCHIVE_CHECKSUM_AND_SOURCE_EVIDENCE" \
+  --preview
+~~~
+
+Inspect the preview, then repeat the same command without `--preview` to write the prepared diff. The CLI baseline must be the source commit used to build the archive actually published manually as 0.1.0. Do not assume PR 9 is that source merely because it introduced CLI packaging. If the bootstrap includes later engine improvements, those improvements are already in the CLI baseline and must not be advertised as newly added in 0.1.1. Each historical baseline reads only its own host's version file; an unrelated prototype IDE version at the CLI baseline does not prevent preparation.
+
+Notes use first-parent history, PR titles/numbers and direct-commit subjects with source links. Runtime path routing is distinct from CI check routing. CI/publishing plumbing, tests, traffic and documentation-only changes are excluded; shared-engine changes appear in all affected host sections. Empty sections state that the release is coordinated maintenance, without inventing features. Generic titles receive `REVIEW:` and must be corrected once in the plan; run `node scripts/ci/prepare-release.cjs --refresh-notes` to regenerate the changelog and plugin HTML without changing versions. Titles are escaped for Markdown and HTML. Notes are concise change summaries, not exhaustive descriptions of every change inside a large PR.
+
+Review and commit the prepared diff, open a release PR, and merge after validation. Ordinary unchanged versions remain valid on later PRs; strict release checks do not demand another bump after each merge. Changes to product code after preparation invalidate that candidate's release notes and require regeneration before release.
+
+After the merged main push run finishes successfully, use its full SHA:
+
+~~~bash
+node scripts/ci/tag-release.cjs --sha FULL_MERGED_COMMIT_SHA
+node scripts/ci/tag-release.cjs --sha FULL_MERGED_COMMIT_SHA --execute
+~~~
+
+The first command fetches main's objects without importing tags or moving the local branch, then performs preflight checks with no remote writes. The tested release SHA may be the fetched main tip or an ancestor followed only by allowlisted traffic/research/documentation paths; this permits the daily `[skip ci]` traffic snapshot without inventing a CI run for that snapshot. Product code, version manifests, build scripts, workflows and unknown paths in the intervening diff block tagging. The output reports the fetched main SHA and intervening paths. CI must still be successful for the exact release SHA, never the untested tip. Only explicit `--execute` pushes all three lightweight tag references atomically at that release SHA, without changing local tags. It also checks origin/repository identity, prepared metadata, exact-SHA main push workflow, successful aggregate `checks`, and fresh remote tags. PR runs, failed runs, existing tags and version regressions are rejected. No publishing token or extra CI token is needed by this local command beyond the operator's existing GitHub read and Git push credentials.
+
+Atomic tag creation is not an atomic multi-registry transaction. Each host builds/tests/publishes independently from that revision. A partial release remains possible and is recovered per failed publish job; public availability also depends on marketplace processing. Publication records identify completed deliveries, not independent user acceptance or an approved IntelliJ listing by themselves.
 
 ## Release safety and remaining repository settings
 
 The checks job is a stable aggregate gate. A selected job that fails, is cancelled or is unexpectedly skipped blocks it. Deliberately unselected host jobs may be skipped. Versioning, VSIX packaging and publication depend on this gate.
 
-Auto-version keeps the existing PAT_TOKEN mechanism, because pushes using the repository GITHUB_TOKEN do not normally trigger another workflow run. It operates only on the validated commit. If main has advanced, it fails visibly; do not force a tag or assume a later IntelliJ-only push will release the pending VS Code change. Revalidate current main and make an explicit release decision. The branch and version tag are pushed atomically without force.
+There is no per-merge automatic versioning or publication. Exact host-prefixed tags remain the sole publication signal. Preparation and tagging are separate deliberate operations; neither commit-message conventions nor missing version tags imply release authority.
 
 Stable release tags deliberately rerun both host suites even if the original change was VS Code-only. This conservative final compatibility gate may expose prototype failures that must be fixed before publication.
 
