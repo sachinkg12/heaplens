@@ -3,66 +3,53 @@ sidebar_position: 2
 title: Configure a local MCP server
 ---
 
-Use a trusted native `hprof-server` for the server machine's OS/architecture. A source checkout is an option for contributors, not a universal user requirement. The current standalone candidate can supply the native server; check [distribution status](../getting-started/choose-host.md).
+Use a trusted native server matching the server machine's OS and architecture. This configuration targets the updated local implementation; it does not retrofit older installed binaries.
 
-## Client configuration
-
-In a client supporting local stdio MCP, configure the actual executable:
+## Approve files and metadata sharing
 
 ```json
 {
   "mcpServers": {
     "heaplens": {
       "command": "/absolute/path/hprof-server",
-      "args": ["--mcp"]
+      "args": ["--mcp", "--mcp-allow-file", "/absolute/path/app.hprof", "--mcp-share-metadata"]
     }
   }
 }
 ```
 
-This is a common configuration shape, not a promise every client uses this file/schema. Use its documented configuration location and approve permissions. Windows JSON paths must be escaped:
+Repeat `--mcp-allow-file` for up to eight files. Only one completed analysis stays active. No flag approves a directory or lets a model approve more files. Without metadata sharing, tools reject requests. Sharing with no approved files returns an empty file list.
+
+Use your client's documented configuration format. Windows paths require escaped backslashes in JSON and an available matching native build. The server needs no model key; the client owns model credentials, destination, retention and billing.
+
+Treat launch configuration as a human permission boundary. Do not let an untrusted agent rewrite it. Stop and restart with fresh approval when files or permissions change. Approved captures must remain immutable: path and opened-handle metadata detect ordinary changes/replacements, not malicious same-size edits with restored timestamps. This is not cryptographic file verification.
+
+## Initialize and analyze
+
+Negotiated versions are 2024-11-05, 2025-06-18 and 2025-11-25. This is local stdio, not a remote authenticated service.
 
 ```json
-{
-  "mcpServers": {
-    "heaplens": {
-      "command": "C:\\tools\\heaplens\\hprof-server.exe",
-      "args": ["--mcp"]
-    }
-  }
-}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"heaplens-client","version":"1"}}}
 ```
-
-The server itself does not need an LLM API key. The client may need one for its own model.
-
-## Initialization contract
-
-Current server code advertises **2024-11-05**. A standards-aware client must inspect the returned version/capabilities instead of assuming the newest protocol is implemented. An illustrative manual stdio exchange:
-
-```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"heaplens-docs-check","version":"1.0"}}}
-```
-
-After accepting a compatible initialization response, send:
 
 ```json
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 ```
 
-Then list/call tools:
-
 ```json
-{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_dumps","arguments":{}}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"analyze_heap","arguments":{"path":"/absolute/path/app.hprof"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"analyze_heap","arguments":{"dump_id":"dump_1"}}}
 ```
 
-Messages are newline-delimited JSON on stdio. Keep stdout for protocol data and stderr for diagnostics. This is not the editor RPC notification sequence. The [MCP lifecycle specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) explains negotiation; it does not establish that HeapLens implements every newer capability.
+Use the returned analysis identity, not a guessed or saved one. Object IDs must be decimal strings. Frames are newline-delimited JSON; stdout is reserved for protocol data.
 
-## Verify and stop
+## Limits and cancellation
 
-Check nine tool names, analyze one safe dump, run a bounded valid query, and inspect client errors/permissions. Use server-machine paths. Do not assume arbitrary remote paths or every coding agent are supported. On shutdown terminate the owned process to release state. Client cancellation support differs; no general cancellable MCP-analysis guarantee is made.
+A connection accepts eight queued/running tool jobs and 4,096 unique tool request IDs; IDs cannot be reused. Metadata reads allow 32 ordinary rows, 4,096 visited nodes, 16,384 examined edges, depth 32, two seconds and 64 KiB of evidence. A path can include the selected node plus 32 hops. Queuing counts toward deadlines. A completed analysis retains at most 32 evidence records.
 
-Tool output can be sensitive. Read [privacy](../ai-integration/privacy.md) before allowing a cloud-model client to use it.
+Analysis has a cooperative 30-minute deadline and uses normal Memory or Disk options. Neither the read budget nor the edge buffer is a total-RAM limit.
+
+Send standard `notifications/cancelled` with the originating `requestId`. The server stops cooperative work and suppresses that request's response; unknown/late cancellation is ignored. Cancellation does not delete a successfully published structural cache. See the [MCP cancellation specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation).

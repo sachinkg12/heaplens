@@ -22,7 +22,7 @@ export const flows: Record<FlowKind, {title: string; steps: {title: string; deta
     {title: 'Review what is shared', detail: 'Metadata; full source only if approved'},
     {title: 'Configured provider', detail: 'Local endpoints can forward remotely'},
     {title: 'Review the response', detail: 'Hypotheses or a proposal—not a verdict'},
-  ], note: 'This is an editor/browser workflow. MCP clients have a separate raw-tool-output policy.'},
+  ], note: 'This is an editor/browser workflow. Scoped MCP clients require separate exact-file and metadata approval.'},
   source: {title: 'From owner class to a reviewed proposal', steps: [
     {title: 'Select class', detail: 'Heap identity is not source identity'},
     {title: 'Host resolves source', detail: 'Workspace, project, or supplied roots'},

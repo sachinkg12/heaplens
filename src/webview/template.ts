@@ -62,9 +62,10 @@ export function getHtmlTemplate(): string {
                 <span class="tree-shallow" style="font-weight:bold;">Shallow</span>
                 <span class="tree-size" style="font-weight:bold;">Retained</span>
                 <span class="tree-bar-wrap"></span>
-                <span class="tree-pct" style="font-weight:bold;">%</span>
+                <span class="tree-pct" style="font-weight:bold;" title="Retained size divided by reachable heap. Nested retained sets overlap.">% reachable</span>
                 <span class="tree-actions"><span class="tree-action-alive"></span><span class="tree-action-icon"></span><span class="tree-action-icon"></span><span class="tree-action-icon"></span></span>
             </div>
+            <p class="histogram-percentage-note">Percentages use reachable heap, not the sum of these rows. Nested entries can retain the same objects; percentages need not sum to 100%. N/A means unavailable.</p>
         </div>
         <div id="dominator-tree"><div class="loading">Waiting for analysis...</div></div>
         <div id="sunburst-chart"></div>
@@ -261,6 +262,7 @@ export function getHtmlTemplate(): string {
             <div class="chat-input-row">
                 <textarea class="chat-input" id="chat-input" placeholder="Ask about your heap dump..." rows="1"></textarea>
                 <button class="chat-send" id="chat-send">Send</button>
+                <button class="chat-clear" id="chat-stop" title="Stop the current AI investigation">Stop</button>
                 <button class="chat-clear" id="chat-clear" title="Clear chat history">Clear</button>
             </div>
             <p class="chat-privacy-note">AI sends heap metadata and your messages to the configured provider. Automatic string previews and primitive values are omitted. Names and anything you type may still be sensitive; do not paste secrets.</p>

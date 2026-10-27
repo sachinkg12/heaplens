@@ -10,7 +10,7 @@ const analysis={command:'analysisComplete',summary:{reachable_heap_size:1024,tot
   topObjects:[owner],topLayers:[owner],classHistogram:[{class_name:'example.Owner',instance_count:1,shallow_size:24,retained_size:256},
   {class_name:'java.lang.String',instance_count:2,shallow_size:48,retained_size:100}],leakSuspects:[]};
 let browser;
-before(async()=>{browser=await chromium.launch({headless:true});});
+before(async()=>{browser=await chromium.launch({headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{})});});
 after(async()=>{await browser?.close();});
 async function send(page,data){await page.evaluate(data=>window.dispatchEvent(new MessageEvent('message',{data})),data);}
 async function latest(page){return page.evaluate(()=>window.sentMessages.at(-1));}

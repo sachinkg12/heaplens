@@ -9,7 +9,7 @@ const owner={object_id:42,class_name:'example.Owner',node_type:'Instance',shallo
 const analysis={command:'analysisComplete',displayName:'example.hprof',summary:{reachable_heap_size:1024,total_heap_size:2048,total_instances:10,total_classes:2,total_arrays:1,total_gc_roots:2},
   topObjects:[owner],topLayers:[owner],classHistogram:[{class_name:'example.Owner',instance_count:1,shallow_size:24,retained_size:256}],leakSuspects:[]};
 let browser;
-before(async()=>{browser=await chromium.launch({headless:true});});
+before(async()=>{browser=await chromium.launch({headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{})});});
 after(async()=>{await browser?.close();});
 async function send(page,data){await page.evaluate(data=>window.dispatchEvent(new MessageEvent('message',{data})),data);}
 async function latest(page){return page.evaluate(()=>window.sentMessages.at(-1));}
@@ -58,6 +58,55 @@ test('Dominator Inspect, Explain, references, navigation and AI Fix are host-rou
   assert.match(await page.locator('#local-action-status').textContent(),/Nothing was sent/);
   assert.equal(await page.locator('#local-action-stop').isVisible(),false);
 }));
+test('evidence answers remain literal text, evidence opens locally and class selection keys cannot collide',()=>run(async page=>{
+  const names=['foo.A$B','foo.A_B','odd.Name["x"]'];
+  await send(page,{...analysis,leakSuspects:names.map(class_name=>({class_name,retained_size:256,retained_percentage:25,instance_count:1,description:'Retained group'}))});
+  await page.locator('#tabBtn-leaks').click();await page.locator('.leak-toggle-btn[data-view="class"]').click();
+  const cards=page.locator('#leak-suspects .suspect-card');
+  for(const index of [1,2]){
+    await cards.nth(index).locator('.suspect-explain-link').click();const request=await latest(page);
+    assert.equal(request.className,names[index]);
+    await send(page,{...request,command:'aiInvestigationProgress',channel:'explainLeak',message:'Reading bounded evidence'});
+    await send(page,{...request,command:'explainLeakChunk',text:'Literal <img src=x onerror=alert(1)> retained_size: 256 [E123456abcdef_1]'});
+    await send(page,{...request,command:'explainLeakDone',safeEvidenceAnswer:true,evidence:[{id:'E123456abcdef_1',operation:'object'}]});
+    assert.doesNotMatch(await cards.nth(0).textContent(),/Literal/);
+    assert.match(await cards.nth(index).textContent(),/retained_size: 256/);
+    assert.equal(await cards.nth(index).locator('img').count(),0);
+    await cards.nth(index).getByRole('button',{name:'View evidence: object'}).click();assert.deepEqual(await latest(page),{command:'openAiEvidence',id:'E123456abcdef_1'});
+    await send(page,{command:'aiEvidenceResult',record:{id:'E123456abcdef_1',operation:'object',data:{class_name:names[index],retained_size:'256'}}});
+    assert.match(await page.locator('#heaplens-ai-evidence').textContent(),/256/);
+    if(index===2){await send(page,{command:'aiReset'});assert.equal(await page.locator('#heaplens-ai-evidence').count(),0);}
+    else await page.getByRole('button',{name:'Close evidence'}).click();
+  }
+}));
+test('changing Inspector selection retires an explanation and rejects its late answer',()=>run(async page=>{
+  await send(page,analysis);await page.locator('#tabBtn-domtree').click();
+  const row=page.locator('.tree-row[data-object-id="42"]');await row.hover();await row.locator('.tree-inspect').click();
+  const request=await latest(page);await send(page,{...request,command:'inspectObjectResponse',fields:[{name:'x',field_type:'Object'}]});
+  await page.locator('#inspector-explain-btn').click();const explain=await latest(page);assert.equal(explain.objectId,'42');
+  await page.locator('.inspector-close').click();
+  await send(page,{...explain,command:'explainChunk',text:'STALE_OWNER'});await send(page,{...explain,command:'explainDone',safeEvidenceAnswer:true,evidence:[]});
+  assert.equal(await page.locator('#inspector-panel').isVisible(),false);assert.doesNotMatch(await page.locator('body').textContent(),/STALE_OWNER/);
+}));
+test('in-panel Stop accepts the matching cancellation and releases object and leak controls',()=>run(async page=>{
+  await send(page,{...analysis,leakSuspects:[{class_name:'example.Owner',retained_size:256,retained_percentage:25,instance_count:1,description:'Retained group'}]});
+  await page.locator('#tabBtn-domtree').click();const row=page.locator('.tree-row[data-object-id="42"]');
+  await row.hover();await row.locator('.tree-inspect').click();const inspect=await latest(page);
+  await send(page,{...inspect,command:'inspectObjectResponse',fields:[{name:'x',field_type:'Object'}]});
+  await page.locator('#inspector-explain-btn').click();const object=await latest(page);
+  await send(page,{...object,command:'aiInvestigationProgress',channel:'explain',message:'Investigating object'});
+  await page.locator('#inspector-explain-area').getByRole('button',{name:'Stop investigation'}).click();
+  assert.equal((await latest(page)).command,'cancelAiAssistance');
+  await send(page,{...object,command:'explainError',message:'Investigation cancelled.'});
+  assert.equal(await page.locator('#inspector-explain-btn').isEnabled(),true);assert.match(await page.locator('#inspector-explain-area').textContent(),/cancelled/);
+  await page.locator('.inspector-close').click();await page.locator('#tabBtn-leaks').click();await page.locator('.leak-toggle-btn[data-view="class"]').click();
+  await page.locator('#leak-suspects .suspect-explain-link').click();const leak=await latest(page);
+  await send(page,{...leak,command:'aiInvestigationProgress',channel:'explainLeak',message:'Investigating group'});
+  await page.locator('#leak-suspects').getByRole('button',{name:'Stop investigation'}).click();
+  assert.equal((await latest(page)).command,'cancelAiAssistance');await send(page,{...leak,command:'explainLeakError',message:'Investigation cancelled.'});
+  assert.match(await page.locator('#leak-suspects .suspect-explain-area').textContent(),/cancelled/);
+  assert.equal(await page.locator('#leak-suspects .suspect-explain-link').textContent(),'Explain');
+}));
 test('Flame Graph renders bounded subtree and errors never masquerade as empty root paths',()=>run(async page=>{
   await send(page,analysis);await page.locator('#tabBtn-domtree').click();await page.locator('#domtree-view-flame').click();
   const flame=await latest(page);assert.equal(flame.command,'getDominatorSubtree');assert.equal(flame.objectId,0);
@@ -79,19 +128,14 @@ test('Histogram export and object reads work; late replies cannot reopen panels 
   assert.equal(await page.locator('#inspector-panel').isVisible(),false);
   assert.doesNotMatch(await page.locator('body').textContent(),/STALE/);
 }));
-test('restored chats get explicit Run Query buttons and private results, never automatic execution',()=>run(async page=>{
+test('restored chats are display-only and cannot replay expired executable suggestions',()=>run(async page=>{
   await send(page,analysis);await page.locator('#tabBtn-chat').click();
   const query='SELECT class_name FROM instances LIMIT 2';
   await send(page,{command:'aiHistory',messages:[{role:'user',content:'Inspect memory'},{role:'assistant',content:'Try this:\n```heapql\n'+query+'\n```'}]});
-  assert.equal(await page.locator('.chat-run-query-btn').count(),1);
+  assert.equal(await page.locator('.chat-run-query-btn').count(),0);
   assert.equal(await page.evaluate(()=>window.sentMessages.some(m=>m.command==='aiRunQuery')),false);
-  await page.locator('.chat-run-query-btn').click();const request=await latest(page);assert.equal(request.command,'aiRunQuery');
-  await send(page,{...request,command:'aiQueryResult',result:{columns:['class_name'],rows:[['example.Owner']]}});
-  assert.match(await page.locator('.chat-query-result').textContent(),/example.Owner/);
+  assert.match(await page.locator('#chat-messages').textContent(),/evidence.*expired/i);
   assert.equal(await page.locator('#query-results').textContent(),'');
-  await page.locator('.chat-run-query-btn').click();const failed=await latest(page);
-  await send(page,{...failed,command:'aiQueryError',error:'Unknown column: typo'});assert.match(await page.locator('#ai-status').textContent(),/Unknown column/);
-  assert.equal(await page.locator('.chat-run-query-btn').isEnabled(),true);
   await page.locator('#chat-clear').click();assert.equal((await latest(page)).command,'aiClear');
   assert.equal(await page.locator('.chat-bubble').count(),0);
 }));

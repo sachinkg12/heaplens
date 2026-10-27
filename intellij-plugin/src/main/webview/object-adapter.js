@@ -49,6 +49,9 @@ onMessage=function(command,handler) {
     });
 };
 function dispatchHost(message) {
+    // Explicit Stop keeps the request fence until its matching terminal event resets the UI.
+    // Navigation retirement is separate: its old panel must not accept a late reply.
+    if(message.command==='stopAi') {hostSend({command:'cancelAiAssistance'});return;}
     if(message.command==='copyReport') {
         if(!objectReady || !analysisData) return;
         hostSend({command:'copyReportText',text:buildIncidentReport(analysisData,analysisData.displayName || 'Heap dump')});return;
@@ -72,7 +75,8 @@ function dispatchHost(message) {
             document.querySelectorAll('.suspect-explain-link').forEach(function(link){link.textContent='Explain';});
             return;
         }
-        if(channel!=='fix' && !(message.command==='explainLeakSuspect' && message.objectId===undefined) &&
+        var exactExplainId = channel==='explain' && typeof message.objectId==='string' && /^[1-9][0-9]{0,19}$/.test(message.objectId) && BigInt(message.objectId)<=18446744073709551615n;
+        if(channel!=='fix' && !exactExplainId && !(message.command==='explainLeakSuspect' && message.objectId===undefined) &&
             (!Number.isSafeInteger(message.objectId) || message.objectId<(channel==='flame'?0:1))) {
             localStatus('This object ID is unsupported; no request was sent.');return;
         }

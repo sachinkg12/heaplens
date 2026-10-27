@@ -38,6 +38,7 @@ class Session {
             capability.install(this);
     }
     purge() { this.events = []; this.eventBytes = 0; }
+    touchView(view) { if(this.view===view)this.lastViewSeen=Date.now(); }
     attach(view) { if (typeof view !== 'string' || !/^[a-f0-9-]{36}$/.test(view))
         throw Error('Invalid page session'); if (this.view !== view) {
         this.view = view;
@@ -46,7 +47,7 @@ class Session {
         this.monitor = null;
         this.chatGrant = null;
         this.purge();
-    } }
+    } this.touchView(view); }
     emit(command, data = {}) {
         const action = this.actionContext.getStore();
         if (action && (action.view !== this.view || action.generation !== this.generation))

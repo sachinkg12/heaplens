@@ -27,8 +27,10 @@ public final class HeapSession implements AutoCloseable {
     });
     private volatile State state = State.NEW;
     private volatile long pid = -1;
-    private RpcClient client;
-    private long generation, nextId, analysisId;
+    private volatile RpcClient client;
+    private volatile long generation, analysisId;
+    private long nextId;
+    private volatile String evidenceScope=java.util.UUID.randomUUID().toString();
     private boolean queryPending;
     private int readsPending;
 
@@ -64,6 +66,7 @@ public final class HeapSession implements AutoCloseable {
         if (state == State.FAILED || state == State.CANCELLED) {retrying=true;track("analysis/retry",Map.of(),Map.of());begin();}
     }); }
     private void begin() {
+        evidenceScope=java.util.UUID.randomUUID().toString();
         long current = ++generation;
         if (client != null) client.close();
         client = null; queryPending = false; readsPending = 0; state = State.ANALYZING;
@@ -146,6 +149,38 @@ public final class HeapSession implements AutoCloseable {
         JsonObject error = WebviewEvents.event("queryError"); error.addProperty("error", reason); error.addProperty("query", query); reply.accept(error);
     }
     /** Bounded, caller-scoped reads. No webview input can choose an RPC method or dump path. */
+    public CompletableFuture<com.heaplens.ai.InvestigationEngine> captureInvestigation() {
+        var result=new CompletableFuture<com.heaplens.ai.InvestigationEngine>();
+        if(state==State.CLOSED){result.completeExceptionally(new IllegalStateException("Analysis unavailable"));return result;}
+        dispatch(()->{
+            if(state!=State.READY || client==null || !client.isAlive()){result.completeExceptionally(new IllegalStateException("Retained analysis required"));return;}
+            final RpcClient captured=client;final long epoch=generation,analysis=analysisId;final String scope=evidenceScope;
+            result.complete(new com.heaplens.ai.InvestigationEngine(){
+                public String identity(){return scope;}
+                public boolean current(){return state==State.READY && client==captured && generation==epoch && analysisId==analysis && captured.isAlive();}
+                public CompletableFuture<JsonObject> read(JsonObject action,String jobId){
+                    var answer=new CompletableFuture<JsonObject>();
+                    if(!current()){answer.completeExceptionally(new IllegalStateException("Analysis changed"));return answer;}
+                    dispatch(()->{
+                        if(!current()){answer.completeExceptionally(new IllegalStateException("Analysis changed"));return;}
+                        JsonObject p=new JsonObject();p.addProperty("path",path);p.addProperty("analysis_id",Long.toString(analysis));p.addProperty("job_id",jobId);p.add("action",action.deepCopy());
+                        captured.requestValue(++nextId,"investigate_heap",p,Duration.ofSeconds(3)).whenComplete((value,error)->{
+                            if(error!=null || !current() || value==null || !value.isJsonObject()){answer.completeExceptionally(new IllegalStateException("Bounded read failed or analysis changed"));return;}
+                            JsonObject wrapper=value.getAsJsonObject();
+                            if(!wrapper.has("analysis_id") || !Long.toString(analysis).equals(wrapper.get("analysis_id").getAsString()) || !wrapper.has("evidence") || !wrapper.get("evidence").isJsonObject())answer.completeExceptionally(new IllegalStateException("Wrong evidence generation"));
+                            else answer.complete(wrapper.getAsJsonObject("evidence"));
+                        });
+                    });
+                    return answer.orTimeout(3,TimeUnit.SECONDS);
+                }
+                public void cancel(String jobId){
+                    // Captured client, never a replacement client after Retry.
+                    dispatch(()->{if(captured.isAlive()){JsonObject p=new JsonObject();p.addProperty("job_id",jobId);captured.requestValue(++nextId,"cancel_investigation",p,Duration.ofSeconds(3)).exceptionally(error->null);}});
+                }
+            });
+        });
+        return result.orTimeout(3,TimeUnit.SECONDS);
+    }
     public void read(String method, JsonObject parameters, BiConsumer<JsonElement, String> reply) {
         JsonObject request = parameters.deepCopy();
         dispatch(() -> {

@@ -1,24 +1,18 @@
 ---
 sidebar_position: 3
-title: VS Code chat participant
+title: Copilot Chat participant
 ---
 
-HeapLens registers `@heaplens` using the **VS Code chat-participant API**. This is separate from the built-in AI Chat tab and from MCP.
+The updated local VS Code implementation registers `@heaplens` through the editor's chat-participant API. It uses the model selected in that request, without a preferred-provider fallback. Compatible editor/model access is required. This is separate from the built-in AI Chat tab and MCP.
 
-## Use it
+Open a dump, finish retained analysis, select a model and ask `@heaplens` a question. Each question requires approval to send bounded metadata and your text to that model. Up to four model calls and three read-only engine reads can occur; charges may apply. Raw heap contents, source and local paths are excluded, but names and questions can be sensitive.
 
-With a host exposing the chat and language-model APIs and appropriate model access, open a dump, then mention `@heaplens` in the supported editor chat surface. Ask about the active analysis or an investigation query.
+The question captures the originating dump and generation. Changing focus does not retarget active work. Stop, Clear, Retry, server death or closing that dump cancels local work; previously transmitted data cannot be recalled.
 
-The current participant implementation **prefers GPT-4o and otherwise uses the first available model**. It does not guarantee it uses the model selected in an editor dropdown. Model entitlement and provider processing are governed by that editor route.
+## Answers and history
 
-## Scope
+HeapLens accepts conversational answers and, when the selected editor model advertises tool support, bounded native tool requests. Tool arguments and scope are checked before engine access. Evidence buttons open actual records; old analysis handles expire. AI prose and suggested fixes remain unverified, even when they cite a valid record. No fallback model is selected silently.
 
-Registration in the VS Code API does not register a participant in every extension's independent chat panel. Cline, other coding agents, and compatible editors must be checked for their actual integration. Use [MCP](../mcp/setup.md) for a client that supports local stdio tools; do not assume a participant mention works in its own UI.
+Only completed turns associated with a private completion token, the same analysis and selected model become follow-up context. Arbitrary editor history and restored display-only text are not trusted evidence. Older completion tokens retain their own conversation snapshot, including when a chat is forked.
 
-| Built-in tab | Participant |
-| --- | --- |
-| Ten configured provider presets and custom model IDs | Editor language-model API |
-| HeapLens-owned credential configuration | Editor/model entitlement |
-| Host-specific history and consent | Editor chat policy and participant behavior |
-
-The minimized participant context omits raw duplicate-string previews and primitive field contents, but still includes names and analysis metadata. User-entered text is not redacted. These are privacy limits, not anonymity guarantees. See [AI privacy](./privacy.md).
+Registration does not add a participant to every coding agent's independent panel. Use [MCP](../mcp/setup.md) for clients supporting stdio tools and check the executable's contract. See [privacy](./privacy.md).

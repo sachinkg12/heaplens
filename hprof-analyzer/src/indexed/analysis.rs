@@ -11,15 +11,15 @@ use petgraph::graph::NodeIndex;
 
 use crate::heapql::{HeapQlError, QueryResult};
 use crate::class_histogram::{
-    aggregate_dense_histogram, ClassHistogramSample, ClassHistogramTree,
+    aggregate_dense_histogram_cancellable, ClassHistogramSample, ClassHistogramTree,
 };
 use crate::classloader_leaks::{
-    detect_classloader_suspects, is_covered_by_classloader, ClassloaderTree,
+    detect_classloader_suspects_cancellable, covered_cancellable, ClassloaderTree,
 };
 use crate::waste::{WasteAnalysis, WasteRawData};
 use crate::{ClassHistogramEntry, FieldInfo, HeapSummary, LeakSuspect, ObjectReport};
 
-use super::dominator::{compute_dominators, DominatorResult};
+use super::dominator::{compute_dominators_cancellable, DominatorResult};
 use super::node_store::{NodeStore, NodeType};
 use super::edge_store::EdgeStore;
 use super::class_index::ClassIndex;
@@ -27,6 +27,8 @@ use super::parse::{ParseResult, Phase1Result, Phase2Result};
 use super::string_table::StringTable;
 use super::types::HeapAnalysis;
 use super::waste::compute_indexed_waste;
+#[path = "investigation.rs"]
+mod investigation;
 
 struct IndexedClassHistogramTree<'a> {
     node_store: &'a NodeStore,
@@ -138,11 +140,12 @@ unsafe impl Sync for IndexedAnalysisState {}
 /// Stop when the largest child retains less than 70% of the current node.
 /// Returns the class name of the accumulation point, or None if the suspect
 /// is a leaf or the walk exceeds 1000 levels.
-fn find_accumulation_point(
+fn find_accumulation_point_cancellable(
     node_idx: u32,
     dominator: &DominatorResult,
     node_store: &NodeStore,
-) -> Option<String> {
+    cancelled:&impl Fn()->bool,
+) -> anyhow::Result<Option<String>> {
     const BIG_DROP_RATIO: f64 = 0.7;
     const MAX_DEPTH: usize = 1000;
 
@@ -150,23 +153,25 @@ fn find_accumulation_point(
     let mut current_retained = dominator.retained_sizes[current as usize];
 
     if current_retained == 0 {
-        return None;
+        return Ok(None);
     }
 
     for _ in 0..MAX_DEPTH {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         let children = &dominator.dominator_children[current as usize];
         if children.is_empty() {
             // Leaf node: this is the accumulation point
             let node = node_store.get_by_index(current);
             let name = node.class_name.to_string();
-            if name.is_empty() { return None; }
-            return Some(name);
+            if name.is_empty() { return Ok(None); }
+            return Ok(Some(name));
         }
 
         // Find the largest child by retained size
         let mut largest_child = children[0];
         let mut largest_retained = dominator.retained_sizes[children[0] as usize];
         for &child in &children[1..] {
+            anyhow::ensure!(!cancelled(),"Analysis cancelled");
             let r = dominator.retained_sizes[child as usize];
             if r > largest_retained {
                 largest_retained = r;
@@ -179,8 +184,8 @@ fn find_accumulation_point(
             // Current node is the accumulation point
             let node = node_store.get_by_index(current);
             let name = node.class_name.to_string();
-            if name.is_empty() { return None; }
-            return Some(name);
+            if name.is_empty() { return Ok(None); }
+            return Ok(Some(name));
         }
 
         // Continue walking down
@@ -188,7 +193,7 @@ fn find_accumulation_point(
         current = largest_child;
     }
 
-    None // Exceeded max depth
+    Ok(None) // Exceeded max depth
 }
 
 impl IndexedAnalysisState {
@@ -285,6 +290,10 @@ impl IndexedAnalysisState {
     /// 4. Top-50 object selection by retained size
     /// 5. Accumulation point detection for individual suspects
     pub fn from_parse_result(result: ParseResult) -> anyhow::Result<Self> {
+        Self::from_parse_result_cancellable(result,&||false)
+    }
+    fn from_parse_result_cancellable(result:ParseResult,cancelled:&(impl Fn()->bool+Sync))->anyhow::Result<Self> {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         let ParseResult {
             node_store,
             edge_store,
@@ -305,7 +314,7 @@ impl IndexedAnalysisState {
         // 1. Compute dominator tree
         let dominator = {
             let _timer = super::stage_timer::StageTimer::start("analysis.dominators_total");
-            compute_dominators(&node_store, &edge_store, &gc_root_indices)
+            compute_dominators_cancellable(&node_store, &edge_store, &gc_root_indices,cancelled)?
         };
 
         // Compute reachable heap size by subtracting unreachable node sizes
@@ -339,6 +348,7 @@ impl IndexedAnalysisState {
         let mut top_heap: BinaryHeap<ObjectReport> = BinaryHeap::with_capacity(51);
 
         for i in 0..node_store.len() {
+            if i%4096==0 {anyhow::ensure!(!cancelled(),"Analysis cancelled");}
             let node = node_store.get_by_index(i as u32);
             let shallow = node.shallow_size as u64;
             let retained = dominator.retained_sizes[i];
@@ -399,13 +409,13 @@ impl IndexedAnalysisState {
 
         drop(selection_timer);
         let histogram_timer = super::stage_timer::StageTimer::start("analysis.retained_histogram");
-        let groups = super::name_groups::NameGroups::new(&node_store);
-        let class_histogram = aggregate_dense_histogram(&IndexedClassHistogramTree {
+        let groups = super::name_groups::NameGroups::cancellable(&node_store,&mut ||cancelled())?;
+        let class_histogram = aggregate_dense_histogram_cancellable(&IndexedClassHistogramTree {
             node_store: &node_store,
             dominator: &dominator,
             total_heap_size: summary.total_heap_size,
             groups: &groups,
-        }, &groups.names);
+        }, &groups.names,cancelled)?;
         drop(groups);
         drop(histogram_timer);
         let _suspects_timer = super::stage_timer::StageTimer::start("analysis.suspects_and_reports");
@@ -422,11 +432,12 @@ impl IndexedAnalysisState {
                 node_store: &node_store,
                 dominator: &dominator,
             };
-            let classloader_detections = detect_classloader_suspects(
+            let classloader_detections = detect_classloader_suspects_cancellable(
                 &classloader_tree,
                 &classloader_ids,
                 reachable_heap_size,
-            );
+                cancelled,
+            )?;
             let classloader_suspect_nodes: std::collections::HashSet<u32> =
                 classloader_detections
                     .iter()
@@ -445,6 +456,7 @@ impl IndexedAnalysisState {
 
             // Phase 2: Class-level suspects (>10% retained, multiple instances)
             for entry in &class_histogram {
+                anyhow::ensure!(!cancelled(),"Analysis cancelled");
                 let raw_percentage =
                     (entry.retained_size as f64 / reachable_heap_size as f64) * 100.0;
                 // Keep the established API guard for backend-specific unreachable
@@ -470,17 +482,7 @@ impl IndexedAnalysisState {
 
             // Phase 3: Individual suspects (>10% retained), excluding objects
             // already explained by a classloader suspect.
-            let mut candidates: Vec<(u64, u32)> = leak_heap
-                .into_iter()
-                .map(|r| r.0)
-                .filter(|&(_, idx)| {
-                    !is_covered_by_classloader(
-                        &classloader_tree,
-                        idx,
-                        &classloader_suspect_nodes,
-                    )
-                })
-                .collect();
+            let mut candidates=Vec::new();for entry in leak_heap {let (retained,idx)=entry.0;if !covered_cancellable(&classloader_tree,idx,&classloader_suspect_nodes,cancelled)? {candidates.push((retained,idx));}}
             candidates.sort_by(|a, b| b.0.cmp(&a.0));
 
             for &(retained, idx) in &candidates {
@@ -502,7 +504,7 @@ impl IndexedAnalysisState {
                     continue;
                 }
                 let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
-                let accum = find_accumulation_point(idx, &dominator, &node_store);
+                let accum = find_accumulation_point_cancellable(idx, &dominator, &node_store,cancelled)?;
                 leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
                     object_id: node.id,
@@ -536,7 +538,7 @@ impl IndexedAnalysisState {
                     class_name
                 };
                 let percentage = (retained as f64 / reachable_heap_size as f64) * 100.0;
-                let accum = find_accumulation_point(idx, &dominator, &node_store);
+                let accum = find_accumulation_point_cancellable(idx, &dominator, &node_store,cancelled)?;
                 object_leak_suspects.push(LeakSuspect {
                     class_name: display_name.clone(),
                     object_id: node.id,
@@ -590,7 +592,7 @@ impl IndexedAnalysisState {
         // 4. Finalize top-50 objects
         let top_objects: Vec<ObjectReport> = top_heap.into_sorted_vec();
 
-        Ok(Self {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");Ok(Self {
             object_bodies: None,
             storage_report: None,
             node_store,
@@ -610,6 +612,9 @@ impl IndexedAnalysisState {
 }
 
 impl HeapAnalysis for IndexedAnalysisState {
+    fn investigate_metadata(&self, request: &crate::investigation::Request, budget: &mut crate::investigation::Budget) -> anyhow::Result<serde_json::Value> {
+        investigation::read(self, request, budget)
+    }
     fn storage_report(&self) -> Option<&super::storage::StorageReport> { self.storage_report.as_ref() }
     fn cached_waste_analysis(&self) -> Option<&WasteAnalysis> { self.waste.get() }
     fn get_children(&self, object_id: u64) -> Option<Vec<ObjectReport>> {
@@ -1055,6 +1060,11 @@ impl IndexedAnalysisState {
     ///
     /// This is the two-phase counterpart of `from_parse_result`.
     pub fn from_phases(phase1: Phase1Result, phase2: Phase2Result) -> anyhow::Result<Self> {
+        Self::from_phases_cancellable(phase1,phase2,&||false)
+    }
+    /// All heavy graph/report walks observe cancellation; no partial state is published.
+    pub fn from_phases_cancellable(phase1:Phase1Result,phase2:Phase2Result,cancelled:&(impl Fn()->bool+Sync))->anyhow::Result<Self> {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         // Phase 2 already owns these candidates. Do not retain a second copy
         // (or the shallow histogram) through dominator computation.
         drop(phase1.waste_raw);
@@ -1070,7 +1080,7 @@ impl IndexedAnalysisState {
             summary: phase1.summary,
             waste_raw: phase2.waste_raw,
         };
-        let mut state=Self::from_parse_result(parse_result)?;state.object_bodies=object_bodies;Ok(state)
+        let mut state=Self::from_parse_result_cancellable(parse_result,cancelled)?;state.object_bodies=object_bodies;Ok(state)
     }
 }
 
@@ -1422,6 +1432,13 @@ mod tests {
         assert_eq!(summary.total_heap_size, 448);
         assert_eq!(summary.total_instances, 2);
         assert_eq!(summary.total_arrays, 1);
+    }
+    #[test]
+    fn cancellation_during_derived_analysis_never_returns_partial_results(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let polls=AtomicUsize::new(0);let state=IndexedAnalysisState::from_parse_result_cancellable(build_test_parse_result(),&||{polls.fetch_add(1,Ordering::Relaxed);false}).unwrap();let total=polls.load(Ordering::Relaxed);assert!(total>10);
+        assert_eq!(state.get_summary().total_heap_size,IndexedAnalysisState::from_parse_result(build_test_parse_result()).unwrap().get_summary().total_heap_size);
+        for stop in [1,total/4,total/2,total-1,total]{let polls=AtomicUsize::new(0);assert!(IndexedAnalysisState::from_parse_result_cancellable(build_test_parse_result(),&||polls.fetch_add(1,Ordering::Relaxed)+1>=stop).is_err(),"checkpoint {stop}/{total}");}
     }
 
     #[test]

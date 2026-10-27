@@ -21,22 +21,32 @@ public final class HttpLlmTransport implements LlmTransport {
     public HttpLlmTransport() { this(Duration.ofSeconds(90)); }
     HttpLlmTransport(Duration timeout) { this.timeout=timeout; }
     @Override public synchronized Call start(AiConfiguration config,List<Message> messages,Listener listener) {
+        return begin(config,messages,false,listener);
+    }
+    @Override public synchronized Call startChat(AiConfiguration config,List<Message> messages,boolean tools,Listener listener){
+        return begin(config,messages,tools&&ChatTools.supported(config),listener);
+    }
+    private synchronized Call begin(AiConfiguration config,List<Message> messages,boolean tools,Listener listener){
         if(closed) throw new IllegalStateException("AI transport closed");
         if(client==null) client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).followRedirects(HttpClient.Redirect.NEVER).build();
-        Job job=new Job(config,messages,listener,client); jobs.add(job);
+        Job job=new Job(config,messages,listener,client,tools); jobs.add(job);
         job.deadline=timer.schedule(() -> job.fail("AI request timed out. Stop or retry with a smaller question."),timeout.toMillis(),TimeUnit.MILLISECONDS);
         workers.execute(job); return job;
     }
     static JsonObject body(AiConfiguration config,List<Message> messages) {
+        return body(config,messages,false);
+    }
+    static JsonObject body(AiConfiguration config,List<Message> messages,boolean tools) {
         JsonObject body=new JsonObject(); body.addProperty("model",config.settings().model()); body.addProperty("stream",true);
         boolean anthropic=AiProviders.get(config.settings().provider()).apiFormat().equals("anthropic");
         JsonArray conversation=new JsonArray(); StringBuilder system=new StringBuilder();
         for(Message message:messages) {
             if(anthropic && message.role().equals("system")) {system.append(message.content()).append('\n');continue;}
-            JsonObject row=new JsonObject();row.addProperty("role",message.role());row.addProperty("content",message.content());conversation.add(row);
+            conversation.add(ChatTools.message(message,anthropic));
         }
         body.add("messages",conversation);
         if(anthropic) {body.addProperty("system",system.toString());body.addProperty("max_tokens",4096);}
+        if(tools)ChatTools.tools(body,anthropic);
         return body;
     }
     static String httpError(int code) {
@@ -51,14 +61,15 @@ public final class HttpLlmTransport implements LlmTransport {
     private final class Job implements Runnable,Call {
         final AiConfiguration config; final List<Message> messages; final Listener listener; final HttpClient http;
         final AtomicBoolean ended=new AtomicBoolean();
+        final boolean tools;final ChatTools collector=new ChatTools();
         volatile CompletableFuture<HttpResponse<InputStream>> request;
         volatile InputStream stream;
         volatile ScheduledFuture<?> deadline;
-        Job(AiConfiguration c,List<Message> m,Listener l,HttpClient h) {config=c;messages=m;listener=l;http=h;}
+        Job(AiConfiguration c,List<Message> m,Listener l,HttpClient h,boolean t) {config=c;messages=m;listener=l;http=h;tools=t;}
         public void run() {
             try {
                 if(ended.get()) return;
-                String payload=body(config,messages).toString();
+                String payload=body(config,messages,tools).toString();
                 if(payload.getBytes(StandardCharsets.UTF_8).length>262144) {fail("Conversation is too large. Clear chat and ask a shorter question.");return;}
                 AiProviders.Provider provider=AiProviders.get(config.settings().provider());
                 HttpRequest.Builder builder=HttpRequest.newBuilder(config.settings().endpoint()).timeout(timeout)
@@ -75,6 +86,7 @@ public final class HttpLlmTransport implements LlmTransport {
                 boolean finished=readSse(new BufferedReader(new InputStreamReader(stream,StandardCharsets.UTF_8)),provider.apiFormat(),filter::accept);
                 if(finished && !ended.get()) {
                     filter.finish();
+                    var calls=collector.finish();if(!tools&&!calls.isEmpty()&&messages.stream().noneMatch(m->m.toolCalls()!=null&&!m.toolCalls().isEmpty()))throw new IOException("Unoffered tools");listener.tools(calls);
                     if(ended.compareAndSet(false,true)) {cleanup();listener.done();}
                 } else fail("AI stream ended unexpectedly. Partial text is not saved to conversation history.");
             } catch(Exception failure) {
@@ -100,9 +112,14 @@ public final class HttpLlmTransport implements LlmTransport {
         private boolean event(String value,String format,Consumer<String> chunk) throws IOException {
             if(value.equals("[DONE]")) return true;
             JsonObject json=JsonParser.parseString(value).getAsJsonObject();
+            collector.consume(json,format.equals("anthropic"));
             if(json.has("error") || (json.has("type") && json.get("type").getAsString().equals("error"))) throw new IOException("Provider stream error");
             if(format.equals("anthropic")) {
                 String type=json.has("type") ? json.get("type").getAsString() : "";
+                if(json.has("delta") && json.get("delta").isJsonObject()){
+                    JsonElement reason=json.getAsJsonObject("delta").get("stop_reason");
+                    if(reason!=null && !reason.isJsonNull() && java.util.Set.of("max_tokens","refusal").contains(reason.getAsString()))throw new IOException("Incomplete provider output");
+                }
                 if(type.equals("message_stop")) return true;
                 if(type.equals("content_block_delta") && json.has("delta")) emitText(json.getAsJsonObject("delta").get("text"),chunk);
             } else if(json.has("choices")) {
@@ -110,7 +127,10 @@ public final class HttpLlmTransport implements LlmTransport {
                 if(!choices.isEmpty()) {
                     JsonObject choice=choices.get(0).getAsJsonObject();
                     if(choice.has("delta")) emitText(choice.getAsJsonObject("delta").get("content"),chunk);
-                    if(choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull()) return true;
+                    if(choice.has("finish_reason") && !choice.get("finish_reason").isJsonNull()) {
+                        if(java.util.Set.of("length","content_filter").contains(choice.get("finish_reason").getAsString()))throw new IllegalArgumentException("Incomplete provider output");
+                        return true;
+                    }
                 }
             }
             return false;

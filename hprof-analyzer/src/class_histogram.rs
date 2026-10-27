@@ -133,6 +133,9 @@ pub(crate) fn aggregate_dense_histogram<T: ClassHistogramTree<Class = u32>>(
 ) -> Vec<ClassHistogramEntry> {
     aggregate_with(tree, DenseAccumulator { names, totals: vec![ClassTotals::default(); names.len()], active: vec![0; names.len()] })
 }
+pub(crate) fn aggregate_dense_histogram_cancellable<T:ClassHistogramTree<Class=u32>>(tree:&T,names:&[&Arc<str>],cancelled:&impl Fn()->bool)->anyhow::Result<Vec<ClassHistogramEntry>> {
+    aggregate_with_cancellable(tree,DenseAccumulator{names,totals:vec![ClassTotals::default();names.len()],active:vec![0;names.len()]},cancelled)
+}
 
 struct TraversalFrame<N, K> {
     node: N,
@@ -151,7 +154,11 @@ where
     aggregate_with(tree, NonOverlappingClassAccumulator::default())
 }
 
-fn aggregate_with<T: ClassHistogramTree, A: Accumulator<T::Class>>(tree: &T, mut accumulator: A) -> Vec<ClassHistogramEntry> {
+fn aggregate_with<T: ClassHistogramTree, A: Accumulator<T::Class>>(tree: &T, accumulator: A) -> Vec<ClassHistogramEntry> {
+    aggregate_with_cancellable(tree,accumulator,&||false).expect("uncancelled histogram")
+}
+fn aggregate_with_cancellable<T:ClassHistogramTree,A:Accumulator<T::Class>>(tree:&T,mut accumulator:A,cancelled:&impl Fn()->bool)->anyhow::Result<Vec<ClassHistogramEntry>> {
+    anyhow::ensure!(!cancelled(),"Analysis cancelled");
     let root = tree.root();
     let root_class = tree.sample(root).map(|sample| accumulator.enter(sample));
     let mut stack = vec![TraversalFrame {
@@ -161,6 +168,7 @@ fn aggregate_with<T: ClassHistogramTree, A: Accumulator<T::Class>>(tree: &T, mut
     }];
 
     while let Some(frame) = stack.last_mut() {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         let children = tree.children(frame.node);
         if frame.next_child < children.len() {
             let child = children[frame.next_child];
@@ -179,7 +187,7 @@ fn aggregate_with<T: ClassHistogramTree, A: Accumulator<T::Class>>(tree: &T, mut
         }
     }
 
-    accumulator.finish()
+    anyhow::ensure!(!cancelled(),"Analysis cancelled");let result=accumulator.finish();anyhow::ensure!(!cancelled(),"Analysis cancelled");Ok(result)
 }
 
 #[cfg(test)]

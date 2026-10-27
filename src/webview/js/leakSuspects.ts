@@ -4,6 +4,12 @@ export function getLeakSuspectsJs(): string {
         // Self-contained: owns explain-leak streaming buffers, rendering, pagination, threshold filtering.
 
         var _explainLeakBuffers = {};
+        function leakEvidenceKey(className, objectId) {
+            var text = JSON.stringify([String(className), objectId === undefined ? '' : String(objectId)]);
+            var key = ''; for(var i=0;i<text.length;i++)key += text.charCodeAt(i).toString(16).padStart(4,'0');
+            return key;
+        }
+        window.leakEvidenceKey = leakEvidenceKey;
         var _leakPage = 0;
         var LEAK_PAGE_SIZE = 10;
         var _leakSuspectsData = [];
@@ -91,7 +97,7 @@ export function getLeakSuspectsJs(): string {
                 var inspectLink = s.object_id
                     ? ' <button class="why-alive-btn inspect-obj-link" data-object-id="' + s.object_id + '" data-class-name="' + escapeHtml(s.class_name) + '" data-shallow="' + (s.shallow_size || 0) + '" data-retained="' + s.retained_size + '">Inspect</button>'
                     : '';
-                var sanitizedId = (s.class_name + '_' + s.object_id).replace(/[^a-zA-Z0-9]/g, '_');
+                var sanitizedId = leakEvidenceKey(s.class_name,s.object_id);
                 var explainLink = ' | <a class="suspect-explain-link" data-class="' + escapeHtml(s.class_name) +
                     '" data-object-id="' + (s.object_id || '') +
                     '" data-retained="' + s.retained_size +
@@ -190,7 +196,7 @@ export function getLeakSuspectsJs(): string {
                     : '';
                 var cachedDep = depInfoCache[s.class_name];
                 var depBadge = cachedDep ? makeBadgeHtml(cachedDep.tier, cachedDep.dependency) : '';
-                var sanitizedId = s.class_name.replace(/[^a-zA-Z0-9]/g, '_');
+                var sanitizedId = leakEvidenceKey(s.class_name);
                 var explainLink = ' | <a class="suspect-explain-link" data-class="' + escapeHtml(s.class_name) +
                     '" data-retained="' + s.retained_size +
                     '" data-pct="' + s.retained_percentage +
@@ -275,7 +281,7 @@ export function getLeakSuspectsJs(): string {
                         description: link.dataset.desc
                     };
                     if (link.dataset.objectId) {
-                        msgPayload.objectId = parseInt(link.dataset.objectId, 10);
+                        msgPayload.objectId = link.dataset.objectId;
                     }
                     vscode.postMessage(msgPayload);
                 });
@@ -315,16 +321,16 @@ export function getLeakSuspectsJs(): string {
         });
 
         onMessage('explainLeakChunk', function(msg) {
-            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
+            var classSanitized = leakEvidenceKey(msg.className);
             // For object-level suspects, the explain area ID includes the objectId
-            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var objSanitized = msg.objectId ? leakEvidenceKey(msg.className,msg.objectId) : classSanitized;
             var bufferKey = msg.objectId ? objSanitized : classSanitized;
             if (!_explainLeakBuffers[bufferKey]) _explainLeakBuffers[bufferKey] = '';
             _explainLeakBuffers[bufferKey] += msg.text;
             // Try object-view first when objectId is present, then class-view
             var area = msg.objectId
-                ? (document.getElementById('explain-obj-' + objSanitized) || document.getElementById('explain-' + classSanitized))
-                : (document.getElementById('explain-' + classSanitized) || document.getElementById('explain-obj-' + objSanitized));
+                ? document.getElementById('explain-obj-' + objSanitized)
+                : document.getElementById('explain-' + classSanitized);
             if (area) {
                 area.textContent = _explainLeakBuffers[bufferKey];
                 area.scrollTop = area.scrollHeight;
@@ -350,53 +356,61 @@ export function getLeakSuspectsJs(): string {
         }
 
         onMessage('explainLeakDone', function(msg) {
-            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
-            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var classSanitized = leakEvidenceKey(msg.className);
+            var objSanitized = msg.objectId ? leakEvidenceKey(msg.className,msg.objectId) : classSanitized;
             var bufferKey = msg.objectId ? objSanitized : classSanitized;
             // Try class-view explain area
-            var classArea = document.getElementById('explain-' + classSanitized);
+            var classArea = !msg.objectId && document.getElementById('explain-' + classSanitized);
             if (classArea) {
                 classArea.classList.remove('streaming');
                 classArea.classList.add('rendered');
-                classArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                if (msg.safeEvidenceAnswer) {
+                    classArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                    attachInvestigationEvidence(classArea, msg.evidence);
+                } else { classArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || ''); }
                 classArea.scrollTop = 0;
                 addExplainCloseBtn(classArea);
             }
             // Try object-view explain area
-            var objArea = document.getElementById('explain-obj-' + objSanitized);
+            var objArea = msg.objectId && document.getElementById('explain-obj-' + objSanitized);
             if (objArea) {
                 objArea.classList.remove('streaming');
                 objArea.classList.add('rendered');
-                objArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                if (msg.safeEvidenceAnswer) {
+                    objArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || '');
+                    attachInvestigationEvidence(objArea, msg.evidence);
+                } else { objArea.innerHTML = renderMarkdown(_explainLeakBuffers[bufferKey] || ''); }
                 objArea.scrollTop = 0;
                 addExplainCloseBtn(objArea);
             }
             delete _explainLeakBuffers[bufferKey];
-            document.querySelectorAll('.suspect-explain-link[data-class="' + msg.className + '"]').forEach(function(link) {
+            document.querySelectorAll('.suspect-explain-link').forEach(function(link) {
+                if (link.dataset.class !== msg.className) return;
                 link.textContent = 'Explain';
             });
         });
 
         onMessage('explainLeakError', function(msg) {
-            var classSanitized = msg.className.replace(/[^a-zA-Z0-9]/g, '_');
-            var objSanitized = msg.objectId ? (msg.className + '_' + msg.objectId).replace(/[^a-zA-Z0-9]/g, '_') : classSanitized;
+            var classSanitized = leakEvidenceKey(msg.className);
+            var objSanitized = msg.objectId ? leakEvidenceKey(msg.className,msg.objectId) : classSanitized;
             var bufferKey = msg.objectId ? objSanitized : classSanitized;
             delete _explainLeakBuffers[bufferKey];
             // Try class-view explain area
-            var classArea = document.getElementById('explain-' + classSanitized);
+            var classArea = !msg.objectId && document.getElementById('explain-' + classSanitized);
             if (classArea) {
                 classArea.classList.remove('streaming');
                 classArea.classList.add('error', 'visible');
                 classArea.textContent = msg.message || 'An error occurred';
             }
             // Try object-view explain area
-            var objArea = document.getElementById('explain-obj-' + objSanitized);
+            var objArea = msg.objectId && document.getElementById('explain-obj-' + objSanitized);
             if (objArea) {
                 objArea.classList.remove('streaming');
                 objArea.classList.add('error', 'visible');
                 objArea.textContent = msg.message || 'An error occurred';
             }
-            document.querySelectorAll('.suspect-explain-link[data-class="' + msg.className + '"]').forEach(function(link) {
+            document.querySelectorAll('.suspect-explain-link').forEach(function(link) {
+                if(link.dataset.class !== msg.className)return;
                 link.textContent = 'Explain';
             });
         });

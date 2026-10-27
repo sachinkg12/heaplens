@@ -7,6 +7,9 @@ import { markWebviewReadyAndFlush } from '../webviewMessageDelivery';
 export const executeQueryHandler: MessageHandler = {
     command: 'executeQuery',
     async handle(message, ctx) {
+        const inline=typeof message.requestId==='string' && /^chat-query-[0-9]+$/.test(message.requestId);
+        const analysis=ctx.state.analysisData,analysisId=ctx.state.analysisId;
+        const current=()=>!inline || ctx.state.client===ctx.client && ctx.state.analysisData===analysis && ctx.state.analysisId===analysisId;
         trackEvent('feature/queryExecuted', { keyword: extractQueryKeyword(message.query || '') });
         ctx.outputChannel.appendLine(`[HeapLens] executeQuery: ${message.query}`);
         try {
@@ -17,17 +20,21 @@ export const executeQueryHandler: MessageHandler = {
             if (message.page) { rpcParams.page = message.page; }
             if (message.pageSize) { rpcParams.page_size = message.pageSize; }
             const queryResult = await ctx.client.sendRequest('execute_query', rpcParams);
+            if(!current())return;
             ctx.webviewPanel.webview.postMessage({
-                command: 'queryResult',
+                command: inline?'chatQueryResult':'queryResult',
                 result: queryResult,
-                query: message.query
+                query: message.query,
+                ...(typeof message.requestId==='string'?{requestId:message.requestId}:{})
             });
         } catch (error: any) {
+            if(!current())return;
             ctx.outputChannel.appendLine(`[HeapLens] executeQuery error: ${error.message}`);
             ctx.webviewPanel.webview.postMessage({
-                command: 'queryError',
+                command: inline?'chatQueryError':'queryError',
                 error: error.message || String(error),
-                query: message.query
+                query: message.query,
+                ...(typeof message.requestId==='string'?{requestId:message.requestId}:{})
             });
         }
     }

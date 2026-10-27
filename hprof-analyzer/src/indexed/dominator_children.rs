@@ -16,13 +16,18 @@ impl DominatorChildren {
     }
 
     pub(crate) fn from_parents(parents: &[u32]) -> Self {
+        Self::cancellable(parents,&||false).expect("uncancelled children")
+    }
+    pub(crate) fn cancellable(parents:&[u32],cancelled:&impl Fn()->bool)->anyhow::Result<Self> {
         let mut offsets = vec![0u32; parents.len() + 1];
-        for &parent in parents {
+        for (i,&parent) in parents.iter().enumerate() {
+            if i%4096==0 {anyhow::ensure!(!cancelled(),"Analysis cancelled");}
             if parent != u32::MAX {
                 offsets[parent as usize + 1] += 1;
             }
         }
         for i in 1..offsets.len() {
+            if i%4096==0 {anyhow::ensure!(!cancelled(),"Analysis cancelled");}
             offsets[i] += offsets[i - 1];
         }
         let count = *offsets.last().unwrap();
@@ -30,6 +35,7 @@ impl DominatorChildren {
         // Use the prefix ends as insertion cursors, then restore them in place.
         // Reverse insertion leaves each parent's children in ascending node order.
         for (node, &parent) in parents.iter().enumerate().rev() {
+            if node%4096==0 {anyhow::ensure!(!cancelled(),"Analysis cancelled");}
             if parent != u32::MAX {
                 let cursor = &mut offsets[parent as usize + 1];
                 *cursor -= 1;
@@ -38,7 +44,7 @@ impl DominatorChildren {
         }
         offsets.copy_within(1.., 0);
         *offsets.last_mut().unwrap() = count;
-        Self { offsets, targets }
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");Ok(Self { offsets, targets })
     }
 }
 

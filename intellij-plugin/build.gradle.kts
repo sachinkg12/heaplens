@@ -126,7 +126,7 @@ val generateWebview by tasks.registering(Exec::class) {
 val generateAiResources by tasks.registering(Exec::class) {
     workingDir(projectDir)
     commandLine("node", "scripts/build-ai-resources.cjs")
-    inputs.files("scripts/build-ai-resources.cjs", "../src/llmClient.ts", "../src/promptTemplates.ts")
+    inputs.files("scripts/build-ai-resources.cjs", "../src/llmClient.ts", "../src/promptTemplates.ts", "../src/diagnosisPolicy.ts", "../src/aiInvestigation.ts", "../src/aiToolProtocol.ts")
     outputs.dir(layout.buildDirectory.dir("generated/ai"))
 }
 sourceSets.main {

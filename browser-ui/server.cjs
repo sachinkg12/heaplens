@@ -73,6 +73,7 @@ class BrowserHost {
                 const session = this.sessions.get(url.searchParams.get('session')), after = Number(url.searchParams.get('after'));
                 if (!session || session.view !== req.headers['x-heaplens-view'] || !Number.isSafeInteger(after) || after < 0 || after > session.seq)
                     return this.reply(res, 400, { error: 'Invalid event cursor or retired page' });
+                session.touchView(req.headers['x-heaplens-view']);
                 while (session.events.length && session.events[0].seq <= after)
                     session.eventBytes -= session.events.shift().bytes;
                 const reset = after > 0 && session.events.length && after < session.events[0].seq - 1;
@@ -88,6 +89,7 @@ class BrowserHost {
                     session.attach(req.headers['x-heaplens-view']);
                 else if (session.view !== req.headers['x-heaplens-view'])
                     return this.reply(res, 403, { error: 'Retired page' });
+                session.touchView(req.headers['x-heaplens-view']);
                 const generation = session.generation, view = session.view;
                 // Acknowledge before running a side effect: shutdown must not
                 // destroy its own HTTP response or strand the launcher's client.

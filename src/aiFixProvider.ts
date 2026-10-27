@@ -80,7 +80,7 @@ export async function executeAiFix(
 
     // 4. Check for ALREADY_FIXED marker
     if (response.trim().includes('<<<ALREADY_FIXED>>>')) {
-        return { status: 'already-fixed', message: `${className} appears to already handle this leak correctly.` };
+        return { status: 'already-fixed', message: `AI proposed no justified change for ${className}. This is not proof that the code is leak-free.` };
     }
 
     // 5. Strip markdown fences

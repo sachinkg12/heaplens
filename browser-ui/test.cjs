@@ -48,6 +48,29 @@ async function setup(t, { legacy = false, id = 512n, count = 9, quickScan = fals
     return { host, sessions, dir, view, request, command, ready };
 }
 test('CLI host arguments are explicit, bounded and loopback only', () => { assert.throws(() => options(['--server', 'x', '--dump', 'x', '--port', '65536'])); assert.throws(() => options(['--server', 'x', '--dump', 'x', '--host', '0.0.0.0'])); assert.equal(options(['--server', 'x', '--dump', 'x', '--no-browser']).browser, false); });
+test('AI query formats execute against the real engine only on explicit action; results stay local and dump-scoped',async(t)=>{
+    const {sessions:[a,b],ready,command}=await setup(t);await ready(a);await ready(b);
+    const {chatQuerySegments}=require('../out/webview/js/chatQueries.js');
+    const query='SELECT object_id, class_name FROM instances LIMIT 5';
+    const variants=['```heapql\n'+query+'\n```','```sql\n'+query+';\n```','```\n'+query+'\n```',query,'Try `'+query+'`.'];
+    const received=[];let queries=0;const original=a.engine.bind(a);
+    a.engine=async(method,params)=>{const result=await original(method,params);if(method==='execute_query'){queries++;result.local_query_canary='LOCAL_ONLY_QUERY_CANARY';}return result;};
+    const mock=http.createServer(async(req,res)=>{let text='';for await(const part of req)text+=part;received.push(JSON.parse(text));const answer=variants[received.length-1]||'The earlier query was a suggestion; its results remain local.';
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:answer}}]})+'\n\ndata: [DONE]\n\n');});
+    await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>new Promise(r=>mock.close(r)));
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'synthetic',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    for(const [i,reply] of variants.entries()){
+        await command(a,{command:'aiSend',requestId:'format-'+i,text:'Suggest a query'});
+        if(i===0){await until(()=>a.pendingConsent);await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});}
+        await until(()=>!a.activeAi);assert.ok(a.events.some(e=>e.message.command==='aiDone'&&e.message.requestId==='format-'+i));assert.equal(queries,i);
+        const suggested=chatQuerySegments(reply).find(s=>s.query)?.query;assert.equal(suggested,query);
+        await command(a,{command:'aiRunQuery',requestId:'click-'+i,query:suggested});await until(()=>a.events.some(e=>e.message.requestId==='click-'+i));
+        const result=a.events.find(e=>e.message.requestId==='click-'+i).message;assert.equal(result.command,'aiQueryResult');assert.equal(result.result.rows.length,1);assert.equal(String(result.result.rows[0][0]),'512');
+        assert.equal(queries,i+1);assert.ok(!b.events.some(e=>e.message.requestId==='click-'+i));
+    }
+    await command(a,{command:'aiSend',requestId:'follow-query',text:'What is the next check?'});await until(()=>!a.activeAi);
+    assert.doesNotMatch(JSON.stringify(received),/LOCAL_ONLY_QUERY_CANARY/);assert.equal(queries,variants.length);
+});
 test('explicit Waste reads update only their dump and nullable comparison metadata', async t=>{
     const {sessions:[a,b],ready,command}=await setup(t);
     await ready(a);await ready(b);
@@ -226,13 +249,23 @@ test('fresh page attachment and AI Clear purge one-shot sensitive events, histor
     assert.ok(host.http.listening);
 });
 test('AI context drops raw values and local paths without pretending to anonymize class names', () => { const raw = { summary: { total_heap_size: 123 }, class_histogram: [{ class_name: 'SensitiveName', instance_count: 2, primitive_value: 'SECRET' }], waste_analysis: { total_wasted_bytes: 5, duplicate_strings: [{ preview: 'RAW-SECRET' }] }, path: '/private/source' }; const text = JSON.stringify(AI.context(raw)); assert.match(text, /SensitiveName/); assert.doesNotMatch(text, /SECRET|private/); assert.doesNotMatch(JSON.stringify(AI.objectMetadata([{ name: 'x', field_type: 'int', primitive_value: 'SECRET' }])), /SECRET/); });
+test('AI suspect scope distinguishes groups, exact objects and unavailable identities', () => {
+    const ids = [0, '0', 42, '18446744073709551615', -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '18446744073709551616', 'invalid'];
+    const rows = AI.context({ leak_suspects: ids.map(object_id => ({ object_id })) }).suspects;
+    assert.deepEqual(rows.map(row => row.scope), ['class_group', 'class_group', 'object', 'object', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown']);
+});
 test('AI endpoint validation fails closed for credentials, query/fragment, remote HTTP and prototype provider', async (t) => { const { host } = await setup(t); for (const baseUrl of ['http://example.com', 'https://user:secret@example.com', 'https://example.com?key=secret', 'https://example.com/#secret', 'file:///tmp'])
     assert.throws(() => AI.configuration({ provider: 'openai', key: 'test', baseUrl }, host.providers)); assert.throws(() => AI.configuration({ provider: '__proto__', key: 'test' }, host.providers)); });
-test('real local HTTP bodies for all ten providers honor Cancel, session consent, filtering and key masking', async (t) => {
+test('all ten providers accept fenced investigation JSON with consent, Cancel, filtering and key masking', async (t) => {
     const { host, sessions: [a], ready, command } = await setup(t);
     const received = [];
     const mock = http.createServer(async (req, res) => { const chunks = []; for await (const x of req)
-        chunks.push(x); received.push({ url: req.url, headers: req.headers, body: JSON.parse(Buffer.concat(chunks)) }); res.writeHead(200, { 'Content-Type': 'text/event-stream' }); const anthropic = req.url.endsWith('/messages'); res.end(anthropic ? 'data: {"type":"content_block_delta","delta":{"text":"heap answer"}}\n\ndata: {"type":"message_stop"}\n\n' : 'data: {"choices":[{"delta":{"content":"heap answer"}}]}\n\ndata: [DONE]\n\n'); });
+        chunks.push(x); const body=JSON.parse(Buffer.concat(chunks));received.push({ url: req.url, headers: req.headers, body });
+        const context=body.messages.find(m=>m.content.startsWith('Current bounded metadata'));
+        const evidence=JSON.parse(context.content.slice(context.content.indexOf(': ')+2));
+        const answer='```json\n'+JSON.stringify({action:'answer',facts:[{evidence_id:evidence.id,field:'summary.total_heap_size'}],hypotheses:[],next_checks:[]})+'\n```';
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' }); const anthropic = req.url.endsWith('/messages');
+        res.end('data: '+JSON.stringify(anthropic?{type:'content_block_delta',delta:{text:answer}}:{choices:[{delta:{content:answer}}]})+'\n\ndata: '+(anthropic?'{"type":"message_stop"}':'[DONE]')+'\n\n'); });
     await new Promise(resolve => mock.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise(resolve => mock.close(resolve)));
     await ready(a);
@@ -254,6 +287,8 @@ test('real local HTTP bodies for all ten providers honor Cancel, session consent
         await command(a, { command: 'browserConsentDecision', id: a.pendingConsent.id, decision: 'send' });
         await until(() => !a.activeAi);
         assert.equal(received.length, before + 1);
+        const completed=a.events.findLast(e=>e.message.requestId==='send-'+provider && e.message.command==='aiDone');
+        assert.equal(completed.message.safeEvidenceAnswer,true);assert.equal(completed.message.modelCalls,1);
         assert.doesNotMatch(JSON.stringify(received.at(-1).body), /RAW-SENTINEL|TEST-KEY-SENTINEL/);
         assert.ok(received.at(-1).headers.authorization || received.at(-1).headers['x-api-key']);
         await command(a, { command: 'aiSend', requestId: 'again-' + provider, text: 'A second question' });
@@ -261,6 +296,114 @@ test('real local HTTP bodies for all ten providers honor Cancel, session consent
         assert.equal(a.pendingConsent, null);
         assert.equal(received.length, before + 2);
         assert.ok(!JSON.stringify(a.events).includes('TEST-KEY-SENTINEL'));
+    }
+});
+test('browser ordinary reported prompts succeed without JSON or extra engine reads',async(t)=>{
+    const {sessions:[a],ready,command}=await setup(t);await ready(a);const received=[];
+    const mock=http.createServer(async(req,res)=>{let input='';for await(const chunk of req)input+=chunk;const body=JSON.parse(input);received.push(body);assert.equal(body.response_format,undefined);assert.equal(body.tools,undefined);
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:'I can help [Example]. Start with the largest retained objects; HeapQL is read-only and a snapshot alone does not prove a leak.'}}]})+'\n\ndata: [DONE]\n\n');});
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>mock.close(resolve)));
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'test',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    for(const [i,text] of ['hi','tell me about this heapdump','i want to investigate, what is taking memory, how can i fix it, what is the heapql?'].entries()){
+        await command(a,{command:'aiSend',requestId:'ordinary-'+i,text});if(i===0){await until(()=>a.pendingConsent);await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});}await until(()=>!a.activeAi);
+        const done=a.events.find(e=>e.message.command==='aiDone'&&e.message.requestId==='ordinary-'+i)?.message;assert.ok(done);assert.equal(done.modelCalls,1);assert.equal(done.reads,0);
+    }assert.equal(received.length,3);assert.ok(received[2].messages.some(m=>m.content.includes('hi')));
+});
+test('browser sends the shared scope rules and exposes only citations, never all available metadata',async(t)=>{
+    const {sessions:[a],ready,command}=await setup(t);await ready(a);const received=[];
+    const {CHAT_SCOPE_POLICY}=require('./build/diagnosisPolicy.js');
+    const replies=['Hi! I can help inspect this heap.',
+        'I can help with Java heap analysis, not unrelated biographies.',
+        'Garbage collection reclaims objects that are no longer reachable.'];
+    const mock=http.createServer(async(req,res)=>{let input='';for await(const chunk of req)input+=chunk;const body=JSON.parse(input);received.push(body);
+        assert.ok(body.messages.some(m=>m.role==='system'&&m.content.includes(CHAT_SCOPE_POLICY)));
+        const record=JSON.parse(body.messages.find(m=>m.content.startsWith('Current bounded metadata')).content.split('data): ')[1]);
+        const text=replies[received.length-1]||'The current heap total is recorded here ['+record.id+']. Again ['+record.id+'].';
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:text}}]})+'\n\ndata: [DONE]\n\n');});
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>mock.close(resolve)));
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'test',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    for(const [i,text] of ['hi','who is amitabh bachchan','what is garbage collection?','what is this heap total?'].entries()){
+        await command(a,{command:'aiSend',requestId:'scope-'+i,text});if(i===0){await until(()=>a.pendingConsent);await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});}await until(()=>!a.activeAi);
+        const done=a.events.find(e=>e.message.command==='aiDone'&&e.message.requestId==='scope-'+i)?.message;assert.ok(done);assert.equal(done.modelCalls,1);assert.equal(done.reads,0);
+        assert.equal(done.evidence.length,i<3?0:1);if(i===3)assert.equal(done.evidence[0].operation,'summary');
+    }
+    assert.equal(received.length,4);
+});
+test('browser tool loop uses the actual bounded engine, exports evidence and retires it on Clear',async(t)=>{
+    const {sessions:[a],ready,command}=await setup(t);await ready(a);
+    const received=[];const mock=http.createServer(async(req,res)=>{
+        const chunks=[];for await(const c of req)chunks.push(c);const body=JSON.parse(Buffer.concat(chunks));received.push(body);
+        const context=body.messages.findLast(m=>m.content.startsWith('Actual engine evidence'));
+        const record=context?JSON.parse(context.content.slice(context.content.indexOf(': ')+2)):null;
+        const delta=record?{content:'The bounded retaining path was found ['+record.id+']. Check the intended object lifetime before assuming a leak.'}
+            :{tool_calls:[{index:0,id:'root_call',type:'function',function:{name:'heap_read',arguments:'{"operation":"root_path","object_id":"512"}'}}]};
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta}]})+'\n\ndata: [DONE]\n\n');
+    });
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>mock.close(resolve)));
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'test',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    a.config.definition={...a.config.definition,defaultBaseUrl:a.config.url.origin,defaultModel:'test'}; // Synthetic declared-capability endpoint only.
+    await command(a,{command:'aiSend',requestId:'investigate',text:'What retains this object?'});await until(()=>a.pendingConsent);
+    assert.equal(received.length,0);await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});await until(()=>!a.activeAi);
+    const done=a.events.find(e=>e.message.command==='aiDone'&&e.message.requestId==='investigate')?.message;
+    assert.ok(done,JSON.stringify(a.events.map(e=>e.message)));assert.equal(done.modelCalls,2);assert.equal(done.reads,1);
+    const evidence=done.evidence.find(e=>e.operation==='root_path');assert.ok(evidence);
+    await command(a,{command:'openAiEvidence',id:evidence.id});let result=a.events.at(-1).message;
+    assert.equal(result.record.data.status,'found');assert.equal(result.record.data.selected.object_id,'512');
+    assert.equal(result.record.data.selected.retained_size,String(a.raw.top_objects.find(o=>String(o.object_id)==='512').retained_size));
+    assert.doesNotMatch(JSON.stringify(received),/primitive_value|ref_value|\/private\/|TEST-KEY/);
+    await command(a,{command:'aiClear'});await command(a,{command:'openAiEvidence',id:evidence.id});result=a.events.at(-1).message;
+    assert.match(result.error,/expired/);assert.equal(a.chatGrant,null);
+});
+test('browser exhaustion keeps labelled engine metadata and evidence without a fifth call or completed history',async(t)=>{
+    const {sessions:[a],ready,command}=await setup(t);await ready(a);const received=[];
+    const operations=['object','outbound','referrers','root_path'];
+    const mock=http.createServer(async(req,res)=>{
+        const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks));received.push(body);
+        const call={index:0,id:'call_'+received.length,type:'function',function:{name:'heap_read',arguments:JSON.stringify({operation:operations[received.length-1],object_id:'512'})}};
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{tool_calls:[call]}}]})+'\n\ndata: [DONE]\n\n');
+    });
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>mock.close(resolve)));
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'test',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    a.config.definition={...a.config.definition,defaultBaseUrl:a.config.url.origin,defaultModel:'test'}; // Synthetic declared-capability endpoint only.
+    await command(a,{command:'aiSend',requestId:'budget-overview',text:'tell me about this heapdump'});await until(()=>a.pendingConsent);
+    await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});await until(()=>!a.activeAi);
+    const done=a.events.find(e=>e.message.command==='aiDone'&&e.message.requestId==='budget-overview')?.message;
+    assert.ok(done,JSON.stringify(a.events.map(e=>e.message)));assert.equal(done.metadataOnly,true);assert.equal(done.modelCalls,4);assert.equal(done.reads,3);assert.equal(received.length,4);
+    assert.ok(received[3].messages.some(m=>m.role==='system'&&m.content.includes('FINAL ANSWER ONLY')));assert.deepEqual(a.history,[]);
+    assert.ok(a.events.some(e=>e.message.command==='aiChunk'&&e.message.text.includes('Metadata summary only')));
+    await command(a,{command:'openAiEvidence',id:done.evidence[0].id});assert.ok(a.events.at(-1).message.record.data.summary);
+});
+
+test('browser Stop aborts a real stalled provider connection and requires fresh metadata approval',async(t)=>{
+    const {sessions:[a],ready,command}=await setup(t);await ready(a);let started=0,closed=0;
+    const mock=http.createServer(async(req,res)=>{for await(const chunk of req){void chunk;}started++;res.on('close',()=>closed++);res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': waiting\n\n');});
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>{mock.closeAllConnections();return new Promise(resolve=>mock.close(resolve));});
+    await command(a,{command:'aiSetConfiguration',configuration:{provider:'openai',model:'test',key:'TEST-KEY',baseUrl:'http://127.0.0.1:'+mock.address().port}});
+    await command(a,{command:'aiSend',requestId:'stalled',text:'Inspect retention'});await until(()=>a.pendingConsent);
+    await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:'send'});await until(()=>started===1);
+    await command(a,{command:'aiStop'});await until(()=>closed===1);
+    assert.equal(a.chatGrant,null);assert.equal(a.investigation,null);
+    assert.ok(!a.events.some(e=>e.message.command==='aiDone'&&e.message.requestId==='stalled'));
+    await command(a,{command:'aiSend',requestId:'fresh-approval',text:'Again'});await until(()=>a.pendingConsent);
+    await command(a,{command:'browserConsentDecision',id:a.pendingConsent.id,decision:null});await until(()=>!a.activeAi);assert.equal(started,1);
+});
+test('a lost browser view lease revokes only that views AI even while another dump remains active',async(t)=>{
+    const {sessions:[a,b],ready}=await setup(t);await ready(a);await ready(b);
+    const one=new AbortController(),two=new AbortController();a.activeAi=one;b.activeAi=two;a.chatGrant='old';a.lastViewSeen=Date.now()-16000;b.lastViewSeen=Date.now();
+    a.expireAiView();b.expireAiView();assert.equal(one.signal.aborted,true);assert.equal(two.signal.aborted,false);assert.equal(a.chatGrant,null);
+    b.stopAi();
+    const client=await fs.readFile(path.join(__dirname,'client.js'),'utf8');assert.match(client,/pagehide/);assert.match(client,/keepalive:true/);
+});
+test('complete JSON is still rejected when a provider reports length, filtering or max-token termination',async(t)=>{
+    const {host}=await setup(t);let terminal;
+    const mock=http.createServer(async(req,res)=>{for await(const c of req){void c;}const anthropic=req.url.endsWith('/messages');
+        const text='{"action":"answer","facts":[],"hypotheses":[],"next_checks":["Incomplete"]}';
+        res.writeHead(200,{'Content-Type':'text/event-stream'});res.end('data: '+JSON.stringify(anthropic?{type:'content_block_delta',delta:{text}}:{choices:[{delta:{content:text}}]})
+            +'\n\ndata: '+JSON.stringify(anthropic?{type:'message_delta',delta:{stop_reason:terminal}}:{choices:[{delta:{},finish_reason:terminal}]})+'\n\ndata: '+(anthropic?'{"type":"message_stop"}':'[DONE]')+'\n\n');});
+    await new Promise(resolve=>mock.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>mock.close(resolve)));
+    for(const [provider,reason] of [['openai','length'],['openai','content_filter'],['anthropic','max_tokens']]){
+        terminal=reason;const config=AI.configuration({provider,key:'TEST',model:'test',baseUrl:'http://127.0.0.1:'+mock.address().port},host.providers);
+        await assert.rejects(AI.stream(config,[{role:'user',content:'Synthetic'}],()=>{},new AbortController().signal),/malformed/);
     }
 });
 test('AI source Review/Cancel sends nothing; explicit approval includes full source but never its absolute path', async (t) => {

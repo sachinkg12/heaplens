@@ -10,15 +10,21 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
     const originalLoad = modules._load;
     const logs: string[] = [];
     const errors: string[] = [];
+    const clipboard: string[] = [];
     const cancellations: Array<() => void> = [];
+    let aiDecision: () => Promise<string | undefined> = async () => undefined;
+    const aiDialogs: Array<{message:string;detail?:string}> = [];
+    const configListeners=new Set<(event:any)=>void>(),secretListeners=new Set<(event:any)=>void>();
     const vscode = {
+        env: { clipboard: { writeText: async (text: string) => { clipboard.push(text); } } },
         Uri: { joinPath: () => ({ fsPath: '/media' }) },
         ProgressLocation: { Notification: 15 },
-        workspace: { getConfiguration: () => ({ get: (key: string) => key === 'analysis.initialMode' ? initialMode : 0,
+        workspace: { onDidChangeConfiguration:(callback:(event:any)=>void)=>{configListeners.add(callback);return {dispose:()=>configListeners.delete(callback)};},getConfiguration: () => ({ get: (key: string) => key === 'analysis.initialMode' ? initialMode : 0,
             inspect: (key: string) => ({ globalValue: key === 'analysis.storage' ? storageMode : undefined }) }) },
         window: {
             showErrorMessage: (message: string) => { errors.push(message); },
             showWarningMessage: async () => 'Continue Waiting',
+            showInformationMessage: async (message:string,options:{detail?:string})=>{aiDialogs.push({message,detail:options.detail});return aiDecision();},
             withProgress: (_options: unknown, action: any) => action(
                 { report: () => undefined },
                 { onCancellationRequested: (callback: () => void) => {
@@ -46,6 +52,7 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
                     ...originalLoad(treePath, parent, false).treeHandlers,
                     ...originalLoad(require.resolve('../handlers/progressiveHandlers'), parent, false).progressiveHandlers,
                     ...originalLoad(require.resolve('../handlers/wasteHandlers'), parent, false).wasteHandlers
+                    , ...originalLoad(require.resolve('../handlers/aiHandlers'), parent, false).aiHandlers
                 ] };
                 case './monitorHandlers': return { monitorHandlers: [] };
                 case './monitorService': return {};
@@ -63,7 +70,7 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
     }
     if (!Provider) { throw new Error('Provider did not load'); }
     const provider = new Provider(
-        { extensionUri: {}, workspaceState: { get: () => [], update: () => undefined } } as any,
+        { extensionUri: {}, secrets:{onDidChange:(callback:(event:any)=>void)=>{secretListeners.add(callback);return {dispose:()=>secretListeners.delete(callback)};}},workspaceState: { get: () => [], update: () => undefined } } as any,
         { show: () => undefined, appendLine: (line: string) => logs.push(line) } as any,
         () => process.execPath, // An existing file; the factory determines the actual test client.
         {} as any
@@ -87,7 +94,10 @@ export function editorHarness(clientFactory: (args?: readonly string[]) => unkno
         return { value, messages, events, send: async (message: any) => { await receive(message); await settle(); }, close: () => close() };
     }
     return {
-        provider, panel, logs, errors, cancellations,
+        provider, panel, logs, errors, cancellations, clipboard,
+        aiDialogs, setAiDecision:(decision:typeof aiDecision)=>{aiDecision=decision;},
+        changeAiConfiguration:()=>configListeners.forEach(fn=>fn({affectsConfiguration:(key:string)=>key==='heaplens.llm'})),
+        changeAiCredential:()=>secretListeners.forEach(fn=>fn({key:'heaplens.llm.credential.openai'})),
         open: async (file: string, view: ReturnType<typeof panel>) => {
             await provider.resolveCustomEditor(
                 { uri: { fsPath: path.resolve(file) }, dispose: () => undefined } as any, view.value as any

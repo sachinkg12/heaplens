@@ -38,14 +38,19 @@ pub(crate) fn detect_classloader_suspects<T: ClassloaderTree>(
     classloader_ids: &HashSet<u64>,
     reachable_heap_size: u64,
 ) -> Vec<DetectedClassloader<T::Node>> {
+    detect_classloader_suspects_cancellable(tree,classloader_ids,reachable_heap_size,&||false).expect("uncancelled classloader suspects")
+}
+pub(crate) fn detect_classloader_suspects_cancellable<T:ClassloaderTree>(tree:&T,classloader_ids:&HashSet<u64>,reachable_heap_size:u64,cancelled:&impl Fn()->bool)->anyhow::Result<Vec<DetectedClassloader<T::Node>>> {
+    anyhow::ensure!(!cancelled(),"Analysis cancelled");
     if reachable_heap_size == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let threshold_bytes = reachable_heap_size.saturating_mul(CLASSLOADER_THRESHOLD_PERCENT) / 100;
     let mut candidates = Vec::new();
 
     for &classloader_id in classloader_ids {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         if classloader_id == 0 {
             continue;
         }
@@ -73,7 +78,7 @@ pub(crate) fn detect_classloader_suspects<T: ClassloaderTree>(
         .take(MAX_CLASSLOADER_SUSPECTS)
         .map(|(retained_size, object_id, node, class_name)| {
             let percentage = (retained_size as f64 / reachable_heap_size as f64) * 100.0;
-            let accumulation_node = find_accumulation_point(tree, node);
+            let accumulation_node = accumulation_cancellable(tree, node,cancelled)?;
             let accumulation_info = accumulation_node
                 .filter(|&candidate| candidate != node)
                 .map(|candidate| {
@@ -85,7 +90,7 @@ pub(crate) fn detect_classloader_suspects<T: ClassloaderTree>(
                 })
                 .unwrap_or_default();
 
-            DetectedClassloader {
+            Ok(DetectedClassloader {
                 node,
                 suspect: LeakSuspect {
                     class_name: class_name.clone(),
@@ -103,7 +108,7 @@ pub(crate) fn detect_classloader_suspects<T: ClassloaderTree>(
                         accumulation_info,
                     ),
                 },
-            }
+            })
         })
         .collect()
 }
@@ -115,48 +120,57 @@ pub(crate) fn is_covered_by_classloader<T: ClassloaderTree>(
     node: T::Node,
     classloader_nodes: &HashSet<T::Node>,
 ) -> bool {
+    covered_cancellable(tree,node,classloader_nodes,&||false).expect("uncancelled classloader coverage")
+}
+pub(crate) fn covered_cancellable<T:ClassloaderTree>(tree:&T,node:T::Node,classloader_nodes:&HashSet<T::Node>,cancelled:&impl Fn()->bool)->anyhow::Result<bool> {
     let mut current = node;
     let mut visited = HashSet::new();
 
     while visited.insert(current) {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         if classloader_nodes.contains(&current) {
-            return true;
+            return Ok(true);
         }
         let Some(parent) = tree.parent(current) else {
-            return false;
+            return Ok(false);
         };
         if parent == current {
-            return false;
+            return Ok(false);
         }
         current = parent;
     }
 
-    false
+    Ok(false)
 }
 
 fn find_accumulation_point<T: ClassloaderTree>(tree: &T, start: T::Node) -> Option<T::Node> {
+    accumulation_cancellable(tree,start,&||false).expect("uncancelled accumulation")
+}
+fn accumulation_cancellable<T:ClassloaderTree>(tree:&T,start:T::Node,cancelled:&impl Fn()->bool)->anyhow::Result<Option<T::Node>> {
     let mut current = start;
     let mut current_retained = tree.retained_size(start);
     let mut visited = HashSet::new();
     visited.insert(current);
 
     loop {
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         let largest_child = tree
             .children(current)
             .into_iter()
-            .max_by_key(|&child| tree.retained_size(child));
+            .take_while(|_|!cancelled()).max_by_key(|&child| tree.retained_size(child));
+        anyhow::ensure!(!cancelled(),"Analysis cancelled");
         let Some(child) = largest_child else {
-            return Some(current);
+            return Ok(Some(current));
         };
         let child_retained = tree.retained_size(child);
 
         // Follow a nearly linear ownership chain. Stop where memory fans out,
         // which is the useful accumulation point for the user.
         if child_retained <= current_retained.saturating_mul(4) / 5 {
-            return Some(current);
+            return Ok(Some(current));
         }
         if !visited.insert(child) {
-            return Some(current);
+            return Ok(Some(current));
         }
 
         current = child;

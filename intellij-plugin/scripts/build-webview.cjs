@@ -9,7 +9,14 @@ function exported(file, name) {
   const output = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }
   }).outputText;
-  const context = { exports: {} };
+  const context = { exports: {}, require: request => {
+    if(file!=='js/chat' || request!=='./chatQueries')throw Error('Unexpected shared renderer dependency');
+    const helper={exports:{}};
+    vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root,'src/webview/js/chatQueries.ts'),'utf8'),{
+      compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}
+    }).outputText,helper,{filename:'chatQueries',timeout:5000});
+    return helper.exports;
+  } };
   vm.runInNewContext(output, context, { filename: file, timeout: 5000 });
   return context.exports[name]();
 }
@@ -60,7 +67,7 @@ const chat = '(function(send, listen) {\n' +
   '    handler(message);\n' +
   '    aiStatus.textContent = command === "chatChunk" ? "Receiving AI response…" : command === "chatDone" ? "Response complete. Verify suggestions before acting." : (message.message || "AI request failed.");\n' +
   '    if (command !== "chatChunk") finishAi();\n' +
-  '  }); else if (command === "restoreChatHistory") listen("aiHistory", handler);\n' +
+  '  }); else if (command === "restoreChatHistory") listen("aiHistory", handler); else listen(command, handler);\n' +
   '};\n' + exported('js/chat', 'getChatJs') + '\n' + chatAdapter +
   '\n})(vscode.postMessage, onMessage);\n';
 const source = '(function(send, listen) {\n' +

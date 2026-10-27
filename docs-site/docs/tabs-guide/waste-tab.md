@@ -36,6 +36,6 @@ Do not promise the whole total is independently reclaimable. Read [estimation li
 
 ## Sharing and export
 
-The local view/report can retain string previews. Available host export/save/download actions preserve their contents; scrub before sharing. Minimized editor prompts omit those previews, but MCP data does not pass through that filter. See [privacy](../ai-integration/privacy.md).
+The local view/report can retain string previews. Available host export/save/download actions preserve their contents; scrub before sharing. The updated investigation and scoped MCP interface exclude these previews. See [privacy](../ai-integration/privacy.md).
 
 Compare four-category deltas using equivalent snapshots, not only a duplicate-string subtotal.

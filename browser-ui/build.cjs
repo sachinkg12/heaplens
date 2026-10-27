@@ -31,4 +31,7 @@ for (const file of ['providers.json', 'system-prompt.txt', 'fix-system-prompt.tx
 // Reuse the prompt builders/sanitizer without a VS Code dependency at runtime.
 const ts = require('../node_modules/typescript');
 fs.writeFileSync(path.join(out, 'prompts.cjs'), ts.transpileModule(fs.readFileSync(path.join(root, 'src/promptTemplates.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
+fs.writeFileSync(path.join(out, 'diagnosisPolicy.js'), ts.transpileModule(fs.readFileSync(path.join(root, 'src/diagnosisPolicy.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
+for (const name of ['aiInvestigation', 'investigationEngine', 'aiToolProtocol'])
+    fs.writeFileSync(path.join(out, name + '.js'), ts.transpileModule(fs.readFileSync(path.join(root, 'src', name + '.ts'), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText);
 console.log('Generated standalone browser assets from shared renderers.');

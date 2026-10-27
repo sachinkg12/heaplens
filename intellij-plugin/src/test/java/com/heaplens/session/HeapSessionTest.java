@@ -67,6 +67,19 @@ class HeapSessionTest {
     }
     boolean hasEvent(String command) { return events.stream().anyMatch(e -> command.equals(e.get("command").getAsString())); }
 
+    @Test void capturedInvestigationPinsClientGenerationAndNeverRetargetsCancel()throws Exception{
+        Fake first=started();first.complete();await(()->session.state()==HeapSession.State.READY);var engine=session.captureInvestigation().get(3,TimeUnit.SECONDS);
+        JsonObject action=JsonParser.parseString("{\"operation\":\"object\",\"object_id\":\"18446744073709551615\"}").getAsJsonObject();var read=engine.read(action,"job");await(()->first.methods.contains("investigate_heap"));
+        assertEquals(Long.toString(first.analysisId),first.params.get("investigate_heap").get("analysis_id").getAsString());
+        assertEquals("18446744073709551615",first.params.get("investigate_heap").getAsJsonObject("action").get("object_id").getAsString());
+        session.analyze(AnalysisMode.FULL);await(()->clients.size()==2);assertFalse(engine.current());first.readReplies.getFirst().complete(JsonParser.parseString("{\"analysis_id\":\""+first.analysisId+"\",\"evidence\":{}}"));assertThrows(ExecutionException.class,()->read.get(3,TimeUnit.SECONDS));
+        engine.cancel("job");await(()->clients.get(1).analysisId>0);assertFalse(clients.get(1).methods.contains("cancel_investigation"));assertTrue(engine.read(action,"late").isCompletedExceptionally());
+    }
+    @Test void investigationRejectsWrongReplyGenerationAndShallowAnalysis()throws Exception{
+        Fake first=started();assertThrows(ExecutionException.class,()->session.captureInvestigation().get(3,TimeUnit.SECONDS));first.complete();await(()->session.state()==HeapSession.State.READY);var engine=session.captureInvestigation().get(3,TimeUnit.SECONDS);
+        var read=engine.read(JsonParser.parseString("{\"operation\":\"object\",\"object_id\":\"42\"}").getAsJsonObject(),"j");await(()->!first.readReplies.isEmpty());first.readReplies.getFirst().complete(JsonParser.parseString("{\"analysis_id\":\"9999\",\"evidence\":{}}"));assertThrows(ExecutionException.class,()->read.get(3,TimeUnit.SECONDS));
+    }
+
     @Test void stagedSnapshotIsForwardedWithoutMarkingAnalysisReady() {
         Fake f=started();
         JsonObject params=JsonParser.parseString("{\"stage\":\"shallow_ready\",\"snapshot\":{\"kind\":\"shallow\",\"summary\":{\"reachable_heap_size\":null},\"class_histogram\":[]}}").getAsJsonObject();

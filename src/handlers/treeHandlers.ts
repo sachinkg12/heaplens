@@ -5,11 +5,14 @@ export const getChildrenHandler: MessageHandler = {
     command: 'getChildren',
     async handle(message, ctx) {
         ctx.outputChannel.appendLine(`[HeapLens] getChildren request for objectId: ${message.objectId}`);
+        const original = ctx.state.analysisData, analysisId = ctx.state.analysisId;
+        const active = () => ctx.state.client === ctx.client && ctx.state.analysisData === original && ctx.state.analysisId === analysisId;
         try {
             const children = await ctx.client.sendRequest('get_children', {
                 path: ctx.hprofPath,
                 object_id: message.objectId
             });
+            if (!active()) { return; }
             ctx.outputChannel.appendLine(`[HeapLens] getChildren response: ${Array.isArray(children) ? children.length + ' children' : typeof children}`);
             if (Array.isArray(children) && children.length > 0) {
                 ctx.outputChannel.appendLine(`[HeapLens] Sending childrenResponse with ${children.length} children`);
@@ -27,6 +30,7 @@ export const getChildrenHandler: MessageHandler = {
                 });
             }
         } catch (error: any) {
+            if (!active()) { return; }
             ctx.outputChannel.appendLine(`[HeapLens] getChildren error: ${error.message}`);
             ctx.webviewPanel.webview.postMessage({
                 command: 'noChildren',

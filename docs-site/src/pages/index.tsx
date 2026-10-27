@@ -28,7 +28,7 @@ export default function Home() {
       <section className={styles.strip} aria-label="Implemented capabilities">
         <div><strong>11</strong><span>analysis & workflow tabs</span></div>
         <div><strong>10</strong><span>configured AI providers</span></div>
-        <div><strong>9</strong><span>MCP tools</span></div>
+        <div><strong>6</strong><span>Scoped MCP tools</span></div>
         <div><strong>Apache 2.0</strong><span>open-source license</span></div>
       </section>
       <section className={styles.section}>

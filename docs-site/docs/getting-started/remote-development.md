@@ -19,8 +19,8 @@ Browser `--no-browser` avoids launching a remote desktop. Loopback forwarding ca
 
 ## Agents through MCP
 
-A stdio-MCP client can launch `hprof-server --mcp`. Give it a **server-machine path** and approve access through client controls. The HPROF file is not automatically uploaded, but tool results—including names, previews, and values—can be sent to the client's model. Editor prompt minimization does not apply to these outputs.
+A stdio-MCP client can launch the updated server with `--mcp`, exact-file `--mcp-allow-file` arguments and `--mcp-share-metadata`. A human approves server-machine files in launch configuration; tool arguments cannot add paths. The file is not uploaded by the server, but approved metadata can be forwarded to the client's model. Raw contents, previews and source are excluded from this interface.
 
-MCP support is not a promise for every client/version. Verify initialization, tools/list, a bounded query, and cancellation on a safe dump. See [setup](../mcp/setup.md) and [privacy](../ai-integration/privacy.md).
+MCP support is not a promise for every client/version. Verify initialization, tools/list, an approved alias, a bounded metadata read and cancellation on a safe dump. See [setup](../mcp/setup.md) and [privacy](../ai-integration/privacy.md).
 
 Slack, Teams, Discord, and other messaging services are not built-in analysis hosts. Sharing a report discloses its contents to the service/recipients. Future integrations require explicit upload, authentication, retention, and authorization design.

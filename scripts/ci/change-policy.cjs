@@ -5,6 +5,7 @@ const rules = [
   [/^browser-ui\//, all], // Standalone checks, never a release permission.
   [/^intellij-plugin\//, {intellij:true}],
   [/^(?:\.github\/|scripts\/ci\/)/, all],
+  [/^src\/(?:promptTemplates|diagnosisPolicy|aiInvestigation|investigationEngine|llmClient)\.ts$/, {vscode:true,intellij:true}],
   [/^(?:docs-site\/|docs\/|papers\/|media\/screenshots\/)|\.md$/i, {}],
   [/^(?:src\/webview\/|media\/d3\.v7\.min\.js$|package(?:-lock)?\.json$)/, {vscode:true,intellij:true}],
   [/^(?:hprof-analyzer\/|bin\/)/, all],

@@ -1,23 +1,21 @@
 import * as vscode from 'vscode';
-// Host adapter only. The runtime contract and bounded delivery are shared with the browser.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { Telemetry } = require('../telemetry/node.cjs');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { platform, architecture } = require('../telemetry/contract.cjs');
-let reporter: { setLevel(level: string): void; track(name: string, properties?: Record<string,string>, measurements?: Record<string,number>): void; report(): unknown; dispose(): void } | null = null;
+import { VSCodeTelemetry, TelemetryLevel } from './vscodeTelemetry';
+let reporter: VSCodeTelemetry | null = null;
+let shutdown = Promise.resolve();
 
 export function initTelemetry(context: vscode.ExtensionContext): void {
-    disposeTelemetry();
-    reporter = new Telemetry({ context: { host: 'vscode', version: context.extension.packageJSON.version,
-        os: platform(process.platform), arch: architecture(process.arch) },
-        disabled: context.extensionMode !== vscode.ExtensionMode.Production || !!process.env.CI || process.env.DO_NOT_TRACK === '1' });
-    const refresh = () => {
+    void disposeTelemetry();
+    const permission = (): TelemetryLevel => {
+        if (context.extensionMode !== vscode.ExtensionMode.Production || process.env.CI || process.env.DO_NOT_TRACK === '1') { return 'off'; }
         const host = vscode.env.isTelemetryEnabled ? vscode.workspace.getConfiguration('telemetry').get<string>('telemetryLevel', 'off') : 'off';
         const setting = vscode.workspace.getConfiguration('heaplens').inspect<string>('telemetry.level');
         const choice = setting?.globalValue ?? setting?.defaultValue ?? 'all';
-        const level = host === 'off' || choice === 'off' ? 'off' : host === 'error' || choice === 'error' ? 'error' : host === 'all' && choice === 'all' ? 'all' : 'off';
-        reporter?.setLevel(level);
+        if (!['all', 'error', 'off', 'crash'].includes(host) || !['all', 'error', 'off'].includes(choice)) { return 'off'; }
+        return host === 'off' || host === 'crash' || choice === 'off' ? 'off' : host === 'error' || choice === 'error' ? 'error' : 'all';
     };
+    const current = new VSCodeTelemetry(context.extension.packageJSON.version, permission);
+    reporter = current;
+    const refresh = () => current.setLevel(permission());
     refresh();
     context.subscriptions.push(vscode.env.onDidChangeTelemetryEnabled(refresh),
         vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration('heaplens.telemetry') || e.affectsConfiguration('telemetry')) { refresh(); } }),
@@ -25,21 +23,22 @@ export function initTelemetry(context: vscode.ExtensionContext): void {
             const choices = [
                 { label: 'Off', description: 'Disable telemetry; send nothing', level: 'off' },
                 { label: 'Errors only', description: 'Allowlisted failure codes and phase; no error text', level: 'error' },
-                { label: 'Usage and errors', description: 'Default: actions and rounded sizes/timings', level: 'all' }
+                { label: 'Usage and errors', description: 'Default: filtered actions/timings plus VS Code machine/session counts', level: 'all' }
             ];
             const selected = await vscode.window.showQuickPick(choices, { title: 'HeapLens telemetry → Azure Application Insights',
-                placeHolder: 'Enabled by default. Choose Off to disable. No dump/source/query text, keys or stable IDs. Network services can process IP addresses. Editor permission also applies.' });
+                placeHolder: 'Usage includes Microsoft SDK machine/session identifiers. No dump/source/query text or raw errors. Off disables; Errors Only excludes usage/counting. Editor permission also applies.' });
             if (selected) { await vscode.workspace.getConfiguration('heaplens').update('telemetry.level', selected.level, vscode.ConfigurationTarget.Global); }
         }),
         vscode.commands.registerCommand('heaplens.reviewDiagnostics', async () => {
             const document = await vscode.workspace.openTextDocument({ content: JSON.stringify(reporter?.report() || {}, null, 2), language: 'json' });
             await vscode.window.showTextDocument(document);
-        }), { dispose: disposeTelemetry });
+        }), { dispose: () => reporter === current ? disposeTelemetry() : current.dispose() });
 }
 
-export function disposeTelemetry(): void {
-    reporter?.dispose();
-    reporter = null;
+export function disposeTelemetry(): Promise<void> {
+    const previous = reporter; reporter = null;
+    if (previous) { shutdown = Promise.all([shutdown, previous.dispose()]).then(() => undefined); }
+    return shutdown;
 }
 
 export function trackEvent(

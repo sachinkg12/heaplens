@@ -22,6 +22,11 @@
         return request;
     }
     window.heaplensSend = send;
+    window.addEventListener('pagehide',()=>{
+        // Best effort immediately; a per-view host lease handles lost unload requests.
+        void fetch('/api/command',{method:'POST',keepalive:true,credentials:'omit',headers:{'X-HeapLens-Token':token,'X-HeapLens-View':view,'Content-Type':'application/json'},
+            body:JSON.stringify({session,message:{command:'aiStop'}})}).catch(()=>{});
+    });
     document.getElementById('browser-telemetry').onclick=async()=>{
         const selected=await choice('Telemetry','Telemetry is enabled by default (usage and errors). Disable it here for this running host, or launch with --telemetry off to keep it disabled from startup. Filtered records go to HeapLens Azure Application Insights. No paths, source/query/dump text, keys or stable IDs. Network services may process IP addresses. Disabling clears pending delivery.',[['Disable telemetry','off'],['Review local diagnostics','review'],['Cancel',null]]);
         if(selected)send({command:selected==='off'?'telemetryOff':'reviewDiagnostics'});

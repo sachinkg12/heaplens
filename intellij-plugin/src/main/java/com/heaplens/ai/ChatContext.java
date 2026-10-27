@@ -31,6 +31,7 @@ public final class ChatContext {
         out.add("summary", fields(object(analysis.get("summary")),
             new String[]{"total_heap_size","reachable_heap_size","total_instances","total_classes","total_arrays","total_gc_roots"}, new String[]{}));
         out.addProperty("size_note", "Byte sizes may be JVM layout estimates. Nested retained sizes and class totals overlap; do not sum them.");
+        out.addProperty("evidence_note", "Bounded metadata sample, not all heap objects or allocation history. Object IDs are strings scoped to this analysis; class-group suspects are not single objects. Suspect percentages use reachable heap. Missing evidence is not zero.");
         rows(out,analysis,"topObjects",15,new String[]{"shallow_size","retained_size"},new String[]{"class_name","node_type","field_name"});
         rows(out,analysis,"classHistogram",20,new String[]{"instance_count","shallow_size","retained_size"},new String[]{"class_name"});
         rows(out,analysis,"leakSuspects",10,new String[]{"retained_size","retained_percentage"},new String[]{"class_name"});
@@ -67,7 +68,33 @@ public final class ChatContext {
         JsonArray result=new JsonArray(); JsonElement values=input.get(key);
         if(values != null && values.isJsonArray()) {
             JsonArray array=values.getAsJsonArray();
-            for(int i=0;i<Math.min(limit,array.size());i++) result.add(fields(object(array.get(i)),numbers,names));
+            for(int i=0;i<Math.min(limit,array.size());i++) {
+                JsonObject raw=object(array.get(i)),safe=fields(raw,numbers,names);
+                if(key.equals("leakSuspects")) {
+                    JsonElement selected=raw.get("object_id");
+                    String scope="unknown";
+                    if(selected!=null && selected.isJsonPrimitive() && selected.getAsJsonPrimitive().isNumber()) {
+                        try {
+                            java.math.BigInteger exact=selected.getAsBigDecimal().toBigIntegerExact();
+                            if(exact.signum()==0)scope="class_group";
+                            else if(exact.signum()>0 && exact.bitLength()<=64)scope="object";
+                        }
+                        catch(ArithmeticException | NumberFormatException ignored) { /* unknown */ }
+                    }
+                    safe.addProperty("scope",scope);
+                }
+                // Object identities are metadata, not raw field values. Keep wide IDs exact.
+                JsonElement id=raw.get("object_id");
+                if(key.equals("topObjects") && id!=null && id.isJsonPrimitive() && id.getAsJsonPrimitive().isNumber()) {
+                    try {
+                        java.math.BigInteger exact=id.getAsBigDecimal().toBigIntegerExact();
+                        if(exact.signum()>0 && exact.bitLength()<=64)safe.addProperty("object_id",exact.toString());
+                    } catch(ArithmeticException | NumberFormatException ignored) { /* unavailable, not a rounded identity */ }
+                }
+                result.add(safe);
+            }
+            JsonObject sample=new JsonObject();sample.addProperty("returned",result.size());sample.addProperty("supplied",array.size());
+            sample.addProperty("truncated",array.size()>limit);out.add(key+"_sample",sample);
         }
         out.add(key,result);
     }

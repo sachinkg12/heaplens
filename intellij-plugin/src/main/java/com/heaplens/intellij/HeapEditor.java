@@ -30,7 +30,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
     private final JButton retry = new JButton("Retry");
     private final HeapSession session;
     private final SourceNavigation source;
-    private final AiChat chat;
+    private final AiInvestigation chat;
     private final AiAssistance assistance;
     private final String snapshotId=java.util.UUID.randomUUID().toString();
     private final SnapshotCatalog catalog;
@@ -68,7 +68,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
         ProjectSourceNavigator navigator=new ProjectSourceNavigator(project,this);
         source = new SourceNavigation(navigator,
             () -> !disposed && session.state() == HeapSession.State.READY, this::event);
-        chat = new AiChat(new IntellijAiHost(project, this), new HttpLlmTransport(),
+        chat = new AiInvestigation(new IntellijAiHost(project, this), new HttpLlmTransport(),session::captureInvestigation,
             () -> !disposed && session.state() == HeapSession.State.READY, this::event,
             project==null ? ChatHistoryStore.NONE : new FileChatHistoryStore(
                 com.intellij.openapi.application.PathManager.getSystemDir().resolve("heaplens/chat"),
@@ -105,14 +105,15 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
             }).with("histogramInstances", new HistogramQueries(session::query, this::event)::instances)
               .with("dominatorChildren", new DominatorQueries(session::read, this::event)::children)
               .with("openProjectSource", source::open)
-              .with("aiSend", chat::send)
+              .with("aiSend", m->{if(assistance.busy())busy(m,"aiError");else chat.send(m);})
               .with("aiConfigure", ignored -> chat.configure())
               .with("aiStop", ignored -> chat.stop())
               .with("aiClear", ignored -> chat.clear())
-              .with("explainObject",assistance::explain)
-              .with("explainLeakSuspect",assistance::explainLeak)
-              .with("fixWithAi",assistance::fix);
-            router=router.with("cancelAiAssistance",ignored->assistance.stop());
+              .with("explainObject",m->{if(assistance.busy())busy(m,"explainError");else chat.explain(m);})
+              .with("explainLeakSuspect",m->{if(assistance.busy())busy(m,"explainLeakError");else chat.explainLeak(m);})
+              .with("openAiEvidence",chat::openEvidence)
+              .with("fixWithAi",m->{if(chat.busy())busy(m,"fixAiResult");else assistance.fix(m);});
+            router=router.with("cancelAiAssistance",ignored->{chat.stop();assistance.stop();});
             router=ProgressiveActions.register(router,session);
             router=new WasteActions(session::read,this::event).register(router);
             router=router.with("aiRunQuery",new ChatQueries(session::query,this::event)::run);
@@ -169,7 +170,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
         if (command.equals("analysisComplete")) event.addProperty("displayName",file.getName());
         if (command.equals("wasteResult") && event.has("wasteAnalysis") && event.get("wasteAnalysis").isJsonObject()) {
             JsonObject waste=event.getAsJsonObject("wasteAnalysis");
-            catalog.updateWaste(snapshotId,waste);chat.waste(waste);assistance.waste(waste);
+            catalog.updateWaste(snapshotId,waste);assistance.waste(waste);
         }
         ApplicationManager.getApplication().invokeLater(() -> {
             if (disposed) return;
@@ -188,6 +189,7 @@ public final class HeapEditor extends UserDataHolderBase implements FileEditor {
             catch(IllegalArgumentException limit){JsonObject warning=WebviewEvents.event("localActionStatus");warning.addProperty("message","Compare/Timeline snapshot unavailable: "+limit.getMessage());event(warning);}
         }
     }
+    private void busy(JsonObject request,String command){JsonObject event=new JsonObject();for(String key:java.util.List.of("requestId","objectId","className"))if(request.has(key))event.add(key,request.get(key));event.addProperty("command",command);event.addProperty("message","Another AI action is active. Stop it first.");event(event);}
     @Override public @NotNull JComponent getComponent() { return panel; }
     @Override public @Nullable JComponent getPreferredFocusedComponent() { return browser == null ? choose : browser.component(); }
     @Override public @NotNull String getName() { return "HeapLens"; }

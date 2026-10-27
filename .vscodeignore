@@ -75,4 +75,4 @@ telemetry/README.md
 **/dist-esm/
 
 # Node dev dependencies are excluded by vsce automatically
-# The shared telemetry contract/transport is shipped under telemetry/, not an SDK dependency.
+# VS Code usage uses its SDK production dependency; shared identity-free errors use telemetry/.

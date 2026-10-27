@@ -177,6 +177,7 @@ public final class AiAssistance implements AutoCloseable {
         emit(turn,turn.fix?"fixAiResult":"explainError","message",safe,level);current=null;
     }
     public synchronized void stop(){if(current!=null)finish(current,"Stopped. An approved request may already have reached the provider; no file was changed.","info");}
+    public synchronized boolean busy(){return current!=null;}
     private void emit(Turn turn,String command,String key,String value){
         emit(turn,command,key,value,"info");
     }

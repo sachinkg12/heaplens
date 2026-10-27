@@ -13,7 +13,7 @@ Install **HeapLens** by Sachin Gupta from the [VS Code Marketplace](https://mark
 
 The package includes a native analysis server. An existing dump needs no Rust, Node.js, source checkout, or running JVM. Capture and Monitor have separate JVM requirements.
 
-The manifest declares VS Code `^1.74.0`; chat features additionally require the relevant host APIs. Compatible editor branding does not establish participant compatibility.
+The updated SDK-counting build declares VS Code `^1.75.0`, matching the telemetry SDK's minimum API version; older packages declared `^1.74.0`. Chat features additionally require the relevant host APIs. Compatible editor branding does not establish participant compatibility.
 
 VS Code **1.0.34** adds **HeapLens: Analysis Initial Mode** (`heaplens.analysis.initialMode`). Set it to `shallow` before opening a new dump for Quick Scan, or leave `full` for the default. Quick Scan shows allocation counts and shallow sizes; **Analyze Retained** explicitly starts full analysis for other views. Quick Scan supports conventional HPROF 1.0.1 and 1.0.2 captures.
 

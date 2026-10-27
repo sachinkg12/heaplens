@@ -220,7 +220,7 @@ To verify a saved credential without exposing it, run **HeapLens: Show LLM API K
 
 - **Shared Rust engine** — mapped HPROF input, compact CSR storage, dominator analysis, HeapQL and on-demand Waste. Optional versioned structural indexes use bounded writing, mapped catalogs and selective lossless encoding.
 - **Host adapters** — VS Code custom editor, IntelliJ plugin, and standalone CLI/browser. Credentials, source navigation, consent and process lifecycle remain host-specific.
-- **MCP server** — `hprof-server --mcp` for use with Claude Desktop, Cline, and other AI clients
+- **MCP server** — updated local builds require `--mcp`, exact-file `--mcp-allow-file` approvals and `--mcp-share-metadata`; six bounded metadata tools with no raw-value or unrestricted-query fallback. See [setup](https://sachinkg12.github.io/heaplens/docs/mcp/setup).
 
 See the [animated architecture and data-flow diagrams](https://sachinkg12.github.io/heaplens/docs/architecture/system-overview/).
 
@@ -285,7 +285,7 @@ VS Code and standalone CLI/browser telemetry default to usage and errors (`all`)
 
 Errors-only collection is available with `error` instead of `all`. For a first run without reporting on any host, set `DO_NOT_TRACK=1` before starting the IDE or CLI. IntelliJ already starts off pending permission. On other hosts set Off before opening a dump; disabling later cannot recall events already transmitted.
 
-Telemetry sends allowlisted codes, actions, coarse platform/version information and rounded counts, sizes or timings to HeapLens Azure Application Insights. It does not send paths, raw error messages/stacks, dump values, class names, source, queries, credentials or stable user/session IDs. Recent filtered diagnostics can be reviewed locally; reviewing does not upload the report, but routine delivery continues unless turned off. Network services can process IP addresses; this is data minimization, not a guarantee of anonymity. AI submissions and user-selected exports have separate sharing rules. See [telemetry fields, controls and limitations](docs-site/docs/runbook/telemetry.md).
+Telemetry sends allowlisted codes, actions, coarse platform/version information and rounded counts, sizes or timings to HeapLens Azure Application Insights. In the updated VS Code implementation, permitted usage events also include Microsoft's SDK identifiers supplied by VS Code (`machineId` and `sessionId`) for reporting-machine/session counts. These are pseudonymous identifiers, not names or verified people. Errors Only excludes usage and counting IDs. IntelliJ and standalone telemetry remain identity-free and retain their existing controls. No host sends raw error messages/stacks, paths, dump values, class names, source, queries or credentials through routine telemetry. Recent filtered diagnostics can be reviewed locally; the review describes SDK enrichment but does not expose IDs or upload the report. Network services can process IP addresses. AI submissions and user-selected exports have separate sharing rules. See [telemetry fields, controls and limitations](docs-site/docs/runbook/telemetry.md).
 
 ---
 

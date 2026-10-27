@@ -70,7 +70,9 @@ export function getDominatorTreeJs(): string {
             row.setAttribute('tabindex', '-1');
             if (!leaf) row.setAttribute('aria-expanded', 'false');
 
-            var pct = _reachableHeap !== null ? ((obj.retained_size / _reachableHeap) * 100) : null;
+            var pct = _reachableHeap !== null && Number.isFinite(obj.retained_size) && obj.retained_size >= 0
+                ? ((obj.retained_size / _reachableHeap) * 100) : null;
+            if (!Number.isFinite(pct)) pct = null;
             var pctStr = pct === null ? 'N/A' : pct.toFixed(1) + '%';
             var barWidth = pct === null ? 0 : Math.max(1, Math.min(100, pct));
             var displayName = obj.class_name || obj.node_type;
@@ -91,7 +93,7 @@ export function getDominatorTreeJs(): string {
                 '<span class="tree-shallow">' + fmt(obj.shallow_size) + '</span>' +
                 '<span class="tree-size">' + fmt(obj.retained_size) + '</span>' +
                 '<span class="tree-bar-wrap"><div class="tree-bar" style="width:' + barWidth + '%"></div></span>' +
-                '<span class="tree-pct">' + pctStr + '</span>' +
+                '<span class="tree-pct" title="Retained size as a percentage of reachable heap. Nested entries can overlap.">' + pctStr + '</span>' +
                 '<span class="tree-actions">' +
                 '<span class="tree-action-slot tree-action-alive">' + (showPin ? '<button class="why-alive-btn" title="Show GC root path">Why alive?</button>' : '') + '</span>' +
                 '<span class="tree-action-slot tree-action-icon">' + (showInspect ? '<span class="tree-inspect" role="button" aria-label="Inspect fields for ' + escapeHtml(displayName) + '" title="Inspect fields">\\uD83D\\uDD0D</span>' : '') + '</span>' +
@@ -198,6 +200,16 @@ export function getDominatorTreeJs(): string {
         }
 
         // ---- Self-register ----
+        function retireDominatorPercentage() {
+            _reachableHeap = null;
+            _treeData = [];
+            document.getElementById('dominator-tree').innerHTML = '';
+            document.getElementById('domtree-header').style.display = 'none';
+            document.getElementById('reset-tree-btn').style.display = 'none';
+        }
+        ['analysisStarting', 'analysisCancelled', 'analysisFailed', 'serverCrashed'].forEach(function(command) {
+            onMessage(command, retireDominatorPercentage);
+        });
         onTabMessage('domtree', 'analysisComplete', function(msg) {
             renderDominatorTree(msg.topLayers || [], msg.summary && msg.summary.reachable_heap_size);
         });

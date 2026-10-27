@@ -48,7 +48,7 @@ Turning telemetry off stops future reporting; it does not delete events already 
 
 AI features use the provider and endpoint you configure. Opening a dump does not automatically send information to that provider.
 
-**AI Chat** can send your messages, recent completed conversation turns, and selected heap metadata, including counts, sizes, suspect metrics, class or field names, and reference metadata. Approval applies to the current dump-editor chat session and configuration. Clear, Configure AI, Retry, closing and reopening the dump, or changing the provider, endpoint, model, or API key requires approval again. Approval is not shared with other dump editors. **Explain** requests ask separately.
+**AI Chat and Explain** in the updated local implementation can send your messages, recent completed conversation turns and bounded heap metadata, including exact identifiers, counts, sizes, class/field names and types, reference summaries and root-path metadata. One question can use up to four model calls and three read-only engine reads within 90 seconds. Approval applies to this dump-editor investigation session and configuration, not other dump editors. Stop, Clear, Configure AI, Retry, closing the dump or changing provider, endpoint, model or API key revokes approval. Older published packages may use a different request flow; inspect the permission dialog of the package you are using.
 
 **Fix with AI** requests explicit approval before sending the **entire selected project source file**, together with relevant heap metadata. Approved source is not redacted and may contain secrets, comments, proprietary code, or personal information. The local absolute source path is not included in the prompt. Cancel or Review Source sends nothing for that request; Review Source opens the file locally and cancels transmission.
 
@@ -68,7 +68,7 @@ The shared analysis engine also uses local coordination files containing resourc
 
 Provider settings and telemetry preferences persist locally and are configured not to roam through IntelliJ settings synchronization. API keys are managed through **IntelliJ Password Safe**; persistence depends on its configuration, which may be memory-only.
 
-Completed AI conversations are cached in the local IDE system directory, bounded to **four exchanges and 24,000 characters per dump**. HeapLens does not encrypt this cache. Use **Clear** in AI Chat to remove that dump's saved conversation, and check the displayed result if removal fails. Closing a dump does not itself delete its saved conversation.
+Completed AI conversations are cached in the local IDE system directory, bounded to **four exchanges and 24,000 characters per dump**. HeapLens does not encrypt this cache. Restored conversations are display-only and are not forwarded as evidence to a new investigation. Use **Clear** in AI Chat to remove saved conversation; a removal failure is displayed. Closing a dump does not itself delete its saved conversation.
 
 Local diagnostic records are bounded and held in memory, not a disk spool. IntelliJ retains at most 20 recent filtered records while permitted by your telemetry choice; Off clears them. Exported files remain wherever you save them and are under your control.
 
