@@ -18,9 +18,9 @@
     <p><a href="https://sachinkg12.github.io/heaplens/">Documentation</a> · <a href="https://sachinkg12.github.io/heaplens/docs/ai-integration/privacy/">AI data sharing</a> · <a href="https://sachinkg12.github.io/heaplens/docs/runbook/telemetry/">Telemetry policy</a> · <a href="https://github.com/sachinkg12/heaplens/issues">Support</a></p>
     ]]></description>
     <change-notes><![CDATA[
-<p>Changes since 0.1.16 (source 0e7b58ca85f7).</p>
+<p>Changes since 0.1.17 (source 280d57a91225).</p>
 <ul>
-<li>Disk-backed reference storage, Quick Scan and on-demand Waste [shared engine] (<a href="https://github.com/sachinkg12/heaplens/pull/11">#11</a>)</li>
+<li>feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis [shared engine] (<a href="https://github.com/sachinkg12/heaplens/pull/15">#15</a>)</li>
 </ul>
     ]]></change-notes>
     <depends>com.intellij.modules.platform</depends>

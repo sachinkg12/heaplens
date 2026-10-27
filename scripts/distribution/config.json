@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "npm_name": "heaplens-cli",
   "repository": "sachinkg12/heaplens",
   "target": "darwin-arm64"
