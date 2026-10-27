@@ -4,6 +4,26 @@ All notable changes to HeapLens are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.36] - 2026-10-27
+
+### VS Code extension 1.0.36
+
+Changes since 1.0.35 (source 280d57a91225).
+
+- feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis [shared engine] ([#15](https://github.com/sachinkg12/heaplens/pull/15))
+
+### IntelliJ plugin 0.1.18
+
+Changes since 0.1.17 (source 280d57a91225).
+
+- feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis [shared engine] ([#15](https://github.com/sachinkg12/heaplens/pull/15))
+
+### Standalone CLI 0.1.2
+
+Changes since 0.1.1 (source 280d57a91225).
+
+- feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis [shared engine] ([#15](https://github.com/sachinkg12/heaplens/pull/15))
+
 ## [1.0.35] - 2026-10-17
 
 ### VS Code extension 1.0.35
