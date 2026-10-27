@@ -88,11 +88,11 @@ jobs:
       - name: Build and test standalone browser host (synthetic heaps, mock providers)
         run: |
           cargo build --release --bin heaplens --bin hprof-server --manifest-path hprof-analyzer/Cargo.toml
+          npm run compile
           node browser-ui/build.cjs
           node --test browser-ui/test.cjs browser-ui/telemetry.test.cjs
       - name: Test VS Code storage adapter against the built server
         run: |
-          npm run compile
           HEAPLENS_TEST_SERVER="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server" \
             node --test out/test/analysisStorage.integration.test.js
 

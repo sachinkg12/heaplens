@@ -66,7 +66,8 @@ class AiInvestigationTest {
     }
     @Test void consentAndChangedConfigurationCannotAuthorizeAnyModelCall()throws Exception{
         try(var h=new Harness()){h.ai.send(request("declined"));h.host.approve(false);AiAssistanceTest.until(()->!h.ai.busy());assertEquals(0,h.transport.count.get());
-            h.ai.send(request("changed"));h.host.config=new AiConfiguration(new AiConfiguration.Settings("openai","https://other.test","other"),"other");h.host.approve(true);AiAssistanceTest.until(()->!h.ai.busy());assertEquals(0,h.transport.count.get());}
+            h.ai.send(request("changed"));AiAssistanceTest.until(()->!h.host.approvals.isEmpty());
+            h.host.config=new AiConfiguration(new AiConfiguration.Settings("openai","https://other.test","other"),"other");h.host.approve(true);AiAssistanceTest.until(()->!h.ai.busy());assertEquals(0,h.transport.count.get());}
     }
     @Test void exactWideStringIdsAndActualEngineEvidenceIgnoreForgedPageValues()throws Exception{
         try(var h=new Harness()){var page=request("wide");page.addProperty("objectId","18446744073709551615");page.addProperty("retainedSize",99999);page.addProperty("primitive_value","SECRET_PAGE");h.ai.explain(page);h.host.approve(true);var sent=h.transport.next();String body=sent.messages.toString();
