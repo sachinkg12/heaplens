@@ -26,8 +26,8 @@ Previously recorded fixture checks against JVM sizes and an independent referenc
 
 Histogram retained is a minimum-style within-class aggregate, not all memory collectively kept alive by an arbitrary set. A collection, its array, and its contents can each describe the same bytes. A primitive byte array has no object references just because it stores serialized content.
 
-## Known tree percentage difference
+## Tree percentage denominator
 
-The audited VS Code tree uses the sum of displayed top-entry retained sizes, which can overlap. IntelliJ uses reachable heap. Bytes can match while percentages differ. A documentation update does not fix that renderer; see [Dominator Tree](../tabs-guide/dominator-tree-tab.md).
+The current shared Dominator Tree renderer uses reachable heap as its percentage denominator, not the sum of overlapping rows. Missing or invalid denominators display N/A. Older VS Code packages used a different formula, so unchanged byte values do not establish percentage equivalence with a historical screenshot. See [Dominator Tree](../tabs-guide/dominator-tree-tab.md).
 
 Compare identical backends/layout/reachability options. Display rounding can hide small differences; use byte-valued API/query results for arithmetic.

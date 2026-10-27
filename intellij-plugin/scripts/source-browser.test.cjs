@@ -15,7 +15,7 @@ const analysis = {command:'analysisComplete',summary:{reachable_heap_size:1024,t
     entry('java.lang.String'),entry('byte[][]'),entry('<img src=x onerror=alert(1)>'),
     entry('constructor'),entry('__proto__'),entry('例.Café'),entry('class example.Owner')]};
 let browser;
-before(async()=>{browser = await chromium.launch({headless:true});});
+before(async()=>{browser = await chromium.launch({headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{})});});
 after(async()=>{await browser?.close();});
 async function send(page,data) { await page.evaluate(data=>window.dispatchEvent(new MessageEvent('message',{data})),data); }
 async function latest(page) {return page.evaluate(()=>window.sentMessages.at(-1));}

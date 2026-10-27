@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import { basename } from 'path';
 import { RustClient } from './rustClient';
 import { analysisStorageArguments, analysisStorageReport } from './analysisStorage';
 import { readAnalysisStorage } from './vscodeAnalysisStorage';
 import { getWebviewContent } from './webviewProvider';
-import { AnalysisData, formatAnalysisContext } from './analysisContext';
-import { streamLlmResponse, LlmConfig, ChatMessage } from './llmClient';
-import { HEAP_ANALYSIS_SYSTEM_PROMPT, buildAnalyzePrompt, sanitizeChatInput } from './promptTemplates';
+import { AnalysisData } from './analysisContext';
+import { LlmConfig, ChatMessage } from './llmClient';
+import { sanitizeChatInput } from './promptTemplates';
+import { completedDiagnosisHistory, diagnosisDestination, diagnosisHistoryKey } from './diagnosisConversation';
 import { resolveSource } from './sourceResolver';
 import type { DependencyInfo } from './dependencyResolver';
 import { allHandlers, MessageHandler, EditorState } from './messageHandlers';
@@ -19,6 +21,10 @@ import { AnalysisSession } from './analysisSession';
 import { deliverOrBufferWebviewMessage, deliverOrBufferProgress, guardWebviewMessages } from './webviewMessageDelivery';
 import { EditorServerConnection } from './editorServerConnection';
 import { LlmConfigurationService } from './llmConfigurationService';
+import { randomBytes, createHash } from 'crypto';
+import { EvidenceLedger, exactObjectId, investigate, investigationSeed, INVESTIGATION_LIMITS } from './aiInvestigation';
+import { readInvestigation } from './investigationEngine';
+import { callLlmChat } from './llmClient';
 
 /**
  * Custom readonly editor provider for .hprof files.
@@ -29,7 +35,13 @@ import { LlmConfigurationService } from './llmConfigurationService';
 export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static readonly viewType = 'heaplens.hprofEditor';
 
-    private static readonly MAX_CHAT_HISTORY = 40; // 20 user + 20 assistant messages
+    private readonly aiChats = new Map<string, { controller: AbortController; analysis: AnalysisData; client: RustClient; channel:string; extra:Record<string,unknown> }>();
+    private readonly aiConfigurationWatchers: vscode.Disposable[] = [];
+    private readonly chatDestinations = new Map<string, string>();
+    private readonly aiEvidence = new Map<string, { analysis: AnalysisData; client: RustClient; ledger: EvidenceLedger }>();
+    private readonly aiGrants = new Map<string, string>();
+    private readonly copilotRuns=new Map<string,Set<AbortController>>();
+    private readonly copilotIdentities=new WeakMap<AnalysisData,string>();
 
     private static handlerMap = new Map<string, MessageHandler>(
         [...allHandlers, ...monitorHandlers].map(h => [h.command, h])
@@ -54,20 +66,31 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         private readonly llmConfiguration: LlmConfigurationService
     ) {
         this.outputChannel = outputChannel;
+        const invalidate=()=>{for(const path of this.editors.keys())this.cancelAiChat(path);};
+        const settings=vscode.workspace.onDidChangeConfiguration?.(event=>{if(event.affectsConfiguration('heaplens.llm'))invalidate();});
+        const secrets=context.secrets?.onDidChange?.(event=>{if(event.key.startsWith('heaplens.llm.credential.'))invalidate();});
+        if(settings)this.aiConfigurationWatchers.push(settings);if(secrets)this.aiConfigurationWatchers.push(secrets);
     }
 
     private getChatStorageKey(hprofPath: string): string {
-        return `heaplens.chat.${hprofPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        // Older lossy keys are left intact but not restored: they can collide across dumps.
+        return diagnosisHistoryKey(hprofPath);
     }
 
     private loadChatHistory(hprofPath: string): ChatMessage[] {
         const key = this.getChatStorageKey(hprofPath);
-        return this.context.workspaceState.get<ChatMessage[]>(key, []);
+        const saved = this.context.workspaceState.get<ChatMessage[] | { destination?: string; messages: ChatMessage[] }>(key, []);
+        if (Array.isArray(saved)) { return completedDiagnosisHistory(saved); }
+        if (saved && typeof saved.destination === 'string' && Array.isArray(saved.messages)) {
+            this.chatDestinations.set(hprofPath, saved.destination);
+            return completedDiagnosisHistory(saved.messages);
+        }
+        return [];
     }
 
     private saveChatHistory(hprofPath: string, history: ChatMessage[]): void {
         const key = this.getChatStorageKey(hprofPath);
-        this.context.workspaceState.update(key, history);
+        this.context.workspaceState.update(key, { destination: this.chatDestinations.get(hprofPath), messages: completedDiagnosisHistory(history) });
     }
 
     public async openCustomDocument(
@@ -118,12 +141,14 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             fixedClasses: new Set()
         };
         this.editors.set(hprofPath, editorState);
+        webviewPanel.onDidChangeViewState?.(event=>{if(event.webviewPanel.active && this.editors.get(hprofPath)===editorState)this.activeHprofPath=hprofPath;});
         editorState.analysisMode = vscode.workspace.getConfiguration('heaplens').get<string>('analysis.initialMode', 'full') === 'shallow' ? 'shallow' : 'full';
 
         // Clean up when the editor tab is closed
         webviewPanel.onDidDispose(() => {
             if (this.editors.get(hprofPath) !== editorState) { return; }
             this.outputChannel.appendLine(`[HeapLens] Editor disposed for: ${hprofPath}`);
+            this.cancelAiChat(hprofPath);
             this.analysisSessions.get(hprofPath)?.dispose();
             this.analysisSessions.delete(hprofPath);
             this.editors.delete(hprofPath);
@@ -196,6 +221,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
                     onUnavailable: (client, error, code, signal) => {
                         const state = this.editors.get(hprofPath);
                         if (state?.client !== client) { return; }
+                        this.cancelAiChat(hprofPath);
                         this.outputChannel.appendLine(`[HeapLens] Server unavailable for ${hprofPath}: ${error.message}`);
                         this.analysisSessions.get(hprofPath)?.serverExited(error);
                         trackEvent('error/serverCrashed', {
@@ -429,6 +455,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             wasteAnalysis: params.waste_analysis || undefined
         };
         if (state) { state.analysisData = analysisData; }
+        if (state) { state.analysisId = Number.isSafeInteger(params.request_id) && params.request_id > 0 ? String(params.request_id) : undefined; }
 
         const webviewMessage = {
             storage: analysisStorageReport(params.storage),
@@ -482,6 +509,10 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         }
         trackEvent('analysis/retry');
         // No await before ownership/session installation: repeated clicks cannot spawn twice.
+        this.cancelAiChat(hprofPath);
+        state.chatHistory = [];
+        this.chatDestinations.delete(hprofPath);
+        this.context.workspaceState.update(this.getChatStorageKey(hprofPath), undefined);
         state.analysisData = null;
         state.pendingWebviewMessage = null;
         deliverOrBufferWebviewMessage(state, { command: 'analysisRetrying' },
@@ -498,86 +529,132 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     }
 
     public async handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void> {
+        await this.handleInvestigation(text,hprofPath,webviewPanel,{kind:'chat'});
+    }
+
+    public async handleExplain(message: any,kind: 'object' | 'leak',hprofPath: string,webviewPanel: vscode.WebviewPanel): Promise<void> {
+        if(typeof message.className!=='string'||message.className.length>10000){return;}
+        let selected: string | undefined;
+        try { if(message.objectId !== undefined && message.objectId !== 0 && message.objectId !== '0')selected=exactObjectId(message.objectId); }
+        catch {webviewPanel.webview.postMessage({command:kind==='object'?'explainError':'explainLeakError',objectId:message.objectId,className:message.className,message:'Object identity is not exact. Select it again.'});return;}
+        const state=this.editors.get(hprofPath);
+        const group=kind==='leak' && !selected ? state?.analysisData?.classHistogram.find(row=>row.class_name===message.className) : undefined;
+        if(!selected && !group){webviewPanel.webview.postMessage({command:kind==='object'?'explainError':'explainLeakError',objectId:message.objectId,className:message.className,message:'Selection is no longer available.'});return;}
+        const question=selected?'Explain the selected object '+selected+' using the actual retrieved evidence. Distinguish retention from a proven leak.'
+            :'Explain the selected class group '+JSON.stringify(group?.class_name.slice(0,512))+'. This is not one object and not a proven leak.';
+        await this.handleInvestigation(question,hprofPath,webviewPanel,{kind,objectId:selected,className:message.className,selected,group});
+    }
+
+    public stopAi(hprofPath: string): void { this.cancelAiChat(hprofPath); }
+
+    public openAiEvidence(id: unknown,hprofPath: string,webviewPanel: vscode.WebviewPanel): void {
+        const state=this.editors.get(hprofPath),entry=this.aiEvidence.get(hprofPath);
+        try {
+            if(!state || !entry || entry.analysis!==state.analysisData || entry.client!==state.client || state.client.isDisposed || typeof id!=='string')throw Error('Expired evidence');
+            webviewPanel.webview.postMessage({command:'aiEvidenceResult',record:entry.ledger.get(id)});
+        } catch {webviewPanel.webview.postMessage({command:'aiEvidenceResult',error:'Evidence expired or is not part of this analysis. Run the investigation again.'});}
+    }
+
+    private async handleInvestigation(text: string,hprofPath: string,webviewPanel: vscode.WebviewPanel,
+        selection: {kind:'chat'|'object'|'leak';objectId?:unknown;className?:unknown;selected?:string;group?:unknown}): Promise<void> {
         const state = this.editors.get(hprofPath);
         if (!state) { return; }
+        const channel=selection.kind==='chat'?'chat':selection.kind==='object'?'explain':'explainLeak';
+        const extra={objectId:selection.objectId,className:selection.className};
+        const report=(message:string)=>webviewPanel.webview.postMessage({command:channel+'Error',...extra,message});
+        if (!state.analysisData || !state.analysisId || state.analysisMode === 'shallow' || state.client.isDisposed) {
+            report('Complete retained analysis with the updated server before using AI investigation.');
+            return;
+        }
+        if (this.aiChats.has(hprofPath)) {
+            report('An AI action is active. Stop it or wait before starting another.');
+            return;
+        }
 
         // Sanitize and validate input before sending to LLM
         const validation = sanitizeChatInput(text);
         if (!validation.safe) {
-            webviewPanel.webview.postMessage({
-                command: 'chatError',
-                message: validation.reason
-            });
+            report(validation.reason || 'Invalid question.');
             return;
         }
         text = validation.text;
 
+        const analysis = state.analysisData;
+        const turn = { controller: new AbortController(), analysis, client: state.client, channel, extra };
+        this.aiChats.set(hprofPath, turn);
+        const active = () => this.editors.get(hprofPath) === state && this.aiChats.get(hprofPath) === turn
+            && state.analysisData === analysis && state.client === turn.client && !turn.client.isDisposed && !turn.controller.signal.aborted;
+        const fail = (message: string) => {
+            if (!active()) { return; }
+            this.aiChats.delete(hprofPath);
+            report(message);
+        };
+
         let llmConfig: LlmConfig;
         try {
-            llmConfig = await this.llmConfiguration.getConfig();
+            llmConfig = Object.freeze({ ...await this.llmConfiguration.getConfig() });
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             this.outputChannel.appendLine(`[HeapLens] Secure credential access failed: ${message}`);
-            webviewPanel.webview.postMessage({
-                command: 'chatError',
-                message: 'Secure credential storage is unavailable. See the HeapLens output for details.'
-            });
+            fail('Secure credential storage is unavailable. See the HeapLens output for details.');
             return;
         }
+        if (!active()) { return; }
 
         trackEvent('feature/chatMessage', { provider: llmConfig.provider });
 
         if (!llmConfig.apiKey && llmConfig.provider !== 'ollama') {
-            webviewPanel.webview.postMessage({
-                command: 'chatError',
-                message: 'No API key configured. Run "HeapLens: Set LLM API Key" from the Command Palette.'
-            });
+            fail('No API key configured. Run "HeapLens: Set LLM API Key" from the Command Palette.');
             return;
         }
 
-        // Build messages with analysis context
-        const messages: ChatMessage[] = [
-            { role: 'system', content: HEAP_ANALYSIS_SYSTEM_PROMPT }
-        ];
-
-        // Add analysis context on first message or if no history
-        if (state.chatHistory.length === 0 && state.analysisData) {
-            const context = formatAnalysisContext(state.analysisData);
-            const userPrompt = buildAnalyzePrompt(context, text);
-            messages.push({ role: 'user', content: userPrompt });
-        } else {
-            // Include prior conversation (capped to prevent unbounded growth)
-            messages.push(...state.chatHistory);
-            messages.push({ role: 'user', content: text });
+        let destination: string;
+        try { destination = diagnosisDestination(llmConfig); }
+        catch { fail('AI endpoint or provider is invalid. Check the AI configuration.'); return; }
+        if (this.chatDestinations.get(hprofPath) !== destination) {
+            // Legacy history has no destination proof and must not be forwarded silently.
+            state.chatHistory = [];
+            this.chatDestinations.set(hprofPath, destination);
+            this.aiEvidence.delete(hprofPath);this.aiGrants.delete(hprofPath);
         }
-
-        // Track user message
-        state.chatHistory.push({ role: 'user', content: text });
-
-        // Trim chat history if it exceeds the limit
-        if (state.chatHistory.length > HprofEditorProvider.MAX_CHAT_HISTORY) {
-            state.chatHistory = state.chatHistory.slice(-HprofEditorProvider.MAX_CHAT_HISTORY);
+        const fingerprint=(config:LlmConfig)=>diagnosisDestination(config)+'|'+createHash('sha256').update(config.apiKey||'').digest('hex')+'|bounded-metadata-v1';
+        const grant=fingerprint(llmConfig);
+        let entry=this.aiEvidence.get(hprofPath);
+        if(!entry || entry.analysis!==analysis || entry.client!==state.client){
+            entry={analysis,client:state.client,ledger:new EvidenceLedger('S'+randomBytes(16).toString('hex'))};this.aiEvidence.set(hprofPath,entry);
         }
-
-        let assistantResponse = '';
-
-        streamLlmResponse(
-            llmConfig,
-            messages,
-            (chunk) => {
-                assistantResponse += chunk;
-                webviewPanel.webview.postMessage({ command: 'chatChunk', text: chunk });
-            },
-            () => {
-                state.chatHistory.push({ role: 'assistant', content: assistantResponse });
-                this.saveChatHistory(hprofPath, state.chatHistory);
-                webviewPanel.webview.postMessage({ command: 'chatDone' });
-            },
-            (error) => {
-                this.outputChannel.appendLine(`[HeapLens] Chat error: ${error}`);
-                webviewPanel.webview.postMessage({ command: 'chatError', message: error });
+        const ledger=entry.ledger,analysisId=state.analysisId;
+        const seed=investigationSeed(analysis.summary,analysis.topObjects,selection.group?[selection.group]:analysis.classHistogram);
+        const sameConfiguration=async()=>{if(!active())return false;const latest=await this.llmConfiguration.getConfig();return active()&&fingerprint(latest)===grant;};
+        // Restored text is display-only until it belongs to this live evidence generation.
+        if(state.aiHistoryScope!==ledger.scope)state.chatHistory=[];
+        try {
+            const result=await investigate({scope:ledger.scope,destination,signal:turn.controller.signal,current:active,
+                approve:async()=>{
+                    if(this.aiGrants.get(hprofPath)===grant && await sameConfiguration())return true;
+                    const decision=await vscode.window.showInformationMessage('Allow HeapLens AI investigation for this dump session?',{
+                        modal:true,detail:'Destination: '+destination+'\nSends class/field names and types, exact object IDs, counts/sizes, reference and retaining-path metadata, plus your questions and completed chat history. These may be sensitive. Raw heap values, strings, source code and file paths are excluded. A local endpoint may forward remotely. Each question permits up to '+INVESTIGATION_LIMITS.modelCalls+' provider calls and '+INVESTIGATION_LIMITS.reads+' bounded engine reads; a provider may charge for each call. Stop/Clear/Retry/close or a configuration change revokes approval.'},'Approve this AI session');
+                    if(decision!=='Approve this AI session'||!await sameConfiguration())return false;
+                    this.aiGrants.set(hprofPath,grant);return true;
+                },
+                model:async(messages,signal,timeoutMs,tools)=>{
+                    if(!await sameConfiguration()){this.aiGrants.delete(hprofPath);throw Error('AI configuration changed. Approve the new destination before sending.');}
+                    return callLlmChat(llmConfig,messages,{signal,timeoutMs,tools});
+                },
+                read:(action,signal)=>readInvestigation(state.client,hprofPath,analysisId,action,signal),
+                initialRead:selection.selected?{operation:'object',object_id:selection.selected}:undefined,
+                progress:message=>{if(active())webviewPanel.webview.postMessage({command:'aiInvestigationProgress',channel,...extra,message});}
+            },ledger,text,seed,selection.kind==='chat'?completedDiagnosisHistory(state.chatHistory):[]);
+            if(!active())return;
+            if(selection.kind==='chat' && !result.metadataOnly){
+                state.chatHistory.push({role:'user',content:text},{role:'assistant',content:result.text});
+                state.aiHistoryScope=ledger.scope;
+                state.chatHistory=completedDiagnosisHistory(state.chatHistory);this.saveChatHistory(hprofPath,state.chatHistory);
             }
-        );
+            webviewPanel.webview.postMessage({command:channel+'Chunk',...extra,text:result.text});
+            webviewPanel.webview.postMessage({command:channel+'Done',...extra,safeEvidenceAnswer:true,metadataOnly:!!result.metadataOnly,evidence:result.evidence.map(e=>({id:e.id,operation:e.operation})),usage:{modelCalls:result.modelCalls,reads:result.reads}});
+            this.aiChats.delete(hprofPath);
+        } catch(error) {fail(error instanceof Error?error.message:'AI investigation failed. No automatic retry was made.');}
     }
 
     private fmtBytes(bytes: number): string {
@@ -611,7 +688,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
             lines.push('## Heap Summary');
             lines.push('');
             lines.push(`- **Total Heap Size:** ${this.fmtBytes(s.total_heap_size)}`);
-            lines.push(`- **Reachable Heap Size:** ${this.fmtBytes(s.reachable_heap_size || s.total_heap_size)}`);
+            lines.push(`- **Reachable Heap Size:** ${typeof s.reachable_heap_size === 'number' && Number.isFinite(s.reachable_heap_size) && s.reachable_heap_size >= 0 ? this.fmtBytes(s.reachable_heap_size) : 'Not calculated'}`);
             lines.push(`- **Objects:** ${s.total_instances.toLocaleString()}`);
             lines.push(`- **Classes:** ${s.total_classes.toLocaleString()}`);
             lines.push(`- **Arrays:** ${s.total_arrays.toLocaleString()}`);
@@ -823,8 +900,24 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     }
 
     public clearChatHistory(hprofPath: string): void {
+        this.cancelAiChat(hprofPath);
+        const state = this.editors.get(hprofPath);
+        if (state) { state.chatHistory = []; }
+        this.chatDestinations.delete(hprofPath);
         const key = this.getChatStorageKey(hprofPath);
         this.context.workspaceState.update(key, undefined);
+    }
+
+    private cancelAiChat(hprofPath: string): void {
+        const currentAnalysis=this.editors.get(hprofPath)?.analysisData;if(currentAnalysis)this.copilotIdentities.delete(currentAnalysis);
+        this.copilotRuns.get(hprofPath)?.forEach(controller=>controller.abort());this.copilotRuns.delete(hprofPath);
+        this.aiGrants.delete(hprofPath);
+        this.aiEvidence.delete(hprofPath);
+        const turn = this.aiChats.get(hprofPath);
+        if (!turn) { return; }
+        this.aiChats.delete(hprofPath);
+        turn.controller.abort();
+        this.editors.get(hprofPath)?.webviewPanel.webview.postMessage({ command: turn.channel+'Error', ...turn.extra, message: 'AI request cancelled because the conversation, configuration or analysis changed.' });
     }
 
     /** Compatibility shim: returns the active editor's client. */
@@ -867,6 +960,18 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     public getActiveWebviewPanel(): vscode.WebviewPanel | null {
         const state = this.activeHprofPath ? this.editors.get(this.activeHprofPath) : undefined;
         return state?.webviewPanel ?? null;
+    }
+
+    public captureCopilotScope(): import('./copilotScope').CopilotAnalysisScope | null {
+        const path=this.activeHprofPath,state=path?this.editors.get(path):undefined;
+        if(!path || !state?.analysisData || !state.analysisId || state.client.isDisposed || state.analysisMode==='shallow')return null;
+        const analysis=state.analysisData,client=state.client,analysisId=state.analysisId,controller=new AbortController();
+        let identity=this.copilotIdentities.get(analysis);if(!identity){identity='C'+randomBytes(16).toString('hex');this.copilotIdentities.set(analysis,identity);}
+        let runs=this.copilotRuns.get(path);if(!runs){runs=new Set();this.copilotRuns.set(path,runs);}runs.add(controller);
+        const alive=()=>this.editors.get(path)===state && state.analysisData===analysis && state.client===client && !client.isDisposed && state.analysisId===analysisId && this.copilotIdentities.get(analysis)===identity;
+        return {identity,label:basename(path),data:analysis,signal:controller.signal,current:alive,
+            read:(action,signal)=>readInvestigation(client,path,analysisId,action,signal),
+            dispose:()=>{runs?.delete(controller);if(!runs?.size && this.copilotRuns.get(path)===runs)this.copilotRuns.delete(path);}};
     }
 
     public getCurrentHprofPath(): string | null {
@@ -917,6 +1022,10 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
     }
 
     public dispose(): void {
+        this.copilotRuns.forEach(runs=>runs.forEach(controller=>controller.abort()));this.copilotRuns.clear();
+        for(const watcher of this.aiConfigurationWatchers)watcher.dispose();
+        for (const path of this.aiChats.keys()) { this.cancelAiChat(path); }
+        this.aiGrants.clear();this.aiEvidence.clear();
         // Dispose monitor service
         if (this.monitorService) {
             this.monitorService.dispose();

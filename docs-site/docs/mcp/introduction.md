@@ -3,20 +3,14 @@ sidebar_position: 1
 title: MCP for heap investigations
 ---
 
-MCP lets a compatible client or coding agent call the local HeapLens server's **nine tools**. The client owns the model and tool permissions. No IDE is required.
+The updated local implementation exposes six metadata-only tools to compatible stdio MCP clients. Check `tools/list` on your executable; older published binaries can expose a different contract.
 
-## Local does not mean nothing is shared
-
-The native process reads a local server-machine HPROF path and returns analysis/tool data. The client may send those results—including class names, previews, and primitive values—to its model. Editor prompt minimization does not apply. See [privacy](../ai-integration/privacy.md).
-
-Dragging a dump into chat does not reliably provide a local filesystem path accessible to this server. Supply an authorized path that the configured server can read, especially in remote/container/sandbox clients.
+A human approves exact files and metadata sharing in the launch configuration. Tool arguments cannot grant permission or add files. The client chooses the model and may forward approved metadata to it. Names, identifiers, sizes and reference relationships can still be sensitive.
 
 ## Workflow
 
-Initialize the stdio connection, list tools, analyze a safe dump, then request a bounded histogram/query, inspect an object, or drill into ownership. Compare requires both analyzed snapshots in the same native server process.
+Configure approved files, initialize the connection, call `list_dumps`, then analyze a returned alias. Use the returned analysis identity for summaries, bounded reads and evidence retrieval. Reanalysis or switching dumps invalidates the previous state and handles. Only one completed analysis is retained; construction still needs resources appropriate to the dump.
 
-The server retains graphs/mappings until process termination. Large or multiple dumps can need substantial RAM. A client timeout is not proof the server stopped, and automatic result replay after timeout is not promised.
+No raw primitive/string contents, source, arbitrary filesystem reads, unrestricted queries or shell execution are exposed. These restrictions apply to direct calls as well as discovery. Inspector, Waste, HeapQL and Compare remain available in ordinary local hosts, not this MCP interface.
 
-Use the same native version/backend/options when comparing editor versus MCP engine results. A shared library is architectural evidence, not a substitute for a runtime equivalence test.
-
-See [setup](./setup.md), [all tools](./tools-reference.md), and [remote workflows](../getting-started/remote-development.md).
+Cancellation is cooperative, including graph and derived-analysis walks. Allocations, sorting and operating-system I/O are not hard real-time operations. Stop the owned process on shutdown. See [setup](./setup.md), [tools](./tools-reference.md) and [privacy](../ai-integration/privacy.md).

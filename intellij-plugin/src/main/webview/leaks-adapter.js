@@ -13,7 +13,9 @@ function leakReply(message,done,error) {
     if(message.text)leakAnswer+=message.text;
     area.classList.add('visible');
     if(error){area.textContent=message.message || 'AI request failed.';area.classList.add('error');}
-    else area.innerHTML=renderMarkdown(leakAnswer);
+    else if(done && !message.safeEvidenceAnswer)area.innerHTML=renderMarkdown(leakAnswer);
+    else {area.textContent=leakAnswer;area.style.whiteSpace='pre-wrap';}
+    if(done && message.safeEvidenceAnswer)window.attachInvestigationEvidence(area,message.evidence);
     if(done || error){area.classList.remove('streaming');link.textContent='Explain';addExplainCloseBtn(area);leakAnswer='';}
 }
 listen('explainLeakChunk',function(m){leakReply(m,false,false);});

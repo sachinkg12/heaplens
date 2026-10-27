@@ -17,6 +17,10 @@ use crate::{ClassHistogramEntry, FieldInfo, HeapSummary, LeakSuspect, ObjectRepo
 /// Implementations must be `Send + Sync` so the trait object can live behind
 /// an `Arc` in the async server.
 pub trait HeapAnalysis: Send + Sync {
+    /// Explicit opt-in: backends without bounded primitives must fail, never scan as fallback.
+    fn investigate_metadata(&self, _request: &crate::investigation::Request, _budget: &mut crate::investigation::Budget) -> anyhow::Result<serde_json::Value> {
+        anyhow::bail!("Bounded investigation is unavailable for this analysis backend")
+    }
     fn storage_report(&self) -> Option<&super::storage::StorageReport> { None }
     /// Returns children of the given object in the dominator tree.
     fn get_children(&self, object_id: u64) -> Option<Vec<ObjectReport>>;

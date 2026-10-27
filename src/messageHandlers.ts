@@ -18,6 +18,8 @@ export interface EditorState {
     client: RustClient;
     analysisData: AnalysisData | null;
     analysisMode?: 'full' | 'shallow';
+    analysisId?: string;
+    aiHistoryScope?: string;
     chatHistory: ChatMessage[];
     pendingWebviewMessage: any;
     pendingProgressMessage?: any;
@@ -35,6 +37,9 @@ export interface HandlerContext {
     llmConfiguration: LlmConfigurationService;
     provider: {
         handleChatMessage(text: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
+        handleExplain(message: any, kind: 'object' | 'leak', hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
+        stopAi(hprofPath: string): void;
+        openAiEvidence(id: unknown, hprofPath: string, webviewPanel: vscode.WebviewPanel): void;
         handleGoToSource(className: string, hprofPath: string, webviewPanel: vscode.WebviewPanel): Promise<void>;
         handleCopyReport(hprofPath: string, webviewPanel: vscode.WebviewPanel): void;
         clearChatHistory(hprofPath: string): void;

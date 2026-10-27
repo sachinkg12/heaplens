@@ -107,4 +107,10 @@ class HttpLlmTransportTest {
             assertTrue(result.await().contains("too large"));assertTrue(server.requests.isEmpty());
         }
     }
+    @Test void syntacticallyCompleteJsonWithTruncationOrRefusalNeverCompletes()throws Exception{
+        for(String reason:List.of("length","content_filter","max_tokens","refusal")){
+            boolean anthropic=reason.equals("max_tokens")||reason.equals("refusal");String body=anthropic?"data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"{}\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\""+reason+"\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n":delta("{}")+"data: {\"choices\":[{\"finish_reason\":\""+reason+"\",\"delta\":{}}]}\n\ndata: [DONE]\n\n";
+            try(Server server=new Server(x->response(x,200,body));HttpLlmTransport transport=new HttpLlmTransport()){Result result=new Result();transport.start(config(anthropic?"anthropic":"openai",server.url()),messages(),result);assertNotEquals("done",result.await());assertEquals(1,result.terminalCount.get());}
+        }
+    }
 }

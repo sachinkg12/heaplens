@@ -36,15 +36,21 @@ pub fn compute_dominators(
     edge_store: &EdgeStore,
     _gc_root_indices: &[u32],
 ) -> DominatorResult {
+    compute_dominators_cancellable(node_store,edge_store,_gc_root_indices,&||false).expect("uncancelled dominators")
+}
+
+/// Cooperative cancellation inside graph walks; no approximate/partial result is returned.
+pub fn compute_dominators_cancellable(node_store:&NodeStore,edge_store:&EdgeStore,_gc_root_indices:&[u32],cancelled:&(impl Fn()->bool+Sync))->anyhow::Result<DominatorResult> {
+    let check=||->anyhow::Result<()>{anyhow::ensure!(!cancelled(),"Analysis cancelled");Ok(())};check()?;
     let n = node_store.len();
 
     if n == 0 {
-        return DominatorResult {
+        return Ok(DominatorResult {
             retained_sizes: Vec::new(),
             dominator_parent: Vec::new(),
             dominator_children: DominatorChildren::empty(0),
             unreachable_shallow_size: 0,
-        };
+        });
     }
 
     // The super-root is node 0. It already has edges to GC roots in the EdgeStore.
@@ -70,6 +76,7 @@ pub fn compute_dominators(
         dfs_count += 1;
         let mut v = root;
         loop {
+            check()?;
             let neighbors = edge_store.neighbors(v);
             let cursor = semi[v as usize] as usize;
             if cursor == neighbors.len() {
@@ -98,19 +105,19 @@ pub fn compute_dominators(
         use rayon::prelude::*;
         let unreachable_shallow_size: u64 = (1..n)
             .into_par_iter()
-            .map(|i| node_store.shallow_at(i as u32))
-            .sum();
+            .map(|i|->anyhow::Result<u64> {if i%4096==0 {check()?;}Ok(node_store.shallow_at(i as u32))})
+            .try_reduce(||0,|left,right|Ok(left+right))?;
         let mut retained_sizes = vec![0; n];
         retained_sizes[0] = node_store.shallow_at(0);
         let mut dominator_parent = vec![root; n];
         dominator_parent[0] = u32::MAX;
-        let dominator_children = DominatorChildren::from_parents(&dominator_parent);
-        return DominatorResult {
+        let dominator_children = DominatorChildren::cancellable(&dominator_parent,cancelled)?;
+        check()?;return Ok(DominatorResult {
             retained_sizes,
             dominator_parent,
             dominator_children,
             unreachable_shallow_size,
-        };
+        });
     }
 
     // Union-Find with path compression for ancestor queries
@@ -119,30 +126,33 @@ pub fn compute_dominators(
     let mut label: Vec<u32> = (0..n as u32).collect();   // label[v] = node with min semi on path
 
     // Implicit link: ancestor[w] = v means v is w's ancestor in the forest
-    fn compress(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], stack: &mut Vec<u32>) {
+    fn compress(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], stack: &mut Vec<u32>,cancelled:&impl Fn()->bool)->anyhow::Result<()> {
         stack.clear();
         let mut cur = v;
         // Walk up to find the root of the tree
         while ancestor[ancestor[cur as usize] as usize] != u32::MAX {
+            anyhow::ensure!(!cancelled(),"Analysis cancelled");
             stack.push(cur);
             cur = ancestor[cur as usize];
         }
         // Now compress path
         for &node in stack.iter().rev() {
+            anyhow::ensure!(!cancelled(),"Analysis cancelled");
             let a = ancestor[node as usize];
             if semi[label[a as usize] as usize] < semi[label[node as usize] as usize] {
                 label[node as usize] = label[a as usize];
             }
             ancestor[node as usize] = ancestor[a as usize];
         }
+        Ok(())
     }
 
-    fn eval(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], scratch: &mut Vec<u32>) -> u32 {
+    fn eval(v: u32, ancestor: &mut [u32], semi: &[u32], label: &mut [u32], scratch: &mut Vec<u32>,cancelled:&impl Fn()->bool) -> anyhow::Result<u32> {
         if ancestor[v as usize] == u32::MAX {
-            return v;
+            return Ok(v);
         }
-        compress(v, ancestor, semi, label, scratch);
-        label[v as usize]
+        compress(v, ancestor, semi, label, scratch,cancelled)?;
+        Ok(label[v as usize])
     }
 
     // Buckets: bucket[v] = set of nodes whose semidominator is v
@@ -155,12 +165,14 @@ pub fn compute_dominators(
 
     // Process nodes in reverse DFS order (skip root at DFS number 0)
     for i in (1..reachable).rev() {
+        check()?;
         let w = vertex[i];
 
         // Step 2: Compute semidominator
         for &v in edge_store.reverse_neighbors(w) {
+            check()?;
             if (v as usize) < n && dfnum[v as usize] != u32::MAX {
-                let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch);
+                let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch,cancelled)?;
                 if semi[u as usize] < semi[w as usize] {
                     semi[w as usize] = semi[u as usize];
                 }
@@ -178,9 +190,10 @@ pub fn compute_dominators(
 
         // Step 3: Process bucket of parent
         while bucket_head[p as usize] != u32::MAX {
+            check()?;
             let v = bucket_head[p as usize];
             bucket_head[p as usize] = bucket_next[v as usize];
-            let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch);
+            let u = eval(v, &mut ancestor, &semi, &mut label, &mut scratch,cancelled)?;
             if semi[u as usize] < semi[v as usize] {
                 idom[v as usize] = u;
             } else {
@@ -191,6 +204,7 @@ pub fn compute_dominators(
 
     // Step 4: Adjust immediate dominators
     for i in 1..reachable {
+        check()?;
         let w = vertex[i];
         let semi_node = vertex[semi[w as usize] as usize];
         if idom[w as usize] != semi_node {
@@ -216,6 +230,7 @@ pub fn compute_dominators(
     drop(scratch);
 
     for i in 0..n {
+        if i%4096==0 {check()?;}
         let node = i as u32;
         if node == root {
             continue;
@@ -225,7 +240,7 @@ pub fn compute_dominators(
             dominator_parent[i] = root;
         }
     }
-    let dominator_children = DominatorChildren::from_parents(&dominator_parent);
+    let dominator_children = DominatorChildren::cancellable(&dominator_parent,cancelled)?;
     drop(children_timer);
     let _retained_timer = super::stage_timer::StageTimer::start("dominators.retained_sizes");
 
@@ -233,14 +248,15 @@ pub fn compute_dominators(
 
     // Initialize retained sizes from shallow sizes using rayon parallel collect
     use rayon::prelude::*;
-    let mut retained_sizes: Vec<u64> = (0..n)
-        .into_par_iter()
-        .map(|i| node_store.shallow_at(i as u32))
-        .collect();
+    let mut retained_sizes = vec![0u64;n];
+    retained_sizes.par_chunks_mut(4096).enumerate().try_for_each(|(chunk,rows)|->anyhow::Result<()>{
+        check()?;for (offset,row) in rows.iter_mut().enumerate(){*row=node_store.shallow_at((chunk*4096+offset)as u32);}Ok(())
+    })?;
 
     // Process in reverse DFS order: children before parents.
     // First handle reachable nodes in reverse DFS order.
     for i in (1..reachable).rev() {
+        if i%4096==0 {check()?;}
         let w = vertex[i] as usize;
         if dominator_parent[w] != u32::MAX {
             let p = dominator_parent[w] as usize;
@@ -254,18 +270,19 @@ pub fn compute_dominators(
     // inflate ancestor retained sizes or leak suspect percentages.
     let mut unreachable_shallow_size: u64 = 0;
     for i in 0..n {
+        if i%4096==0 {check()?;}
         if dfnum[i] == u32::MAX && (i as u32) != root {
             unreachable_shallow_size += node_store.shallow_at(i as u32);
             retained_sizes[i] = 0;
         }
     }
 
-    DominatorResult {
+    check()?;Ok(DominatorResult {
         retained_sizes,
         dominator_parent,
         dominator_children,
         unreachable_shallow_size,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -277,6 +294,20 @@ mod tests {
     use petgraph::graph::{DiGraph, NodeIndex};
     use std::collections::VecDeque;
     use std::sync::Arc;
+
+    #[test]
+    fn cancellation_after_dfs_covers_unreachable_scans_and_single_buffer_initialization(){
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        let mut nodes=NodeStore::new();nodes.add_node(0,0,0,NodeType::SuperRoot,Arc::from("Root"));
+        for id in 1..20000 {nodes.add_node(id,0,8,NodeType::Instance,Arc::from("Node"));}
+        let mut builder=EdgeBuilder::new();let empty=builder.build(nodes.len());let polls=AtomicUsize::new(0);
+        // Initial check + DFS root check precede the otherwise large unreachable scan.
+        assert!(compute_dominators_cancellable(&nodes,&empty,&[],&||polls.fetch_add(1,Ordering::Relaxed)>=2).is_err());
+        builder=EdgeBuilder::new();for i in 1..nodes.len(){builder.add_edge((i-1)as u32,i as u32,0);}let chain=builder.build(nodes.len());
+        let count=AtomicUsize::new(0);let expected=compute_dominators_cancellable(&nodes,&chain,&[],&||{count.fetch_add(1,Ordering::Relaxed);false}).unwrap();
+        let total=count.load(Ordering::Relaxed);assert_eq!(expected.retained_sizes[0],19999*8);
+        for limit in [total/2,total-12,total-4,total-1] {let seen=AtomicUsize::new(0);assert!(compute_dominators_cancellable(&nodes,&chain,&[],&||seen.fetch_add(1,Ordering::Relaxed)>=limit).is_err());}
+    }
 
     #[derive(Debug)]
     struct OracleResult {

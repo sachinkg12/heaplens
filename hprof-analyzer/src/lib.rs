@@ -15,6 +15,7 @@ pub(crate) mod reference_strength;
 pub(crate) mod gc_roots;
 pub mod object_layout;
 pub mod quick_scan;
+pub mod investigation;
 mod hprof_sizing;
 mod hprof_producer;
 mod jvm_layout_profile;

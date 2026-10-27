@@ -35,7 +35,7 @@ Referrers show actual incoming references; dominator children show immediate dom
 
 Fix resolves eligible source, confirms destination/full-file disclosure, sends only after approval, then opens a proposal for review. Cancel/Review Source do not transmit source. Model output cannot execute a repair by itself.
 
-Chat context is bounded/minimized. Current VS Code follow-ups can omit the initial analysis injection; do not equate stored plain chat history with persistent complete heap context. MCP tool output is a separate client-controlled boundary.
+The updated local investigation loop attaches current bounded metadata and scoped completed history, then allows at most four model calls and three metadata reads per question. Facts select evidence fields; HeapLens renders their values. Restored display-only history is not evidence. External MCP tools require separate launch-time exact-file and metadata approval; the external client controls its own model prose.
 
 ## Persistence and export
 

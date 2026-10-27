@@ -525,11 +525,16 @@ impl ObjectBodies {
         words[0] as u64 | ((words[1] as u64) << 32)
     }
     pub(crate) fn fields<'a>(&self, node: u32, input: &'a [u8]) -> Option<(u64, &'a [u8])> {
+        let (class,offset,length)=self.location(node)?;
+        Some((class,input.get(offset..offset.checked_add(length)?)?))
+    }
+    /// Catalog lookup only: no HPROF reads, field decoding or fallback scan.
+    pub(crate) fn location(&self, node: u32) -> Option<(u64, usize, usize)> {
         if let Some(table) = &self.packed {
             let row = table.find(u64::from(node))?;
             let offset = usize::try_from(row[2]).ok()?;
             let length = usize::try_from(row[3]).ok()?;
-            return Some((row[1], input.get(offset..offset.checked_add(length)?)?));
+            return Some((row[1], offset, length));
         }
         let mut low = 0;
         let mut high = (self.values.len() - self.rows_start) / ROW_WORDS;
@@ -544,10 +549,7 @@ impl ObjectBodies {
                     let offset = usize::try_from(Self::u64(&row[2..4])).ok()?;
                     let length = usize::try_from(row[4]).ok()?;
                     let class = HEADER_WORDS + row[1] as usize * 2;
-                    return Some((
-                        Self::u64(&self.values[class..class + 2]),
-                        input.get(offset..offset.checked_add(length)?)?,
-                    ));
+                    return Some((Self::u64(&self.values[class..class + 2]), offset, length));
                 }
             }
         }

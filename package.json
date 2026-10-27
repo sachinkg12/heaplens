@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/sachinkg12/heaplens#readme",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.75.0"
   },
   "categories": [
     "Debuggers",
@@ -146,7 +146,8 @@
           ],
           "default": "all",
           "scope": "application",
-          "description": "Azure telemetry is enabled by default (all: usage and errors). To disable it, choose Off in HeapLens: Configure Telemetry or set this to off. error sends bounded failure codes only. No dump/source/query text or stable identifiers. Network services may process IP addresses. The editor's telemetry permission also applies."
+          "tags": ["telemetry", "usesOnlineServices"],
+          "description": "Azure telemetry defaults to all. Usage includes Microsoft's SDK VS Code machine/session identifiers for counts, filtered actions and rounded metrics. Choose Off to disable; error sends bounded failure codes without counting IDs. No dump/source/query text or raw errors. Network services may process IP addresses. Editor telemetry permission always applies."
         },
         "heaplens.llm.provider": {
           "type": "string",
@@ -281,7 +282,8 @@
     "test:boundaries": "node --test scripts/ci/*.test.cjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node --test ./out/test/analysisStorage.test.js ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./out/test/dominatorPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
+    "test": "node --test ./out/test/analysisStorage.test.js ./out/test/analysisSession.test.js ./out/test/llmCredentialStore.test.js ./out/test/llmClient.test.js ./out/test/llmPrivacy.test.js ./out/test/diagnosis.test.js ./out/test/diagnosisChat.test.js ./out/test/copilotInvestigation.test.js ./out/test/aiInvestigation.test.js ./out/test/aiToolProtocol.test.js ./out/test/chatQueries.test.js ./out/test/editorRecovery.test.js ./out/test/editorServerConnection.test.js ./out/test/rustClient.test.js ./out/test/recoveryUi.test.js ./out/test/histogramPercentage.test.js ./out/test/dominatorPercentage.test.js ./out/test/overviewPercentage.test.js ./telemetry/contract.test.cjs ./telemetry/vscode-regression.test.cjs",
+    "test:chat:ui": "npm run compile && node browser-ui/build.cjs && node --test scripts/test-chat-queries-browser.cjs",
     "test:recovery": "node --test ./out/test/editorRecovery.integration.test.js",
     "test:startup:host": "npm run compile && node scripts/test/run-startup-host.cjs",
     "test:histogram:matrix": "npm run compile && node --test ./out/test/histogramPercentage.integration.test.js",
@@ -296,5 +298,7 @@
     "js-yaml": "4.1.1",
     "typescript": "^4.9.4"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@vscode/extension-telemetry": "1.5.1"
+  }
 }

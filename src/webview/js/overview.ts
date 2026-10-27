@@ -194,8 +194,8 @@ export function getOverviewJs(): string {
             var section = document.getElementById('diagnosis-section');
             if (!data.summary || !data.classHistogram) { section.innerHTML = ''; return; }
 
-            var totalHeap = data.summary.reachable_heap_size || data.summary.total_heap_size;
-            if (totalHeap === 0) { section.innerHTML = ''; return; }
+            var totalHeap = data.summary.reachable_heap_size;
+            if (!Number.isFinite(totalHeap) || totalHeap <= 0) { section.innerHTML = ''; return; }
 
             var findings = [];
             var suspects = data.leakSuspects || [];
@@ -209,6 +209,7 @@ export function getOverviewJs(): string {
 
             var histogram = data.classHistogram || [];
             histogram.forEach(function(entry) {
+                if (!Number.isFinite(entry.retained_size) || entry.retained_size < 0) return;
                 var pct = (entry.retained_size / totalHeap) * 100;
                 var cn = entry.class_name;
                 var cnLower = cn.toLowerCase();

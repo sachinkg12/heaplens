@@ -14,4 +14,7 @@ public interface AiHostPort {
         reply.accept(false);
     }
     void configure(BooleanSupplier active, Consumer<String> status);
+    /** Explicit bounded multi-call metadata consent; older hosts must fail closed. */
+    default void confirmInvestigation(AiConfiguration.Settings settings,BooleanSupplier active,Consumer<Boolean> reply){reply.accept(false);}
+    default AutoCloseable onConfigurationChange(Runnable invalidate){return ()->{};}
 }

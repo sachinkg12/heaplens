@@ -4,10 +4,14 @@ export function getInspectorJs(): string {
         // Self-contained: owns explain-object streaming buffer.
 
         var _explainObjectBuffer = '';
+        var _explainObjectSelection = null;
 
         function openInspector(objectId, className, shallowSize, retainedSize) {
+            if (_explainObjectSelection !== null) vscode.postMessage({command:'stopAi'});
+            _explainObjectSelection = null; _explainObjectBuffer = '';
             var panel = document.getElementById('inspector-panel');
             panel.dataset.objectId = objectId;
+            panel.dataset.exactObjectId = (typeof objectId === 'string' && /^[1-9][0-9]{0,19}$/.test(objectId) || typeof objectId === 'number' && Number.isSafeInteger(objectId) && objectId > 0) ? String(objectId) : '';
             panel.dataset.className = className;
             panel.dataset.shallowSize = shallowSize;
             panel.dataset.retainedSize = retainedSize;
@@ -20,6 +24,8 @@ export function getInspectorJs(): string {
         }
 
         function closeInspector() {
+            if (_explainObjectSelection !== null) vscode.postMessage({command:'stopAi'});
+            _explainObjectSelection = null; _explainObjectBuffer = '';
             var panel = document.getElementById('inspector-panel');
             panel.classList.remove('visible');
             panel.innerHTML = '';
@@ -28,6 +34,7 @@ export function getInspectorJs(): string {
         function renderInspectorFields(objectId, fields) {
             var panel = document.getElementById('inspector-panel');
             if (!panel.classList.contains('visible')) return;
+            if (String(objectId) !== panel.dataset.objectId) return;
 
             var body = panel.querySelector('.inspector-loading');
             if (!body) return;
@@ -85,13 +92,12 @@ export function getInspectorJs(): string {
                     explainArea.textContent = '';
 
                     var panel = document.getElementById('inspector-panel');
+                    if (!panel.dataset.exactObjectId) { explainArea.textContent = 'Object identity is not exact. This object cannot be sent to AI.'; explainBtn.disabled = false; return; }
+                    _explainObjectSelection = panel.dataset.exactObjectId;
                     vscode.postMessage({
                         command: 'explainObject',
-                        objectId: parseInt(panel.dataset.objectId),
-                        className: panel.dataset.className,
-                        shallowSize: parseInt(panel.dataset.shallowSize),
-                        retainedSize: parseInt(panel.dataset.retainedSize),
-                        fields: fields
+                        objectId: panel.dataset.exactObjectId,
+                        className: panel.dataset.className
                     });
                 });
             }
@@ -113,6 +119,8 @@ export function getInspectorJs(): string {
         });
 
         onMessage('explainChunk', function(msg) {
+            var panel = document.getElementById('inspector-panel');
+            if (!_explainObjectSelection || String(msg.objectId) !== _explainObjectSelection || panel.dataset.objectId !== _explainObjectSelection) return;
             _explainObjectBuffer += msg.text;
             var area = document.getElementById('inspector-explain-area');
             if (area) {
@@ -121,21 +129,30 @@ export function getInspectorJs(): string {
             }
         });
 
-        onMessage('explainDone', function() {
+        onMessage('explainDone', function(msg) {
+            var panel = document.getElementById('inspector-panel');
+            if (!_explainObjectSelection || String(msg.objectId) !== _explainObjectSelection || panel.dataset.objectId !== _explainObjectSelection) return;
             var area = document.getElementById('inspector-explain-area');
             if (area) {
                 area.classList.remove('streaming');
                 area.classList.add('rendered');
-                area.innerHTML = renderMarkdown(_explainObjectBuffer);
+                if (msg.safeEvidenceAnswer) {
+                    area.innerHTML = renderMarkdown(_explainObjectBuffer); // Escapes HTML; never executes model output.
+                    attachInvestigationEvidence(area, msg.evidence);
+                } else { area.innerHTML = renderMarkdown(_explainObjectBuffer); }
                 area.scrollTop = 0;
             }
             _explainObjectBuffer = '';
+            _explainObjectSelection = null;
             var btn = document.getElementById('inspector-explain-btn');
             if (btn) { btn.textContent = 'Explain this object'; btn.disabled = false; }
         });
 
         onMessage('explainError', function(msg) {
+            var panel = document.getElementById('inspector-panel');
+            if (!_explainObjectSelection || String(msg.objectId) !== _explainObjectSelection || panel.dataset.objectId !== _explainObjectSelection) return;
             _explainObjectBuffer = '';
+            _explainObjectSelection = null;
             var area = document.getElementById('inspector-explain-area');
             if (area) {
                 area.classList.remove('streaming');

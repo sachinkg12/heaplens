@@ -19,7 +19,9 @@ Use Why alive, Inspect, Show referrers, Jump/View Source, and Fix with AI where 
 
 Nested rows overlap and must not be added. A large ArrayList, its Object[] and its contents can all describe the same retained bytes. A dominator edge need not be an actual field reference.
 
-**Known host difference:** the audited VS Code renderer divides by the sum of displayed top-entry retained sizes, which can overlap. IntelliJ divides by reachable heap. Do not compare these percentages as equivalent or call both “% of reachable heap.” Compare byte values and size models until the product denominator issue is corrected. Flame Graph areas and displayed roots likewise should not be treated as a guaranteed whole-heap partition.
+The current shared tree renderer divides each object's retained bytes by the analysis's reachable heap bytes. The **% reachable** heading and row tooltip identify this denominator. Filtering, expansion, paging and Back to Root do not change it. Missing, zero or invalid reachable-heap values display **N/A**, without substituting total heap or a sum of rows. Restart, cancellation and failure retire the old denominator; another dump editor has its own state.
+
+Older VS Code packages used the sum of displayed top-entry retained sizes, which can overlap. Compare byte values and check the installed package when interpreting historical screenshots. Flame Graph areas and displayed roots are not a guaranteed whole-heap partition; the Flame Graph tooltip reports **% of parent**, a different ratio.
 
 ## Source and AI
 

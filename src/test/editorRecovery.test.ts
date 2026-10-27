@@ -2,6 +2,39 @@ import { test } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { editorHarness, FakeServer, settle } from './editorHarness';
 
+test('retired tree child results and failures cannot reuse a replacement analysis denominator', async () => {
+    for (const failed of [false, true]) {
+        const clients: FakeServer[] = [], host = editorHarness(() => { const c = new FakeServer(); clients.push(c); return c; }), view = host.panel();
+        try {
+            await host.open('/tmp/tree-percentage-retry.hprof', view); await view.send({ command: 'ready' });
+            let resolve!: (value: unknown) => void, reject!: (error: Error) => void;
+            clients[0].sendRequest = async () => new Promise((yes, no) => { resolve = yes; reject = no; });
+            const old = view.send({ command: 'getChildren', objectId: 512 });
+            await settle(); await view.send({ command: 'analyzeRetained' });
+            const count = view.messages.length;
+            if (failed) { reject(new Error('retired tree request')); }
+            else { resolve([{ object_id: 513, retained_size: 100 }]); }
+            await old; assert.equal(view.messages.length, count);
+        } finally { host.provider.dispose(); }
+    }
+});
+
+test('incident reports preserve zero reachable heap and never substitute total heap', async () => {
+    const host = editorHarness(() => new FakeServer()), view = host.panel();
+    try {
+        await host.open('/tmp/report-percentage.hprof', view); await view.send({ command: 'ready' });
+        const data = host.provider.getAnalysisData(); assert.ok(data); assert.ok(data.summary);
+        const summary = data.summary;
+        for (const value of [0, undefined, NaN, Infinity]) {
+            Object.assign(summary, { total_instances: 1, total_classes: 1, total_arrays: 0, total_gc_roots: 1,
+                total_heap_size: 1024, reachable_heap_size: value });
+            await view.send({ command: 'copyReport' });
+            assert.match(host.clipboard.at(-1) || '', value === 0
+                ? /Reachable Heap Size:\*\* 0 B/ : /Reachable Heap Size:\*\* Not calculated/);
+        }
+    } finally { host.provider.dispose(); }
+});
+
 test('editor paints before its one analysis, streams snapshots, and rejects stale progress', async () => {
     const client=new FakeServer();client.autoComplete=false;
     const host=editorHarness(()=>client), view=host.panel();

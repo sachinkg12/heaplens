@@ -1,50 +1,33 @@
 ---
 sidebar_position: 3
-title: Nine MCP tools
+title: Scoped MCP metadata tools
 ---
 
-These are current tool definitions from `hprof-server --mcp`. Use tools/list to inspect the exact native version. Arguments are objects; paths belong to the **server machine**. Analyze first, except for lifecycle/tool discovery.
+These six tools belong to the updated local implementation. Use `tools/list` on the executable you launch. Launch-time exact-file approval and `--mcp-share-metadata` are required; request arguments cannot grant permission.
 
-| Tool | Required arguments | Optional | Result / prerequisite |
-| --- | --- | --- | --- |
-| analyze_heap | path | — | Synchronous analysis text summary; establishes cached state |
-| get_leak_suspects | path | — | Candidate descriptions from cached analysis, not confirmed leaks |
-| get_class_histogram | path | limit (default 30) | Bounded top rows; shallow/retained aggregates |
-| drill_down | path, object_id | — | Immediate dominator children; not every direct field reference |
-| get_summary | path | — | Modeled heap sizes and counts |
-| get_waste_analysis | path | — | Formatted estimates; four-category backend data, formatter may show a subset |
-| execute_heapql | path, query | — | Read-only query table / navigation output |
-| inspect_object | path, object_id | — | Field names/types, primitive values, reference summaries for supported instances |
-| compare_heaps | current_path, baseline_path | — | Deltas; both files must already be analyzed in this process |
+| Tool | Required arguments | Result |
+| --- | --- | --- |
+| list_dumps | Empty object | Approved aliases such as dump_1; no local paths |
+| analyze_heap | dump_id | New analysis identity and bounded summary evidence; replaces previous state |
+| get_summary | dump_id, analysis_id | Sizes/counts and up to 15 retained-object descriptors |
+| investigate_heap | dump_id, analysis_id, action | One bounded metadata read |
+| get_evidence | dump_id, analysis_id, evidence_id | A previously returned record from this analysis |
+| close_dump | dump_id, analysis_id | Releases state and invalidates its evidence |
 
-Object IDs are unsigned native identifiers scoped to one dump. Use a precision-preserving client when they exceed JavaScript's safe integer range. Do not silently round IDs.
+Only `object`, `fields`, `outbound`, `referrers`, `children` and `root_path` are accepted actions. Field reads return names/types, not contents. Unknown operations, numeric IDs, extra arguments, arbitrary paths and legacy unrestricted tools fail closed.
 
-## Example tool requests
+## Read an object
 
-```json
-{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"execute_heapql","arguments":{"path":"/absolute/path/app.hprof","query":"SELECT object_id, class_name, retained_size FROM instances ORDER BY retained_size DESC LIMIT 20"}}}
-```
+Replace illustrative identities with ones actually returned for your dump:
 
 ```json
-{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"inspect_object","arguments":{"path":"/absolute/path/app.hprof","object_id":123456}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"investigate_heap","arguments":{"dump_id":"dump_1","analysis_id":"A1","action":{"operation":"object","object_id":"512"}}}}
 ```
 
-Use an ID actually returned for your dump, not this illustrative number. See [HeapQL](../api-reference/heapql.md) for joins/subqueries/navigation.
+Tools return MCP text content containing JSON and an `isError` flag. Success data includes the analysis identity and evidence record; the record has an opaque ID, scope, operation and bounded data. Errors do not echo paths or submitted arguments. Missing evidence, exhausted search or an empty prefix does not prove absence.
 
-## Response shape
+## Interpretation
 
-MCP tools return content blocks, typically formatted text:
+Handles establish provenance within one process and analysis, not causal truth or a cryptographic certificate. Class retained totals overlap across classes; retention is not proof of a leak. A snapshot cannot establish growth, intended lifetime or whether a repair works.
 
-```json
-{"content":[{"type":"text","text":"Illustrative formatted tool output"}],"isError":false}
-```
-
-This is not the editor's raw ObjectReport/summary JSON contract. Missing arguments, unanalyzed paths, unsupported IDs, and query errors can return isError true. An empty child list may mean a leaf/unknown ID; inspection can fail for non-instance nodes. Do not turn an empty output into a correctness guarantee.
-
-Top-N lists/previews are incomplete. LIMIT/limit does not bound initial analysis RAM or necessarily query scans. The native process can retain multiple graphs; stop it when finished.
-
-## Privacy and interpretation
-
-MCP tool values/previews are **not minimized editor prompts**. Client/model policies apply to returned data. Names, paths, and primitive contents can be exposed. Read [privacy](../ai-integration/privacy.md).
-
-Retained class totals overlap across classes; a resolved suspect is not proof a repair worked. See [size semantics](../concepts/retained-vs-shallow-size.md) and [Compare](../tabs-guide/compare-tab.md).
+The external client owns its model reasoning and can still generate unsupported prose. HeapLens's built-in evidence-linked answer renderer is a separate host feature. See [limits](./setup.md), [size semantics](../concepts/retained-vs-shallow-size.md) and [privacy](../ai-integration/privacy.md).

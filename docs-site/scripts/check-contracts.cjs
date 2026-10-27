@@ -26,9 +26,10 @@ function check(site=path.resolve(__dirname,'..'),repo=path.resolve(site,'..')){
   assert.ok(license&&(license==='https://github.com/sachinkg12/heaplens/blob/main/LICENSE'||path.resolve(path.dirname(repositoryContributor),license)===path.join(repo,'LICENSE')),'Contributor license link must resolve to the repository license');
   assert.ok(!internalContent.test(fs.readFileSync(path.join(repo,'hprof-analyzer/docs/CLI.md'),'utf8')),'Public documentation content policy: CLI entry guide');
   const native=fs.readFileSync(path.join(repo,'hprof-analyzer/src/main.rs'),'utf8');
-  const definitions=native.slice(native.indexOf('fn mcp_tool_definitions()'),native.indexOf('fn get_analysis_state_for_path('));
-  const names=[...definitions.matchAll(/"name":\s*"([a-z_]+)"/g)].map(m=>m[1]);
-  assert.equal(names.length,9,'Update the documented MCP count');
+  const scoped=fs.readFileSync(path.join(repo,'hprof-analyzer/src/mcp_scope.rs'),'utf8');
+  const definitions=scoped.slice(scoped.indexOf('let defs'),scoped.indexOf('fn summary('));
+  const names=[...definitions.matchAll(/\(\s*"([a-z_]+)"\s*,\s*fields\(/g)].map(m=>m[1]).filter(name=>name!=='action');
+  assert.equal(names.length,6,'Update the documented MCP count');
   const mcp=fs.readFileSync(path.join(site,'docs/mcp/tools-reference.md'),'utf8');
   for(const name of names)assert.match(mcp,new RegExp('\\| '+name+' \\|'),'Undocumented MCP tool '+name);
   const registry=fs.readFileSync(path.join(repo,'src/llmClient.ts'),'utf8').split('PROVIDER_REGISTRY:')[1].split('\n};')[0];

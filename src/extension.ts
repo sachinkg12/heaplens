@@ -66,7 +66,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register chat participant for Copilot Chat integration
-    registerChatParticipant(context, () => editorProvider?.getAnalysisData() ?? null);
+    registerChatParticipant(context, () => editorProvider?.captureCopilotScope() ?? null);
 
     // Set up dependency resolver for source code bridge Tier 2
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -180,8 +180,8 @@ export function activate(context: vscode.ExtensionContext) {
     });
 }
 
-export function deactivate() {
-    disposeTelemetry();
+export async function deactivate() {
+    const telemetryShutdown = disposeTelemetry();
     setDependencyResolver(null);
     depResolver?.dispose();
     depResolver = null;
@@ -189,4 +189,5 @@ export function deactivate() {
     editorProvider = null;
     outputChannel?.dispose();
     outputChannel = null;
+    await telemetryShutdown;
 }

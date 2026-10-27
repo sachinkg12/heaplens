@@ -22,4 +22,4 @@ Default empty HashMap/ArrayList instances do not necessarily allocate eventual b
 
 Per-copy string estimates may overcount already-shared arrays. Recognized collection layouts/extraction heuristics do not establish correctness for every JDK or third-party structure. Unsupported objects can be missed; category estimates need not be independently reclaimable.
 
-Use previews, then inspect actual backing objects and test a semantic-preserving optimization. Previews can reveal sensitive text. They are omitted from minimized editor prompts but remain in local reports/exports and MCP output. See [Waste](../tabs-guide/waste-tab.md) and [privacy](../ai-integration/privacy.md).
+Use previews, then inspect actual backing objects and test a semantic-preserving optimization. Previews can reveal sensitive text. They remain in local reports/exports, but the updated built-in investigation and scoped MCP interface exclude them. See [Waste](../tabs-guide/waste-tab.md) and [privacy](../ai-integration/privacy.md).

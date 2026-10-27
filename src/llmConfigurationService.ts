@@ -21,11 +21,12 @@ export class LlmConfigurationService {
 
     public async getConfig(): Promise<LlmConfig> {
         const provider = this.getCurrentProvider();
+        const baseUrl=this.settings.getBaseUrl() || undefined,model=this.settings.getModel() || undefined;
         return {
             provider,
             apiKey: await this.credentials.getApiKey(provider),
-            baseUrl: this.settings.getBaseUrl() || undefined,
-            model: this.settings.getModel() || undefined
+            baseUrl,
+            model
         };
     }
 

@@ -30,7 +30,8 @@ const data = { command: 'analysisComplete', summary: { reachable_heap_size: 100,
     { class_name: 'example.Container', instance_count: 3, shallow_size: 48, retained_size: 75 }
   ] };
 let browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await chromium.launch({ headless: true,
+  ...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE ? { executablePath: process.env.HEAPLENS_CHROMIUM_EXECUTABLE } : {}) }); });
 after(async () => { await browser?.close(); });
 async function send(page, message) {
   await page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), message);
@@ -57,7 +58,7 @@ for (const width of [1280, 600]) {
       assert.match(csv.csv, /"example.Owner",2,32,50,50\.0\n$/);
       await page.locator('#histogram-search').fill('');
       assert.equal(await page.locator('#histogram-table tbody tr').count(), 3);
-      assert.match(await page.locator('.histogram-percentage-note').textContent(), /need not sum to 100%/);
+      assert.match(await page.locator('#tab-histogram .histogram-percentage-note').textContent(), /need not sum to 100%/);
       if (process.env.HEAPLENS_HISTOGRAM_EVIDENCE_DIR) {
         fs.mkdirSync(process.env.HEAPLENS_HISTOGRAM_EVIDENCE_DIR, { recursive: true });
         await page.screenshot({ path: path.join(process.env.HEAPLENS_HISTOGRAM_EVIDENCE_DIR, 'histogram-percentage-' + width + '.png') });

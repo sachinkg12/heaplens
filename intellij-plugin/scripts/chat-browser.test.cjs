@@ -7,7 +7,7 @@ const html=fs.readFileSync(path.join(__dirname,'../build/generated/webview/webvi
   .replaceAll('__NONCE__','chat-test').replace('__BRIDGE__','window.sentMessages=(window.sentMessages || []).concat([message]);');
 const analysis={command:'analysisComplete',summary:{reachable_heap_size:1024,total_heap_size:2048,total_instances:10,total_arrays:1,total_classes:3,total_gc_roots:2},topObjects:[],topLayers:[],leakSuspects:[],classHistogram:[]};
 let browser;
-before(async()=>{browser=await chromium.launch({headless:true});});
+before(async()=>{browser=await chromium.launch({headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{})});});
 after(async()=>{await browser?.close();});
 async function send(page,data){await page.evaluate(data=>window.dispatchEvent(new MessageEvent('message',{data})),data);}
 async function latest(page){return page.evaluate(()=>window.sentMessages.at(-1));}
@@ -31,14 +31,16 @@ for(const width of [1280,600]) test('AI streaming, safe rendering, cancel/reset 
     assert.match(await page.locator('#ai-status').textContent(),/No AI request/);
     await page.locator('#chat-input').fill('Suggest a query');await page.locator('#chat-input').press('Enter');const second=await latest(page);
     assert.notEqual(first.requestId,second.requestId);
-    const answer='Retained memory can overlap.\n\n```heapql\nSELECT class_name FROM instances LIMIT 5\n```\n<img src=x onerror=alert(1)>\n[unsafe](javascript:alert(1))';
+    const answer='The summary is available [E000000000001_1]. Retained memory can overlap.\n\n```heapql\nSELECT class_name FROM instances LIMIT 5\n```\n<img src=x onerror=alert(1)>\n[unsafe](javascript:alert(1))';
     await send(page,{command:'aiChunk',requestId:second.requestId,text:answer});
     assert.match(await page.locator('#chat-messages .assistant').last().textContent(),/Retained memory/);
-    await send(page,{command:'aiDone',requestId:second.requestId});
+    await send(page,{command:'aiDone',requestId:second.requestId,safeEvidenceAnswer:true,evidence:[{id:'E000000000001_1',operation:'summary'}]});
     assert.equal(await page.locator('#chat-messages img, #chat-messages script, #chat-messages a[href^="javascript:"]').count(),0);
     assert.equal(await page.locator('#chat-messages .chat-run-query-btn').count(),1);
     assert.equal(await page.locator('#chat-send').isEnabled(),true);
     assert.equal(await page.evaluate(()=>window.sentMessages.some(m=>m.command==='executeQuery')),false);
+    assert.equal(await page.locator('#chat-messages button').filter({hasText:'View evidence: summary'}).count(),1);
+    assert.match(await page.locator('#chat-messages .assistant').last().textContent(),/AI interpretation may be wrong/);
     const sendBox=await page.locator('#chat-send').boundingBox();assert.ok(sendBox && sendBox.y>=0 && sendBox.y+sendBox.height<=800);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     if(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR){fs.mkdirSync(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.HEAPLENS_LAYOUT_EVIDENCE_DIR,'chat-'+width+'.png')});}

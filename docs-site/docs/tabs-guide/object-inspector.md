@@ -17,7 +17,7 @@ A dominator relationship is not necessarily a direct field. Unreachable cycles a
 
 ## Explain
 
-Explain supplies minimized field types/names and reference/size metadata. Raw primitive values remain local in this prompt policy; **MCP inspection can return them**. A model cannot establish lifecycle intent from missing context.
+Explain supplies minimized field types/names and reference/size metadata. Raw primitive values remain local; the updated MCP interface also excludes them. A model cannot establish lifecycle intent from missing context.
 
 Verify model advice against actual fields and paths. WeakHashMap, stream closure, and generated before/after code are not universal fixes. Source and full-file approval are independent actions.
 

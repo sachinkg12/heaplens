@@ -81,6 +81,13 @@ class RealEngineTest {
         }
         @Override public void close() { session.close(); until(() -> session.state() == HeapSession.State.CLOSED); }
     }
+    @Test void capturedInvestigationUsesActualEngineAcrossMemoryDiskBuildAndReopen()throws Exception{
+        Path cache=Files.createTempDirectory("heaplens-investigation-cache-");JsonObject expected=null;
+        for(String mode:List.of("memory","disk","disk"))try(Run run=new Run(dump,List.of(binary,"--storage",mode,"--cache-dir",cache.toString(),"--edge-buffer-mib","1"))){
+            var engine=run.session.captureInvestigation().get(3,java.util.concurrent.TimeUnit.SECONDS);String id=run.analysis().getAsJsonArray("topObjects").get(0).getAsJsonObject().get("object_id").getAsString();
+            for(String operation:List.of("object","fields","outbound","referrers","children","root_path")){JsonObject action=new JsonObject();action.addProperty("operation",operation);action.addProperty("object_id",id);String job=java.util.UUID.randomUUID().toString().replace("-","");JsonObject evidence=engine.read(action,job).get(3,java.util.concurrent.TimeUnit.SECONDS);engine.cancel(job);assertEquals(operation,evidence.get("operation").getAsString());assertEquals(id,evidence.getAsJsonObject("selected").get("object_id").getAsString());assertFalse(evidence.toString().contains("primitive_value"));if(operation.equals("object")){if(expected!=null)assertEquals(expected,evidence);else expected=evidence;}}
+        }
+    }
     @Test void diskStorageReopensThroughTheNativeSessionAndSurvivesRetry() throws Exception {
         Path root=Files.createTempDirectory("heaplens-native-index-");
         Path cache=root.resolve("cache");

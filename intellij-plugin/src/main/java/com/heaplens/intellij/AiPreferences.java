@@ -13,14 +13,18 @@ public final class AiPreferences implements PersistentStateComponent<AiPreferenc
         public String model="";
     }
     private Values values=new Values();
+    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> listeners=new java.util.concurrent.CopyOnWriteArrayList<>();
+    public AutoCloseable listen(Runnable action){listeners.add(action);return ()->listeners.remove(action);}
     public synchronized Values getState() {
         Values copy=new Values();copy.provider=values.provider;copy.baseUrl=values.baseUrl;copy.model=values.model;return copy;
     }
-    public synchronized void loadState(Values state) {
-        Values copy=new Values();copy.provider=state.provider;copy.baseUrl=state.baseUrl;copy.model=state.model;values=copy;
+    public void loadState(Values state) {
+        synchronized(this){Values copy=new Values();copy.provider=state.provider;copy.baseUrl=state.baseUrl;copy.model=state.model;values=copy;}
+        listeners.forEach(action->{try{action.run();}catch(RuntimeException ignored){}});
     }
     public synchronized AiConfiguration.Settings snapshot() {return new AiConfiguration.Settings(values.provider,values.baseUrl,values.model);}
-    public synchronized void save(AiConfiguration.Settings settings) {
-        Values next=new Values();next.provider=settings.provider();next.baseUrl=settings.baseUrl();next.model=settings.model();values=next;
+    public void save(AiConfiguration.Settings settings) {
+        synchronized(this){Values next=new Values();next.provider=settings.provider();next.baseUrl=settings.baseUrl();next.model=settings.model();values=next;}
+        listeners.forEach(action->{try{action.run();}catch(RuntimeException ignored){}});
     }
 }

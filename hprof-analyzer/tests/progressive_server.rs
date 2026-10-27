@@ -171,6 +171,31 @@ fn req(id: u64, method: &str, path: &std::path::Path) -> Value {
 }
 
 #[test]
+fn bounded_investigation_stdio_pins_generation_and_rejects_reused_jobs_and_unsafe_actions() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("evidence.hprof");
+    std::fs::write(&path,fixture(1)).unwrap();let mut server=Server::new();
+    server.send(req(1,"analyze_heap",&path));server.ack(1);
+    assert_eq!(server.complete(1,"heap_analysis_complete")["status"],"completed");
+    let read=json!({"jsonrpc":"2.0","id":2,"method":"investigate_heap","params":{
+        "path":path,"analysis_id":"1","job_id":"a".repeat(32),"action":{"operation":"object","object_id":"512"}}});
+    server.send(read.clone());let result=server.ack(2);
+    assert_eq!(result["result"]["analysis_id"],"1");
+    assert_eq!(result["result"]["evidence"]["selected"]["object_id"],"512");
+    assert_eq!(result["result"]["evidence"]["selected"]["shallow_size"],"16");
+    server.send(read.clone());assert!(server.ack(2)["error"].is_object());
+    for (id,key,value) in [(3,"analysis_id",json!("999")),(4,"action",json!({"operation":"execute_query","object_id":"512"})),
+        (5,"action",json!({"operation":"object","object_id":512}))] {
+        let mut bad=read.clone();bad["id"]=json!(id);bad["params"]["job_id"]=json!(format!("{id:032x}"));bad["params"][key]=value;
+        server.send(bad);assert!(server.ack(id)["error"].is_object());
+    }
+    server.send(json!({"jsonrpc":"2.0","id":6,"method":"cancel_investigation","params":{"job_id":"a".repeat(32)}}));
+    assert_eq!(server.ack(6)["result"]["cancelled"],false);
+    server.send(req(7,"analyze_heap",&path));server.ack(7);server.complete(7,"heap_analysis_complete");
+    let mut stale=read;stale["id"]=json!(8);stale["params"]["job_id"]=json!("b".repeat(32));server.send(stale);
+    assert!(server.ack(8)["error"].is_object());
+}
+
+#[test]
 fn scan_cannot_implicitly_query_and_explicit_full_analysis_restores_readiness() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fixture.hprof");

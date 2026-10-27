@@ -12,7 +12,7 @@ function client(server,args=[]){const child=spawn(server,args,{stdio:['pipe','pi
   return {request,notifications,notify(method){child.stdin.write(JSON.stringify({jsonrpc:'2.0',method})+'\n');},close(){lines.close();child.kill('SIGTERM');}};
 }
 async function wait(predicate){const end=Date.now()+15000;while(!predicate()){if(Date.now()>end)throw new Error('Analysis notification timeout');await new Promise(r=>setTimeout(r,10));}}
-async function check(server){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'heaplens-doc-examples-')),a=path.join(temp,'synthetic with spaces.hprof'),b=path.join(temp,'second.hprof');fs.writeFileSync(a,fixture(9));fs.writeFileSync(b,fixture(19));const rpc=client(server),mcp=client(server,['--mcp']);
+async function check(server){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'heaplens-doc-examples-')),a=path.join(temp,'synthetic with spaces.hprof'),b=path.join(temp,'second.hprof');fs.writeFileSync(a,fixture(9));fs.writeFileSync(b,fixture(19));const rpc=client(server),mcp=client(server,['--mcp','--mcp-allow-file',a,'--mcp-allow-file',b,'--mcp-share-metadata']);
   try{
     assert.equal((await rpc.request('ping')).result.status,'ok');
     for(const dump of [a,b]){const before=rpc.notifications.length,response=await rpc.request('analyze_heap',{path:dump});assert.ok(response.result,'Analysis acknowledgement');await wait(()=>rpc.notifications.slice(before).some(n=>n.method==='heap_analysis_complete'));const complete=rpc.notifications.slice(before).find(n=>n.method==='heap_analysis_complete');assert.equal(complete.params.status,'completed');assert.equal(complete.params.summary.total_arrays,1);for(const name of ['total_heap_size','reachable_heap_size','total_instances','total_classes','total_gc_roots','hprof_version','heap_types'])assert.ok(name in complete.params.summary,'Summary field '+name);}
@@ -44,9 +44,10 @@ async function check(server){const temp=fs.mkdtempSync(path.join(os.tmpdir(),'he
     const exported=path.join(temp,'native-export.json');assert.equal((await rpc.request('export_json',{path:a,output_path:exported})).result.success,true);const data=JSON.parse(fs.readFileSync(exported,'utf8'));for(const name of ['source_file','summary','class_histogram','leak_suspects','object_leak_suspects','top_objects'])assert.ok(name in data,'Export field '+name);
     assert.equal((await mcp.request('initialize',{protocolVersion:'2024-11-05',capabilities:{},clientInfo:{name:'docs-check',version:'1'}})).result.protocolVersion,'2024-11-05');
     mcp.notify('notifications/initialized');
-    const tools=(await mcp.request('tools/list')).result.tools;assert.equal(tools.length,9);
-    for(const dump of [a,b])assert.equal((await mcp.request('tools/call',{name:'analyze_heap',arguments:{path:dump}})).result.isError,false);
-    for(const tool of tools.filter(t=>t.name!=='analyze_heap')){const args={path:a,object_id:512,query:'SELECT object_id FROM instances',current_path:b,baseline_path:a};const response=(await mcp.request('tools/call',{name:tool.name,arguments:args})).result;assert.ok(Array.isArray(response.content)&&typeof response.isError==='boolean','MCP content '+tool.name);if(tool.name!=='inspect_object')assert.equal(response.isError,false,'MCP tool '+tool.name);}
+    const tools=(await mcp.request('tools/list')).result.tools;assert.equal(tools.length,6);
+    const tool=async(name,args)=>{const response=(await mcp.request('tools/call',{name,arguments:args})).result;assert.equal(response.isError,false,'MCP '+name);return JSON.parse(response.content[0].text);};
+    assert.equal((await tool('list_dumps',{})).dumps.length,2);
+    for(const dump_id of ['dump_1','dump_2']){const full=await tool('analyze_heap',{dump_id}),current={dump_id,analysis_id:full.analysis_id};await tool('get_summary',current);const read=await tool('investigate_heap',{...current,action:{operation:'object',object_id:'512'}});await tool('get_evidence',{...current,evidence_id:read.evidence.id});await tool('close_dump',current);}
     console.log(JSON.stringify({query_examples:queries,rpc_examples:rpcExamples,mcp_tools:tools.length,schemas:'checked',private_data:'none',telemetry:'disabled',external_ai_calls:0}));
   }finally{rpc.close();mcp.close();fs.rmSync(temp,{recursive:true,force:true});}
 }

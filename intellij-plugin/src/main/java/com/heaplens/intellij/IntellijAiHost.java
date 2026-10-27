@@ -64,17 +64,27 @@ final class IntellijAiHost implements AiHostPort {
     public void confirmChatSession(AiConfiguration.Settings settings,boolean hasHistory,BooleanSupplier active,Consumer<Boolean> reply) {
         confirm(settings,hasHistory,true,active,reply);
     }
+    public AutoCloseable onConfigurationChange(Runnable invalidate){
+        // An absent IDE application means AI configuration is unavailable, not that heap-view startup should fail.
+        var application=ApplicationManager.getApplication();if(application==null)return ()->{};
+        return application.getService(AiPreferences.class).listen(invalidate);
+    }
+    public void confirmInvestigation(AiConfiguration.Settings settings,BooleanSupplier active,Consumer<Boolean> reply){confirm(settings,true,true,true,active,reply);}
     private void confirm(AiConfiguration.Settings settings,boolean hasHistory,boolean chatSession,BooleanSupplier active,Consumer<Boolean> reply) {
+        confirm(settings,hasHistory,chatSession,false,active,reply);
+    }
+    private void confirm(AiConfiguration.Settings settings,boolean hasHistory,boolean chatSession,boolean investigation,BooleanSupplier active,Consumer<Boolean> reply) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if(!active.getAsBoolean()) return;
             Disposable closer=null;
             try {
-                String message=(chatSession ? "Allow AI Chat in this heap-dump editor to send to:\n" : "Send this AI request to:\n")+settings.endpoint()+"\n\nProvider: "+AiProviders.get(settings.provider()).label()+
+                String message=(chatSession ? "Allow AI in this heap-dump editor to send to:\n" : "Send this AI request to:\n")+settings.endpoint()+"\n\nProvider: "+AiProviders.get(settings.provider()).label()+
                     "\nModel: "+settings.model()+"\n\nIncludes your question"+(chatSession || hasHistory ? ", recent successful conversation history" : "")+
                     ", heap counts/sizes, selected class/field names and suspect metrics.\n\n"
                     +(chatSession ? "Later Send clicks in this chat session will use this approval without another popup. "
                         +"Clear, Configure AI, Retry, closing/reopening the dump, or changing the provider, endpoint, model or key requires approval again. "
-                        +"Approval is not saved or shared with other dump editors. Explain and Fix with AI still ask separately.\n\n" : "")
+                        +"Approval is not saved or shared with other dump editors. Fix with AI still needs separate source approval.\n\n" : "")
+                    +(investigation?"Bounded Chat/Explain also sends exact object IDs, field names/types and bounded references/root paths. Each question permits up to four provider calls and three engine reads, with a 90-second overall deadline and no automatic retry. Stop revokes this approval.\n\n":"")
                     +"No automatic raw string/primitive values, source files or local paths are included. Names and text you type may still be sensitive. "
                     +"Local endpoints can forward data elsewhere. Provider charges and data policies may apply.\n\n"
                     +"AI suggestions may be wrong. They do not execute queries or change files.";
@@ -87,7 +97,9 @@ final class IntellijAiHost implements AiHostPort {
                 };
                 closer=() -> {if(!dialog.isDisposed()) dialog.close(DialogWrapper.CANCEL_EXIT_CODE);};
                 Disposer.register(owner,closer);
-                boolean approved=dialog.showAndGet();
+                javax.swing.Timer expiry=new javax.swing.Timer(200,event->{if(!active.getAsBoolean() && !dialog.isDisposed())dialog.close(DialogWrapper.CANCEL_EXIT_CODE);});
+                expiry.start();boolean approved;
+                try{approved=dialog.showAndGet();}finally{expiry.stop();}
                 if(active.getAsBoolean()) reply.accept(approved);
             } catch(RuntimeException failure) {if(active.getAsBoolean()) reply.accept(false);}
             finally {if(closer!=null) Disposer.dispose(closer);}

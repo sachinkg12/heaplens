@@ -16,6 +16,8 @@ function aiControls() {
 function acceptsAi(message) {return aiReady && aiPending && message.requestId===aiPending;}
 function finishAi() {aiPending=null;_isChatStreaming=false;aiControls();}
 function requestAi(message) {
+    if(message.command==='openAiEvidence') {send(message);return;}
+    if(message.command==='stopAi') {send({command:message.channel && message.channel!=='chat'?'cancelAiAssistance':'aiStop'});return;}
     if(message.command==='executeQuery') {
         if(!aiReady || chatQueryId || typeof message.query!=='string' || message.query.length>32000) {
             if(_pendingChatQuery) {_pendingChatQuery.button.disabled=false;_pendingChatQuery.button.textContent='Run Query';_pendingChatQuery=chatQueryContext;}
@@ -56,13 +58,7 @@ listen('aiConfiguration',function(message) {
 listen('aiReset',function(message) {clearAiUi(message.message || 'Chat cleared.');});
 listen('aiQueryResult',function(message){
     if(!aiReady || message.requestId!==chatQueryId || !_pendingChatQuery)return;
-    renderChatQueryResult(_pendingChatQuery.codeBlock,_pendingChatQuery.button,message.result);
-    var link=_pendingChatQuery.codeBlock.parentElement.querySelector('.chat-query-link');
-    if(link)link.addEventListener('click',function(){
-        document.getElementById('query-input').value=message.query;
-        document.getElementById('query-input').dispatchEvent(new Event('input'));
-        document.getElementById('query-run-btn').click();
-    });
+    renderChatQueryResult(_pendingChatQuery.codeBlock,_pendingChatQuery.button,message.result,message.query);
     chatQueryId=null;chatQueryContext=null;_pendingChatQuery=null;
     _chatMessages.querySelectorAll('.chat-run-query-btn').forEach(function(button){button.disabled=false;});
 });

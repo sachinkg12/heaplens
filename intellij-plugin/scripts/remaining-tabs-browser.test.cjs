@@ -9,7 +9,7 @@ const suspect={class_name:'example.Owner',object_id:42,retained_size:256,retaine
 const analysis={command:'analysisComplete',summary,topObjects:[],topLayers:[],classHistogram:[],leakSuspects:[suspect],objectLeakSuspects:[suspect],
   wasteAnalysis:{total_wasted_bytes:48,waste_percentage:2.3,duplicate_string_wasted_bytes:32,empty_collection_wasted_bytes:16,
     duplicate_strings:[{preview:'LOCAL_ONLY <img src=x>',count:3,wasted_bytes:32,total_bytes:48}],empty_collections:[{class_name:'example.Empty',count:1,wasted_bytes:16}]}};
-let browser;before(async()=>{browser=await chromium.launch({headless:true});});after(async()=>{await browser?.close();});
+let browser;before(async()=>{browser=await chromium.launch({headless:true,...(process.env.HEAPLENS_CHROMIUM_EXECUTABLE?{executablePath:process.env.HEAPLENS_CHROMIUM_EXECUTABLE}:{})});});after(async()=>{await browser?.close();});
 async function send(page,data){await page.evaluate(data=>window.dispatchEvent(new MessageEvent('message',{data})),data);}
 async function latest(page){return page.evaluate(()=>window.sentMessages.at(-1));}
 async function run(body){const page=await browser.newPage({viewport:{width:1100,height:850}}),errors=[];
