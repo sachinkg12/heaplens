@@ -15,6 +15,16 @@ test('Rust accuracy gate discovers every maintained integration suite and doctes
   assert.doesNotMatch(step.run, /--test\s|--lib\b|--bins\b/);
 });
 
+test('Rust browser tests compile their shared VS Code query formatter before running', () => {
+  const commands = runs(jobs['test-rust']);
+  const compile = commands.indexOf('npm run compile');
+  const browser = commands.indexOf('node --test browser-ui/test.cjs');
+  const storage = commands.indexOf('node --test out/test/analysisStorage.integration.test.js');
+  assert.ok(compile >= 0 && browser > compile, 'compile shared TypeScript before the browser tests need out/webview/js/chatQueries.js');
+  assert.ok(storage > compile, 'compile before the VS Code storage integration test');
+  assert.equal((commands.match(/npm run compile/g) || []).length, 1, 'compile once in this job');
+});
+
 test('ordinary merges never version, tag or publish and release consistency is mandatory', () => {
   assert.ok(jobs.changes, 'CI needs a changed-path routing job');
   assert.equal(jobs['auto-version'], undefined);
@@ -184,7 +194,6 @@ test('VS Code storage controls are user-facing and shipped without private resea
     assert.ok(ignore.includes(pattern), 'missing package exclusion/allowlist: ' + pattern);
   const step = jobs['test-rust'].steps.find(candidate => candidate.name === 'Test VS Code storage adapter against the built server');
   assert.ok(step);
-  assert.match(step.run, /npm run compile/);
   assert.match(step.run, /HEAPLENS_TEST_SERVER=.*hprof-analyzer\/target\/release\/hprof-server/);
   assert.match(step.run, /node --test out\/test\/analysisStorage\.integration\.test\.js/);
 });
