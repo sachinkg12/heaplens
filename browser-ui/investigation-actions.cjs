@@ -28,7 +28,7 @@ async function run(session, message, kind) {
             if (!selected && !group) throw Error('The selected object or class group is unavailable.');
             extra.objectId = selected;
             question = selected ? 'Explain selected object ' + selected + '; distinguish retention from a proven leak.'
-                : 'Explain class group ' + JSON.stringify(group.class_name.slice(0, 512)) + '; this is not a single object or a proven leak.';
+                : 'Explain the selected class group in the bounded metadata; this is not a single object or a proven leak.';
         }
         let entry = session.investigation;
         if (!entry || entry.config !== config || entry.raw !== raw || entry.rpc !== rpc || entry.generation !== generation) {

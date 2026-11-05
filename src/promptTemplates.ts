@@ -3,7 +3,7 @@
  * and the direct API chat panel (Layer 3).
  */
 
-import { CHAT_SCOPE_POLICY, DIAGNOSIS_POLICY } from './diagnosisPolicy';
+import { CHAT_SCOPE_POLICY, DIAGNOSIS_POLICY, screenChatInput } from './diagnosisPolicy';
 
 export const HEAP_ANALYSIS_SYSTEM_PROMPT = `You are HeapLens AI, a Java heap dump analysis assistant. You help developers understand memory usage, diagnose memory leaks, and optimize their Java applications.
 
@@ -48,44 +48,7 @@ ${DIAGNOSIS_POLICY}`;
  * Returns { safe: true, text } if OK, or { safe: false, reason } if blocked.
  */
 export function sanitizeChatInput(raw: string): { safe: true; text: string } | { safe: false; reason: string } {
-    const trimmed = raw.trim();
-
-    // Empty input
-    if (!trimmed) {
-        return { safe: false, reason: 'Please enter a message.' };
-    }
-
-    // Length limit — prevent excessive token usage
-    if (trimmed.length > 4000) {
-        return { safe: false, reason: 'Message too long (max 4,000 characters). Please shorten your question.' };
-    }
-
-    // Detect common prompt injection patterns
-    const injectionPatterns = [
-        /ignore\s+(all\s+)?(previous|above|prior|earlier)\s+(instructions|prompts|rules)/i,
-        /disregard\s+(all\s+)?(previous|above|prior|earlier)\s+(instructions|prompts|rules)/i,
-        /forget\s+(all\s+)?(previous|above|prior|earlier)\s+(instructions|prompts|rules)/i,
-        /you\s+are\s+now\s+(?:a|an)\s+(?!heap|memory|java|jvm)/i,
-        /act\s+as\s+(?:a|an)\s+(?!heap|memory|java|jvm)/i,
-        /pretend\s+(you\s+are|to\s+be)\s+(?!a\s+(?:heap|memory))/i,
-        /system\s*:\s*/i,
-        /\[INST\]/i,
-        /\[\/INST\]/i,
-        /<\|im_start\|>/i,
-        /<\|im_end\|>/i,
-        /reveal\s+(your|the)\s+(system|initial)\s+(prompt|instructions|message)/i,
-        /what\s+(are|is)\s+your\s+(system|initial)\s+(prompt|instructions|message)/i,
-        /repeat\s+(your|the)\s+(system|initial)\s+(prompt|instructions|rules)/i,
-        /output\s+(your|the)\s+(system|initial)\s+(prompt|instructions)/i,
-    ];
-
-    for (const pattern of injectionPatterns) {
-        if (pattern.test(trimmed)) {
-            return { safe: false, reason: 'I can only help with heap dump analysis. Please ask about memory usage, leak suspects, or HeapQL queries.' };
-        }
-    }
-
-    return { safe: true, text: trimmed };
+    return screenChatInput(raw);
 }
 
 export function buildAnalyzePrompt(context: string, question?: string): string {

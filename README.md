@@ -1,294 +1,159 @@
 # HeapLens — Java & Android Heap Dump Analyzer
 
-**Investigate heap dumps locally with a shared Rust engine and editor-native views.**
+**Understand what your JVM is retaining, follow the references, and investigate without leaving your workflow.**
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/guptasachinn.heaplens?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
 [![Open VSX Version](https://img.shields.io/open-vsx/v/guptasachinn/heaplens?label=Open%20VSX)](https://open-vsx.org/extension/guptasachinn/heaplens)
-[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/guptasachinn/heaplens?label=downloads)](https://open-vsx.org/extension/guptasachinn/heaplens)
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code-Marketplace-blue?logo=visualstudiocode)](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens)
-[![License](https://img.shields.io/github/license/sachinkg12/heaplens)](LICENSE)
+[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/guptasachinn/heaplens?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/guptasachinn/heaplens)
+[![License](https://img.shields.io/github/license/sachinkg12/heaplens)](https://github.com/sachinkg12/heaplens/blob/main/LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19121302-blue)](https://doi.org/10.5281/zenodo.19121302)
-[![Clones](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/clones-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
-[![Unique Cloners](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/cloners-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
 
-![HeapLens usage map](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/heaplens-usage-map.png)
+[VS Code](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens) · [Open VSX](https://open-vsx.org/extension/guptasachinn/heaplens) · [IntelliJ IDEA](https://plugins.jetbrains.com/plugin/35004-heaplens) · [CLI & browser](https://sachinkg12.github.io/heaplens/docs/getting-started/standalone/) · [Documentation](https://sachinkg12.github.io/heaplens/)
 
-![HeapLens Demo](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/demo.gif)
-![HeapLens Overview](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/overview.png)
+![HeapLens heap analysis in the editor](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/demo.gif)
 
----
+HeapLens analyzes local `.hprof` files using a shared native Rust engine. Explore class histograms, retained objects, dominators, references and GC-root paths; query the heap with HeapQL; compare snapshots; and optionally ask an AI assistant for help. Heap analysis itself does not upload the dump and does not require an AI account.
 
-## Why HeapLens?
+## Install where you work
 
-HeapLens brings Java and Android heap dump analysis into VS Code, with an IntelliJ adapter and standalone CLI/browser interfaces built on the same Rust engine. Open a supported `.hprof` file to investigate dominator trees, class histograms, leak suspects, estimated waste and other analysis views. Heap analysis runs locally; optional AI and telemetry have separate data-sharing controls.
+| Interface | Install | Published platform scope |
+| --- | --- | --- |
+| **VS Code and compatible editors** | [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens), [Open VSX](https://open-vsx.org/extension/guptasachinn/heaplens), or a matching [VSIX](https://github.com/sachinkg12/heaplens/releases) | macOS Apple Silicon and Intel; Windows x64; Linux x64 |
+| **IntelliJ IDEA** | [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/35004-heaplens) or a matching release ZIP | macOS Apple Silicon; IDEA 2026.1–2026.2 with JCEF |
+| **Terminal and local browser** | [npm](https://www.npmjs.com/package/heaplens-cli), [Homebrew](https://github.com/sachinkg12/homebrew-heaplens), or a [portable archive](https://github.com/sachinkg12/heaplens/releases) | macOS Apple Silicon; npm/browser require native ARM64 Node.js 22+ |
 
-HeapLens includes a built-in AI assistant that explains heap analysis findings in plain English and suggests code-level fixes. Ask questions like *"Why is my app using 2 GB of memory?"* or *"What's causing this OutOfMemoryError?"* and get actionable answers powered by your choice of 10 LLM providers including local models via Ollama.
+VS Code requires **1.75 or newer**; individual AI integrations may need newer host APIs. Extensions bundle their native analysis server: users do not need to install Rust or build the engine. Remote editors need the package for the extension-host machine, not necessarily the laptop. Package availability is not a claim that every feature has been manually validated on every platform.
 
-The native engine maps the capture read-only and uses compact CSR reference graphs. HeapQL provides SQL-like queries over objects, class aggregates and ownership. Analysis time and memory depend on object/edge density, storage and cache state, not just dump size. Start with the [host and installation guides](https://sachinkg12.github.io/heaplens/docs/getting-started/choose-host/) for package availability and platform requirements.
+For the standalone package, choose one installer:
 
-### Analysis modes
-
-- **Full analysis** is the default. The editor displays progress immediately, then shallow Overview/Histogram results when available, while references and dominators continue. Retained results appear only after they are computed.
-- **Quick Scan** returns allocation counts and shallow sizes without a reference graph. Choose **Analyze Retained** when you need ownership, paths, queries and other graph-dependent actions. Quick Scan supports conventional HPROF 1.0.1 and 1.0.2.
-- **Memory storage** is the default and rebuilds the graph for each new analysis. **Disk-backed references** build a private reusable index; reopening verifies the capture/index and recomputes dominators. Disk mode can reduce allocated working memory but can be slower on a first build and still needs RAM and free disk space.
-- **Waste is on demand.** Choose **Calculate Waste**, or use `heaplens analyze app.hprof --with-waste`. An uncalculated result is not zero waste.
-
-See [storage and resource guidance](https://sachinkg12.github.io/heaplens/docs/runbook/performance-tuning/). Completed disk indexes persist after closing the dump, contain sensitive metadata and are not encrypted or automatically uploaded.
-
----
-
-## Features
-
-### 11 Interactive Tabs
-
-| Tab | What it does |
-|-----|-------------|
-| **Overview** | Heap stats, top objects, D3.js pie & bar charts |
-| **Histogram** | Sortable class table with instance counts and sizes — browse instances after full analysis |
-| **Dominator Tree** | Expandable lazy-loaded tree with retained size bars, field names, and action buttons |
-| **Leak Suspects** | Significant classloaders (5% threshold) and other large objects/classes, with adjustable threshold slider |
-| **Waste** | Duplicate strings, empty collections, over-allocated arrays, boxed primitives |
-| **Source** | Jump to Java source — workspace files, Maven/Gradle dependency JARs, or CFR decompilation |
-| **Query** | HeapQL: SQL-like queries with autocomplete, syntax highlighting, and query history |
-| **Compare** | Diff two heap dumps — class deltas, leak changes, waste delta, export as markdown or CSV |
-| **Timeline** | Multi-snapshot trend analysis with D3.js line charts |
-| **Monitor** | Live JVM monitoring — connect to a running JVM over TCP and stream heap statistics in real time |
-| **AI Chat** | Ask questions in English — get HeapQL queries and insights |
-
-![Heap Composition](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/heap_composition.png)
-![Leak Suspects](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/leak_suspects.png)
-
-### Dominator Tree Actions
-
-Every node in the dominator tree has one-click actions:
-
-- **Why alive?** — shows the shortest GC root path as a breadcrumb
-- **Inspect** — opens a field-level inspector panel with primitive values and reference links
-- **Go to source** — jumps to the `.java` file (workspace, dependency JAR, or decompiled)
-- **Show referrers** — "Who references this object?" with recursive drill-down
-
-![Dominator Tree](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/dominator_tree.png)
-![Explain Object](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/explain_object.png)
-
-### HeapQL Query Language
-
-A SQL-like language purpose-built for heap analysis:
-
-```sql
--- Find all HashMaps retaining more than 1MB
-SELECT * FROM instances
-WHERE class_name = 'java.util.HashMap' AND retained_size > 1MB
-ORDER BY retained_size DESC
-
--- Top 10 classes by total retained size (with column aliases)
-SELECT class_name, COUNT(*) AS instance_count, SUM(retained_size) AS total_retained
-FROM class_histogram
-GROUP BY class_name
-ORDER BY total_retained DESC LIMIT 10
-
--- JOIN instances with class histogram
-SELECT * FROM instances i
-JOIN class_histogram c ON class_name = class_name
-WHERE i.retained_size > 1MB LIMIT 10
-
--- Subquery: objects larger than average
-SELECT * FROM instances
-WHERE retained_size > (SELECT AVG(retained_size) FROM instances)
-ORDER BY retained_size DESC LIMIT 10
-
--- GC root path for a specific object
-:path 123456789
-
--- Who references this object?
-:refs 123456789
+```bash
+npm install --global heaplens-cli
+# Or:
+brew install sachinkg12/heaplens/heaplens
 ```
 
-- **Tables:** `instances`, `class_histogram`, `dominator_tree`, `leak_suspects`
-- **JOINs:** `INNER JOIN`, `LEFT JOIN` with table aliases
-- **Aggregates:** `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` with `AS` aliases
-- **Subqueries:** `WHERE col IN (SELECT ...)`, `WHERE col > (SELECT AVG(...) FROM ...)`
-- **Size literals:** `1KB`, `5MB`, `1GB`
+Then analyze in the terminal or open the local browser UI:
 
-![HeapQL Query](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/query.png)
+```bash
+heaplens analyze "/absolute/path/app.hprof" --telemetry off
+heaplens open "/absolute/path/app.hprof" --telemetry off
+```
 
-### AI-Powered Analysis
+The browser runs on loopback, not a public upload service. Keep its terminal running; do not share its session URL. See [host selection](https://sachinkg12.github.io/heaplens/docs/getting-started/choose-host/) and [installation details](https://sachinkg12.github.io/heaplens/docs/getting-started/installation/).
 
-Configure any of the 10 supported LLM providers and ask questions in the **AI Chat** tab. Supports **Anthropic**, **OpenAI**, **Google Gemini**, **DeepSeek**, **Mistral**, **Groq**, **xAI (Grok)**, **Together AI**, **OpenRouter**, and **Ollama** (local):
+## Start with a question
 
-> *"What's causing the high memory usage?"*
-> *"Show me the top 10 classes by retained size"*
-> *"Why is this HashMap so large?"*
+- **What is taking memory?** Sort Histogram or the retained-object list, then inspect the owning objects.
+- **Why is this object still alive?** Follow referrers and a bounded GC-root path.
+- **What changed between captures?** Use Compare and Timeline to inspect class and retention changes.
+- **Can I inspect this with a query?** Use HeapQL, or ask AI Chat to suggest a query and click **Run Query** yourself.
 
-The LLM responds with explanations **and** runnable HeapQL queries. Click **Run Query** to execute them inline.
+A large retained set is a diagnostic lead, not proof of a leak. Object sizes use an estimated conventional JVM layout, and retained values can overlap.
 
-**Privacy:** AI Chat, Explain and Copilot context send heap metadata, not the dump file. Automatic duplicate-string contents and primitive field values are omitted; class/field names and messages you type are not anonymized. **Fix with AI** asks before each full-source submission and shows the destination. Cancel or Review Source sends nothing; the prompt does not add the local file path. Approved source can still contain secrets or paths. Ollama is local only when the configured endpoint and its model processing are local. MCP tools have a separate data-sharing boundary; see the [privacy details](docs-site/docs/ai-integration/privacy.md).
+![HeapLens dominator tree](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/dominator_tree.png)
 
-![AI Chat](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/ai_chat.png)
-![Fix Recommendation](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/fix_recommendation.png)
+## Choose analysis and storage
 
-### Instance Enumeration
+| Option | What to expect |
+| --- | --- |
+| **Full analysis — default** | Progress appears first; shallow Overview/Histogram results become available before references and retained analysis finish. Retained values appear only when calculated. |
+| **Quick Scan** | Counts and shallow sizes without building the reference graph. Select **Analyze Retained** for graph-dependent investigation. Conventional HPROF 1.0.1/1.0.2 only. |
+| **Memory storage — default** | Builds analysis structures in RAM for each new analysis. Usually the first option to try when sufficient memory is available. |
+| **Disk-backed references** | Builds a private reusable structural index. Reopening verifies the dump/index and recomputes dominators. First construction can be slower; this is not a hard RAM limit. |
+| **Calculate Waste** | Runs content analysis on demand: duplicate strings, empty/over-allocated collections and boxed primitives. Uncalculated Waste is not zero. |
 
-After full analysis, click a class name in **Histogram** to browse its instances. Each instance row has actions for inspection, referrers and "Why alive?". Quick Scan provides the shallow class table without an object-instance index.
+In VS Code, use **HeapLens: Configure Analysis Storage**; in IntelliJ, use **Disk-backed references**. Close and reopen a dump after changing storage. The CLI uses `--storage memory` or `--storage disk`; add `--with-waste` to include Waste.
 
-![Histogram](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/histogram.png)
+Completed disk indexes remain after closing the dump, contain sensitive metadata and are not encrypted. Keep the original dump. Time, RAM and disk needs depend on object/reference density, storage and cache state—not file size alone. See [resource guidance](https://sachinkg12.github.io/heaplens/docs/runbook/performance-tuning/) and [recorded measurements with their scope](https://sachinkg12.github.io/heaplens/docs/runbook/recorded-measurements/).
 
-### Source Code Bridge
+## Eleven views, one analysis engine
 
-Three-tier source resolution:
+| View | Use it for |
+| --- | --- |
+| Overview | Heap totals, top retained objects and investigation starting points |
+| Histogram | Class counts, shallow/retained sizes and instance browsing after full analysis |
+| Dominator Tree | Retaining ownership, expandable children and object actions |
+| Leak Suspects | Large retention candidates worth investigating—not automatic proof of a defect |
+| Waste | On-demand estimates of duplicate strings and collection/boxing overhead |
+| Source | Navigate to relevant Java source; resolution depends on the host |
+| Query | Read-only HeapQL, query history and object-navigation commands |
+| Compare | Class, suspect and available Waste differences between two captures |
+| Timeline | Trends across multiple snapshots |
+| Monitor | Live statistics from a separately configured compatible JVM agent |
+| AI Chat | Optional heap explanations, follow-up questions and suggested queries |
 
-1. **Workspace** — finds `.java` files in your project
-2. **Dependencies** — extracts from Maven/Gradle source JARs (`~/.m2`, `~/.gradle`)
-3. **Decompilation** — falls back to CFR decompiler when source JARs are unavailable
+Source lookup, credentials, exports and process lifecycle use host-specific adapters. Not every host exposes the same source/decompiler or AI integration. See the [view guides](https://sachinkg12.github.io/heaplens/docs/tabs-guide/overview-tab/).
 
-![View Source](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/view_source.png)
-![Source](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/source.png)
+## HeapQL: query the heap, not a SQL database
 
-### Waste Detection
+HeapQL supports the `instances`, `class_histogram`, `dominator_tree` and `leak_suspects` tables, selected aggregates, joins, subqueries and navigation commands. It is not unrestricted SQL.
 
-Choose **Calculate Waste** after full analysis to estimate these patterns:
+Large individual objects by retained size:
 
-- **Duplicate strings** — identical string values held multiple times
-- **Empty collections** — `HashMap`, `ArrayList`, etc. with zero elements
-- **Over-allocated collections** — arrays sized far beyond their element count
-- **Boxed primitives** — `Integer`, `Long`, etc. that could be primitive
+```sql
+SELECT object_id, class_name, retained_size
+FROM instances
+WHERE retained_size >= 1MB
+ORDER BY retained_size DESC
+LIMIT 20
+```
 
-![Waste Detection](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/waste.png)
+Class-level rows (already aggregated):
 
-### Snapshot Comparison & Timeline
+```sql
+SELECT class_name, instance_count, shallow_size, retained_size
+FROM class_histogram
+ORDER BY retained_size DESC
+LIMIT 20
+```
 
-- **Compare** two heap dumps: summary delta, class-level growth/shrinkage with change badges, leak suspect changes (new/resolved/persisted), and a D3.js bar chart of top changes. Waste deltas require calculated Waste in both interactive snapshots.
-- **Copy Report** copies a full markdown diff report to clipboard.
-- **Export CSV** saves all class changes to a file.
-- **Timeline** multiple snapshots: track heap growth trends over time with interactive charts.
+Use `:path ID`, `:refs ID`, `:children ID` and `:info ID` with an actual object ID from the current dump. `SUM(retained_size)` can double-count shared ownership; `COUNT(*)` on the histogram counts class rows, not object instances. `LIMIT` bounds returned rows, not necessarily computation.
 
-![Compare](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/compare.png)
+[HeapQL reference and supported examples](https://sachinkg12.github.io/heaplens/docs/api-reference/heapql/)
 
----
+## Optional AI assistance
 
-## Getting Started
+Use **AI Chat** for JVM questions, heap-specific explanations and HeapQL suggestions. The built-in provider options include Anthropic, OpenAI, Gemini, DeepSeek, Mistral, Groq, xAI, Together AI, OpenRouter and Ollama. VS Code also offers its separate Copilot integration where supported.
 
-1. **Install** HeapLens from the VS Code Marketplace
-2. **Open** a completed supported `.hprof` file — HeapLens activates automatically and shows analysis progress.
-3. **Explore** Overview and Histogram as their results become available; use Dominator Tree and the other graph-dependent actions after full analysis completes.
-4. **Choose storage** with **HeapLens: Configure Analysis Storage**. Close and reopen the dump after a change. Select **HeapLens: Analysis Initial Mode → shallow** in Settings when you want Quick Scan first.
+- In VS Code, search Settings for `heaplens.llm`, then use **HeapLens: Set or Replace LLM API Key**. Credentials use the editor's SecretStorage.
+- IntelliJ and browser have their own provider and credential controls; follow their setup guides.
+- Suggested queries run only after an explicit **Run Query** click. Local query results are not silently forwarded to a model.
+- Model explanations and repair suggestions can be wrong. Inspect the evidence and review any proposed source change.
 
-![Loading HPROF](https://raw.githubusercontent.com/sachinkg12/heaplens/main/media/screenshots/Hprof_loading.png)
+AI metadata can contain class/field names and the text you type; it is not anonymized. Automatic context excludes raw heap strings and primitive field values. Approved source submissions have a separate explicit sharing step and can contain sensitive information. Ollama is local only when its endpoint and processing are local. MCP clients have a separate disclosure boundary.
 
-### Generate a Heap Dump
+[AI setup](https://sachinkg12.github.io/heaplens/docs/tabs-guide/ai-chat-tab/) · [AI privacy](https://sachinkg12.github.io/heaplens/docs/ai-integration/privacy/) · [MCP setup](https://sachinkg12.github.io/heaplens/docs/mcp/setup/)
+
+## Generate a capture
 
 ```bash
 # From a running JVM
-jmap -dump:format=b,file=heap.hprof <pid>
+jcmd <pid> GC.heap_dump "/absolute/path/app.hprof"
 
-# On OutOfMemoryError (add to JVM args)
+# Capture when the JVM runs out of heap
 -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./heap.hprof
-
-# Android (via adb)
-adb shell am dumpheap <pid> /data/local/tmp/heap.hprof
-adb pull /data/local/tmp/heap.hprof
 ```
 
-### AI Chat Setup (Optional)
+Capture permissions and target-JVM tooling are separate from opening an existing file. Full analysis supports its implemented Java/Android HPROF records; Quick Scan has the narrower format scope above. A format header alone does not certify every producer/runtime layout. See [heap dump fundamentals](https://sachinkg12.github.io/heaplens/docs/concepts/heap-dump-fundamentals/).
 
-1. Go to **Settings** > search `heaplens.llm`
-2. Set `heaplens.llm.provider` to your preferred provider (Anthropic, OpenAI, Gemini, DeepSeek, Mistral, Groq, xAI, Together AI, OpenRouter, or Ollama)
-3. Run **HeapLens: Set or Replace LLM API Key** from the Command Palette (not needed for Ollama). The eye button can temporarily reveal what you are typing. HeapLens stores one encrypted key per provider using the editor's VS Code SecretStorage implementation.
-4. Open the **AI Chat** tab and start asking questions
+## Privacy and telemetry
 
-To verify a saved credential without exposing it, run **HeapLens: Show LLM API Key Status**. HeapLens shows only a fixed mask and, for keys longer than four characters, the final four characters. Saved keys cannot be revealed in full; replace the key if it is uncertain.
+Analysis is local. Optional AI sharing and routine telemetry are separate controls.
 
----
-
-## Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `heaplens.llm.provider` | `anthropic` | LLM provider (anthropic, openai, gemini, deepseek, mistral, groq, xai, together, openrouter, ollama) |
-| `heaplens.llm.baseUrl` | — | Custom API base URL (for proxies or self-hosted) |
-| `heaplens.llm.model` | — | Model name override |
-| `heaplens.sourceResolution.enabled` | `true` | Enable dependency source JAR resolution |
-| `heaplens.sourceResolution.mavenHome` | — | Custom Maven repository path |
-| `heaplens.sourceResolution.gradleHome` | — | Custom Gradle cache path |
-| `heaplens.sourceResolution.decompilerEnabled` | `true` | Enable CFR decompilation fallback |
-| `heaplens.analysis.longRunningWarningMinutes` | `5` | Show a Continue Waiting or Cancel warning after this many minutes; `0` disables the warning |
-| `heaplens.analysis.initialMode` | `full` | Full analysis or `shallow` Quick Scan for newly opened dump editors |
-| `heaplens.analysis.storage` | `memory` | Memory graph or `disk` reusable reference storage; applies to newly started servers |
-| `heaplens.analysis.edgeBufferMiB` | `64` | Advanced disk edge-sort buffer, 1–1024 MiB; not a total RAM limit |
-
----
-
-## Architecture
-
-- **Shared Rust engine** — mapped HPROF input, compact CSR storage, dominator analysis, HeapQL and on-demand Waste. Optional versioned structural indexes use bounded writing, mapped catalogs and selective lossless encoding.
-- **Host adapters** — VS Code custom editor, IntelliJ plugin, and standalone CLI/browser. Credentials, source navigation, consent and process lifecycle remain host-specific.
-- **MCP server** — updated local builds require `--mcp`, exact-file `--mcp-allow-file` approvals and `--mcp-share-metadata`; six bounded metadata tools with no raw-value or unrestricted-query fallback. See [setup](https://sachinkg12.github.io/heaplens/docs/mcp/setup).
-
-See the [animated architecture and data-flow diagrams](https://sachinkg12.github.io/heaplens/docs/architecture/system-overview/).
-
----
-
-## Supported Formats
-
-- Java HotSpot HPROF (JDK 8+) — analyze heap dumps from any JVM application, Spring Boot, microservices, or Kubernetes pods
-- Android HPROF (Dalvik/ART) — debug memory leaks in Android apps directly from `adb` heap dumps
-- HPROF versions: 1.0.1, 1.0.2, 1.0.3
-- Works with heap dumps generated by `jmap`, `jcmd`, `-XX:+HeapDumpOnOutOfMemoryError`, and Android Debug Bridge
-
----
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `HeapLens: Analyze HPROF File` | Open a file picker to select and analyze a `.hprof` file |
-| `HeapLens: Configure Analysis Storage` | Choose Memory storage or Disk-backed references for newly started analysis servers |
-| `HeapLens: Export Analysis to JSON` | Export the current analysis results to a JSON file |
-| `HeapLens: Start JVM Monitor` | Connect to a running JVM over TCP and stream live heap statistics |
-
----
-
-## Requirements
-
-- VS Code 1.74.0 or later
-- No additional dependencies — the native Rust binary is bundled with the extension
-
-**Optional:**
-- Java on `PATH` (for CFR decompilation fallback)
-- Maven/Gradle project (for dependency source resolution)
-- API key for AI Chat (Anthropic, OpenAI, Gemini, DeepSeek, Mistral, Groq, xAI, Together AI, OpenRouter, or use Ollama for free local models)
-
----
-
-## Performance
-
-The following previously recorded figures describe selected captures on an Apple M2 Max (originally reported as the median of five runs). They are not fresh measurements of this release, cold-start guarantees or predictions for other captures:
-
-| Heap Size | Analyze Time | Throughput |
-|-----------|-------------|------------|
-| 1.5 GB | ~0.9 s | 1,687 MB/s |
-| 2 GB | ~1.2 s | 1,645 MB/s |
-| 14.8 GB | ~9.5 s | 1,558 MB/s |
-
-Object count, reference density and page-cache state can change both time and RAM substantially. Compare Memory first analysis, Disk first build and Disk reopening separately, and include Waste consistently. See [recorded measurements and their scope](https://sachinkg12.github.io/heaplens/docs/runbook/recorded-measurements/).
-
----
-
-## Telemetry
-
-VS Code and standalone CLI/browser telemetry default to usage and errors (`all`), subject to the applicable host controls. **IntelliJ telemetry is off until explicit approval:** the first HeapLens editor asks whether to enable Errors Only or Usage and Errors. No telemetry is collected or sent beforehand. Cancel, dismissal or No Telemetry keeps it off; the choice persists locally. Earlier prototype On settings require fresh approval. Development/CI reporting and `DO_NOT_TRACK=1` remain disabled.
-
-| Host | How to turn it off |
+| Host | Telemetry control |
 | --- | --- |
-| VS Code and compatible editors | Run **HeapLens: Configure Telemetry → Off**, or set `"heaplens.telemetry.level": "off"` in **User** settings. VS Code's own telemetry-off setting also stops HeapLens telemetry. |
-| IntelliJ | Decline the initial permission dialog, or click **Telemetry → Off** later. Off clears local telemetry records and pending delivery. The application preference persists across restarts and is not stored in the project or synced. |
-| CLI | Add `--telemetry off` to each command, for example `heaplens analyze app.hprof --telemetry off`. Use `DO_NOT_TRACK=1` for an environment-wide override. |
-| CLI browser | Launch with `heaplens open app.hprof --telemetry off` to disable it before analysis. The browser **Telemetry → Disable telemetry** action stops delivery for the current running host; use the flag again on future launches. |
+| VS Code / compatible editors | **HeapLens: Configure Telemetry → Off**. Editor-level telemetry permission also applies. Development/CI reporting is disabled. |
+| IntelliJ | **Off until explicit approval**; use its Telemetry control to change the saved choice. |
+| CLI / browser | Add `--telemetry off`, or set `DO_NOT_TRACK=1` before launch. |
 
-Errors-only collection is available with `error` instead of `all`. For a first run without reporting on any host, set `DO_NOT_TRACK=1` before starting the IDE or CLI. IntelliJ already starts off pending permission. On other hosts set Off before opening a dump; disabling later cannot recall events already transmitted.
+VS Code and CLI/browser default to permitted usage and errors. Routine telemetry uses allowlisted event fields, not dump contents, source/query text, paths or credentials. Permitted VS Code usage includes pseudonymous SDK machine/session identifiers; these are not verified people. IntelliJ and standalone telemetry remain identity-free. Network services may process IP addresses and derive approximate location.
 
-Telemetry sends allowlisted codes, actions, coarse platform/version information and rounded counts, sizes or timings to HeapLens Azure Application Insights. In the updated VS Code implementation, permitted usage events also include Microsoft's SDK identifiers supplied by VS Code (`machineId` and `sessionId`) for reporting-machine/session counts. These are pseudonymous identifiers, not names or verified people. Errors Only excludes usage and counting IDs. IntelliJ and standalone telemetry remain identity-free and retain their existing controls. No host sends raw error messages/stacks, paths, dump values, class names, source, queries or credentials through routine telemetry. Recent filtered diagnostics can be reviewed locally; the review describes SDK enrichment but does not expose IDs or upload the report. Network services can process IP addresses. AI submissions and user-selected exports have separate sharing rules. See [telemetry fields, controls and limitations](docs-site/docs/runbook/telemetry.md).
+[Telemetry details and opt-outs](https://sachinkg12.github.io/heaplens/docs/runbook/telemetry/) · [IntelliJ privacy policy](https://sachinkg12.github.io/heaplens/docs/runbook/intellij-privacy-policy/)
 
----
+## Documentation and support
 
-## License
+[Quick start](https://sachinkg12.github.io/heaplens/docs/getting-started/quick-start/) · [Architecture](https://sachinkg12.github.io/heaplens/docs/architecture/system-overview/) · [Troubleshooting](https://sachinkg12.github.io/heaplens/docs/runbook/troubleshooting/) · [Report an issue](https://github.com/sachinkg12/heaplens/issues)
 
-[Apache 2.0](LICENSE)
+Downloads measure distribution, not unique people or organizations. Telemetry covers only reporting clients; an unobserved country does not mean HeapLens has no users there.
+
+HeapLens is open source under [Apache 2.0](https://github.com/sachinkg12/heaplens/blob/main/LICENSE).

@@ -1,14 +1,22 @@
 # HeapLens standalone CLI
 
-Analyze a local Java heap dump without installing an IDE extension. This candidate includes the native CLI, analysis server, and browser UI for macOS Apple Silicon. Windows, Linux, and Intel Macs are not supported by this candidate. npm itself is cross-platform; the native executables bundled here are not.
+Analyze a local Java heap dump without installing an IDE extension. This package includes the native CLI, analysis server, and browser UI for macOS Apple Silicon. Windows, Linux, and Intel Macs are not supported by this standalone package. npm itself is cross-platform; the native executables bundled here are not.
 
 The package requires Node.js 22 or newer, running natively as ARM64. The installed package is tested on Node.js 22 and 24. See the [Node.js release status](https://nodejs.org/en/about/previous-releases). An Intel Node process running under Rosetta cannot install this ARM64-only npm package.
 
 HeapLens itself does not require a source checkout, Rust compiler, JVM, or IDE to analyze an existing dump. Homebrew supplies Node and checks its own system prerequisites; npm uses an existing Node installation.
 
-## Installation status
+## Install
 
-This is a local release candidate, not a package already available from the public npm registry or a public Homebrew tap. Public install commands will be provided after publication. Maintainers can follow the standalone packaging guide in the source repository to install the generated local archives.
+```sh
+npm install --global heaplens-cli
+# Or:
+brew install sachinkg12/heaplens/heaplens
+```
+
+Portable archives and checksums are available in the [CLI releases](https://github.com/sachinkg12/heaplens/releases). A generated local npm archive can also be installed with `npm install --global /absolute/path/to/generated-package.tgz`.
+
+For complete setup, storage and privacy guidance, see the [standalone documentation](https://sachinkg12.github.io/heaplens/docs/getting-started/standalone/).
 
 ## Run an analysis
 

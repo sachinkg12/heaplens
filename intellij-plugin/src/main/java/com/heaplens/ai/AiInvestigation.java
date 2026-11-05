@@ -64,10 +64,13 @@ public final class AiInvestigation implements AutoCloseable {
         String selected=message.has("objectId") && !message.get("objectId").getAsString().equals("0")?InvestigationEvidence.pageId(message.get("objectId")):null;
         JsonObject group=null;if(selected==null && data!=null && data.has("classHistogram"))for(JsonElement row:data.getAsJsonArray("classHistogram"))if(name.equals(row.getAsJsonObject().get("class_name").getAsString())){group=row.getAsJsonObject();break;}
         if(selected==null && group==null)throw new IllegalArgumentException("Selection unavailable");
-        begin(message,"explainLeak",selected==null?"Explain this class group, not a single object or a proven leak: "+name.substring(0,Math.min(512,name.length())):"Explain selected object "+selected+"; retention is not a proven leak.",selected,name,group);
+        begin(message,"explainLeak",selected==null?"Explain the selected class group in the bounded metadata; this is not a single object or a proven leak.":"Explain selected object "+selected+"; retention is not a proven leak.",selected,name,group);
     }
     private void begin(JsonObject message,String channel,String question,String selected,String className,JsonObject group){
         String id=InvestigationEvidence.text(message,"requestId");if(!id.matches("[A-Za-z0-9_-]{1,80}"))throw new IllegalArgumentException("Invalid request ID");
+        ChatInput.Result input=ChatInput.screen(question);
+        if(!input.safe()){emit(new Turn(id,channel,question,selected,className,generation),"Error",input.reason());return;}
+        question=input.text();
         Turn turn=new Turn(id,channel,question,selected,className,generation);
         if(closed || data==null || !ready.getAsBoolean() || busy() || question.isBlank() || question.length()>4000){emit(turn,"Error","Wait for retained analysis and the current action; use 1–4,000 characters.");return;}
         current=turn;JsonObject seed=InvestigationEvidence.seed(data,group);

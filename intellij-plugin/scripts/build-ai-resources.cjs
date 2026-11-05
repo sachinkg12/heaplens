@@ -27,6 +27,6 @@ fs.writeFileSync(path.join(output,'providers.json'),JSON.stringify(providers,nul
 fs.writeFileSync(path.join(output,'system-prompt.txt'),prompt);
 fs.writeFileSync(path.join(output,'diagnosis-policy.txt'),exportsOf('src/diagnosisPolicy.ts').DIAGNOSIS_POLICY);
 const investigation=exportsOf('src/aiInvestigation.ts');
-fs.writeFileSync(path.join(output,'investigation-contract.json'),JSON.stringify({schema_version:1,limits:investigation.INVESTIGATION_LIMITS,operations:investigation.READ_OPERATIONS,protocol:investigation.CHAT_POLICY,tool:exportsOf('src/aiToolProtocol.ts').HEAP_READ_TOOL},null,2));
+fs.writeFileSync(path.join(output,'investigation-contract.json'),JSON.stringify({schema_version:1,limits:investigation.INVESTIGATION_LIMITS,operations:investigation.READ_OPERATIONS,protocol:investigation.CHAT_POLICY,input_policy:exportsOf('src/diagnosisPolicy.ts').CHAT_INPUT_POLICY,tool:exportsOf('src/aiToolProtocol.ts').HEAP_READ_TOOL},null,2));
 fs.writeFileSync(path.join(output,'fix-system-prompt.txt'),exportsOf('src/promptTemplates.ts').AI_FIX_SYSTEM_PROMPT);
 console.log('Generated AI provider catalogue and prompt from shared sources; no credentials included.');

@@ -2,19 +2,25 @@
 title: Standalone CLI and browser
 ---
 
-Analyze an existing dump without an IDE. The native CLI and local browser host are implemented. Current portable/npm/Homebrew artifacts are **Apple Silicon release candidates**; do not assume a public package name exists.
+Analyze an existing dump without an IDE. HeapLens is available as the [heaplens-cli npm package](https://www.npmjs.com/package/heaplens-cli), a [Homebrew formula](https://github.com/sachinkg12/homebrew-heaplens), and portable archives in [GitHub releases](https://github.com/sachinkg12/heaplens/releases). These standalone packages target **macOS Apple Silicon**.
 
-## Install a candidate
+## Install
 
-Use a trusted generated portable archive, npm archive, or tested candidate formula. Verify the checksum/candidate manifest; licenses and third-party notices are bundled.
-
-For the npm candidate, use native ARM64 Node **22+**:
+Choose npm or Homebrew. For npm, use native ARM64 Node **22+**:
 
 ```bash
-npm install --global /absolute/path/to/generated-package.tgz
+npm install --global heaplens-cli
 heaplens --version
 heaplens --help
 ```
+
+Or install through Homebrew:
+
+```bash
+brew install sachinkg12/heaplens/heaplens
+```
+
+For a portable archive or an explicitly selected historical version, use the matching CLI release assets and verify their `SHA256SUMS`. Licenses and third-party notices are bundled. Contributors can still install a locally generated npm archive with `npm install --global /absolute/path/to/generated-package.tgz`.
 
 The npm launcher requires Node 22+ even for terminal commands. A portable native binary can run terminal analysis without Node; browser mode still needs Node. Use native ARM64 Node on Apple Silicon, not an Intel Node installation running under Rosetta. This package is not an installer for other operating systems or CPU architectures.
 
@@ -52,6 +58,6 @@ The browser offers views, HeapQL, downloads, local source viewing, and optional 
 
 ## Checkout versus package
 
-A native checkout binary alone does not include built browser assets. Contributors must build the browser host and supply valid host/server paths, or test a complete candidate. `/path/app.hprof` is not an actual fixture. See [contributor setup](../architecture/contributing.md).
+A native checkout binary alone does not include built browser assets. Contributors must build the browser host and supply valid host/server paths, or test a complete distribution package. `/path/app.hprof` is not an actual fixture. See [contributor setup](../architecture/contributing.md).
 
 [Telemetry](../runbook/telemetry.md) defaults on: use `--telemetry off` every time or `DO_NOT_TRACK=1`. AI has a separate [privacy boundary](../ai-integration/privacy.md).

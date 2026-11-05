@@ -7,6 +7,8 @@ Configure a provider, choose a model ID, then ask a question. Stop cancels the a
 
 Chat is scoped to HeapLens, Java/JVM memory analysis and HeapQL. Brief greetings and relevant follow-ups are supported; unrelated requests should receive a short redirect. These are shared model instructions, not a guarantee that every provider will follow them.
 
+All built-in hosts screen overt leading instruction overrides and role-spoofing requests with the same bounded input rules. Ordinary JVM questions, quoted examples and query literals remain supported. This screening is not a topic classifier or injection-proof boundary: encoded, prefaced or indirect instructions may still influence a model. Heap metadata remains untrusted data, and validated read permissions and explicit-click query execution do not depend on the model obeying the prompt. The Copilot participant uses the editor's language-model API, which does not offer the same system-role interface as direct provider APIs.
+
 ## Useful questions
 
 - Which large objects should I inspect, and which assumptions remain unknown?

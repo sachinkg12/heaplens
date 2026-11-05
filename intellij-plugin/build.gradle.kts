@@ -148,6 +148,7 @@ val testWebview by tasks.registering(Exec::class) {
         "scripts/dominator-adapter.test.cjs", "scripts/source-adapter.test.cjs")
 }
 tasks.test {
+    inputs.file("../src/test/fixtures/chat-input-cases.json")
     dependsOn(testWebview)
     val ciMode = providers.systemProperty("heaplens.test.ci").orNull == "true"
     useJUnitPlatform { if (ciMode) excludeTags("local-fixture") }

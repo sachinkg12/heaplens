@@ -541,7 +541,7 @@ export class HprofEditorProvider implements vscode.CustomReadonlyEditorProvider 
         const group=kind==='leak' && !selected ? state?.analysisData?.classHistogram.find(row=>row.class_name===message.className) : undefined;
         if(!selected && !group){webviewPanel.webview.postMessage({command:kind==='object'?'explainError':'explainLeakError',objectId:message.objectId,className:message.className,message:'Selection is no longer available.'});return;}
         const question=selected?'Explain the selected object '+selected+' using the actual retrieved evidence. Distinguish retention from a proven leak.'
-            :'Explain the selected class group '+JSON.stringify(group?.class_name.slice(0,512))+'. This is not one object and not a proven leak.';
+            :'Explain the selected class group in the bounded metadata. This is not one object and not a proven leak.';
         await this.handleInvestigation(question,hprofPath,webviewPanel,{kind,objectId:selected,className:message.className,selected,group});
     }
 

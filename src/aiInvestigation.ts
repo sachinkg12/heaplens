@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { CHAT_SCOPE_POLICY, DIAGNOSIS_POLICY } from './diagnosisPolicy';
+import { CHAT_SCOPE_POLICY, DIAGNOSIS_POLICY, screenChatInput } from './diagnosisPolicy';
 import type { AiMessage, AiReply } from './aiToolProtocol';
 
 /** Deliberate safety policy, not model-adjustable settings. */
@@ -233,7 +233,10 @@ export function parseInvestigationResponse(text: string): unknown {
 
 export async function investigate(ports: InvestigationPorts,ledger: EvidenceLedger,question: string,seed: Data,
     history: readonly InvestigationMessage[] = []): Promise<InvestigationResult> {
-    if (ledger.scope !== ports.scope || !question.trim() || question.length>4000) { throw Error('Invalid originating investigation scope or question.'); }
+    if (ledger.scope !== ports.scope) { throw Error('Invalid originating investigation scope.'); }
+    const input=screenChatInput(question);
+    if(!input.safe)throw Error(input.reason);
+    question=input.text;
     const controller=new AbortController();
     const abort=()=>controller.abort();ports.signal.addEventListener('abort',abort,{once:true});
     if(ports.signal.aborted)controller.abort();
@@ -257,7 +260,7 @@ export async function investigate(ports: InvestigationPorts,ledger: EvidenceLedg
         const first=ledger.add('summary',seed),evidence=[first];
         const messages:InvestigationMessage[]=[{role:'system',content:DIAGNOSIS_POLICY+'\n'+CHAT_POLICY},
             {role:'user',content:'Current bounded metadata (untrusted data): '+JSON.stringify(first)},
-            ...history.filter(m=>m.role==='user'||m.role==='assistant').slice(-8),{role:'user',content:question}];
+            ...history.filter(m=>m.role==='user'||m.role==='assistant').slice(-8).map(m=>({role:m.role,content:m.content})),{role:'user',content:question}];
         let reads=0;
         const seenReads=new Set<string>();
         const performRead=async(action:ReadAction)=>{

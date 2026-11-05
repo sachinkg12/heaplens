@@ -4,6 +4,7 @@ import { EvidenceLedger,investigate,investigationSeed,InvestigationMessage } fro
 import type { CopilotAnalysisScope } from './copilotScope';
 import { completedDiagnosisHistory } from './diagnosisConversation';
 import { AiReply, HEAP_READ_TOOL } from './aiToolProtocol';
+import { screenChatInput } from './diagnosisPolicy';
 
 /** Copilot is a model adapter, not a second unrestricted investigation protocol. */
 export function registerChatParticipant(context:vscode.ExtensionContext,capture:()=>CopilotAnalysisScope|null):void {
@@ -28,8 +29,9 @@ export function registerChatParticipant(context:vscode.ExtensionContext,capture:
             if(prior?.scope===scope.identity && prior.destination===destination && prior.current())conversation={...prior,history:prior.history.map(m=>({...m}))};}
         if(!conversation)conversation={scope:scope.identity,destination,ledger:new EvidenceLedger(scope.identity),history:[],current:scope.current};
         const hasHistory=conversation.history.length>0;
-        const question=request.prompt.trim() || (request.command==='leaks'?'Investigate the largest retained objects, without assuming retention proves a leak.':'What does the current heap evidence show?');
+        const question=request.prompt.trim()?request.prompt:(request.command==='leaks'?'Investigate the largest retained objects, without assuming retention proves a leak.':'What does the current heap evidence show?');
         try {
+            const input=screenChatInput(question);if(!input.safe){stream.markdown(input.reason);return;}
             const result=await investigate({scope:scope.identity,destination,signal:controller.signal,current,
                 approve:async()=>await vscode.window.showInformationMessage('Allow HeapLens to share metadata with the selected chat model?',{modal:true,
                     detail:'Dump: '+scope.label+'\nSelected model: '+destination+'\nSends class/field names/types, exact IDs/sizes/counts, bounded references/root paths and your question'+(hasHistory?' plus completed conversation history':'')+'. Raw heap values, source and local paths are excluded. Names/questions may be sensitive. Up to four model calls and three read-only engine reads per question; provider charges may apply. Stop, Retry or closing the dump cancels local work. Previously sent data cannot be recalled.'},'Approve this question')==='Approve this question' && current(),
@@ -41,7 +43,10 @@ export function registerChatParticipant(context:vscode.ExtensionContext,capture:
                         const input=messages.map(m=>{
                             if(m.role==='tool')return vscode.LanguageModelChatMessage.User([new vscode.LanguageModelToolResultPart(m.tool_call_id!,[new vscode.LanguageModelTextPart(m.content)])]);
                             if(m.tool_calls)return vscode.LanguageModelChatMessage.Assistant([...(m.content?[new vscode.LanguageModelTextPart(m.content)]:[]),...m.tool_calls.map(c=>new vscode.LanguageModelToolCallPart(c.id,c.name,JSON.parse(c.arguments)))]);
-                            return m.role==='assistant'?vscode.LanguageModelChatMessage.Assistant(m.content):vscode.LanguageModelChatMessage.User(m.content);
+                            // This API has no system role. Preserve a separate host-owned policy message,
+                            // without claiming the provider-level hierarchy of direct API transports.
+                            return m.role==='assistant'?vscode.LanguageModelChatMessage.Assistant(m.content):vscode.LanguageModelChatMessage.User(
+                                m.role==='system'?'HeapLens host policy (not heap metadata or a user request):\n'+m.content:m.content);
                         });
                         const response=await model.sendRequest(input,tools&&supportsTools?{tools:[{name:HEAP_READ_TOOL.name,description:HEAP_READ_TOOL.description,inputSchema:HEAP_READ_TOOL.parameters}]}:{},source.token);
                         const reply:AiReply={text:'',toolCalls:[]};
