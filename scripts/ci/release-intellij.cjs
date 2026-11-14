@@ -76,7 +76,7 @@ async function release(env, {fetchImpl = fetch, gh, git, commands = {}, log = co
   const {name, sums, size} = candidate(directory, version, commands);
   const notes = common.releaseNotes({tag, sha, sums, lines:[
     hostNotes(root, 'intellij', version),
-    'IntelliJ IDEA 2026.1–2026.2 on macOS Apple Silicon. IntelliJ versions are independent of VS Code and CLI versions.',
+    'IntelliJ IDEA 2026.1–2026.3 on macOS Apple Silicon. IntelliJ versions are independent of VS Code and CLI versions.',
     'The same ZIP is uploaded to JetBrains Marketplace, which runs its own verification before listing it.']});
   common.ensureRelease({repository: env.GITHUB_REPOSITORY, tag, directory, assets:[name, 'SHA256SUMS'], sums, notes, gh, log});
   const existing = await publishedUpdate({version, fetchImpl});

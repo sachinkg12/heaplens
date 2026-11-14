@@ -4,7 +4,7 @@
     <vendor url="https://github.com/sachinkg12/heaplens">HeapLens</vendor>
     <description><![CDATA[
     <p>Analyze Java heap dumps inside IntelliJ IDEA with HeapLens, an open-source tool with a bundled local Rust analysis server.</p>
-    <p><b>Supported platform:</b> macOS Apple Silicon (ARM64), IntelliJ IDEA 2026.1–2026.2 using its bundled JetBrains Runtime with JCEF. No separate Rust, Node.js or server installation is required.</p>
+    <p><b>Supported platform:</b> macOS Apple Silicon (ARM64), IntelliJ IDEA 2026.1–2026.3 using its bundled JetBrains Runtime with JCEF. No separate Rust, Node.js or server installation is required.</p>
     <ul>
       <li>Eleven views: Overview, Histogram, Dominator Tree, Leak Suspects, Waste, Source, Query, Compare, Timeline, Monitor and AI Chat.</li>
       <li>Inspect objects and fields, follow referrers and GC-root paths, run HeapQL, and export reports locally.</li>
@@ -28,7 +28,7 @@
         <plugin id="com.intellij.modules.os.mac"/>
         <plugin id="com.intellij.modules.arch.arm64"/>
     </dependencies>
-    <!-- JCEF is in core on 261; on 262 it has a separate plugin classloader. -->
+    <!-- JCEF is in core on 261; on 262 and later it has a separate plugin classloader. -->
     <depends optional="true" config-file="heaplens-jcef.xml">com.intellij.modules.jcef</depends>
     <extensions defaultExtensionNs="com.intellij">
         <fileType name="HeapLens HPROF" implementationClass="com.heaplens.intellij.HprofFileType"

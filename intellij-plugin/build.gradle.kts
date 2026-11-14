@@ -1,4 +1,5 @@
 import java.io.File
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
@@ -33,7 +34,7 @@ java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 intellijPlatform {
     pluginConfiguration {
         name = "HeapLens"
-        ideaVersion { sinceBuild = "261"; untilBuild = "262.*" }
+        ideaVersion { sinceBuild = "261"; untilBuild = "263.*" }
     }
     buildSearchableOptions = false
     pluginVerification {
@@ -48,6 +49,7 @@ intellijPlatform {
             VerifyPluginTask.FailureLevel.INVALID_PLUGIN)
         ides {
             current()
+            create(IntelliJPlatformType.IntellijIdea, "2026.3")
             providers.gradleProperty("heaplensIdePath").orNull?.let { local(file(it)) }
         }
     }
