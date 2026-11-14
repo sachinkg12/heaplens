@@ -1,58 +1,44 @@
 {
   "schema": 1,
   "repository": "sachinkg12/heaplens",
-  "source": "fd85c99d9bd3404b095aeda55480879f6f5676e4",
-  "date": "2026-10-27",
+  "source": "649066978e398f884642c701a3a544bd5dd5adea",
+  "date": "2026-11-14",
   "versions": {
-    "vscode": "1.0.36",
-    "intellij": "0.1.18",
-    "cli": "0.1.2"
+    "vscode": "1.0.37",
+    "intellij": "0.1.19",
+    "cli": "0.1.3"
   },
   "notes": {
     "vscode": {
       "baseline": {
-        "version": "1.0.35",
-        "commit": "280d57a9122560fa4eb6a391a36c8f3812fc7491",
-        "evidence": "v1.0.35/release-record.json"
+        "version": "1.0.36",
+        "commit": "90d1ad00514d51adf4948b3c0d86b813b6ae29bc",
+        "evidence": "v1.0.36/release-record.json"
       },
-      "entries": [
-        {
-          "title": "feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis",
-          "sha": "6a8cd64261547522a358dfbf97eb3a4d3e20d268",
-          "pr": 15,
-          "shared": true
-        }
-      ]
+      "entries": []
     },
     "intellij": {
       "baseline": {
-        "version": "0.1.17",
-        "commit": "280d57a9122560fa4eb6a391a36c8f3812fc7491",
-        "evidence": "intellij-v0.1.17/release-record.json"
+        "version": "0.1.18",
+        "commit": "90d1ad00514d51adf4948b3c0d86b813b6ae29bc",
+        "evidence": "intellij-v0.1.18/release-record.json"
       },
       "entries": [
         {
-          "title": "feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis",
-          "sha": "6a8cd64261547522a358dfbf97eb3a4d3e20d268",
-          "pr": 15,
-          "shared": true
+          "title": "intellij: extend compatibility to IntelliJ IDEA 2026.3",
+          "sha": "649066978e398f884642c701a3a544bd5dd5adea",
+          "pr": 20,
+          "shared": false
         }
       ]
     },
     "cli": {
       "baseline": {
-        "version": "0.1.1",
-        "commit": "280d57a9122560fa4eb6a391a36c8f3812fc7491",
-        "evidence": "cli-v0.1.1/release-record.json"
+        "version": "0.1.2",
+        "commit": "90d1ad00514d51adf4948b3c0d86b813b6ae29bc",
+        "evidence": "cli-v0.1.2/release-record.json"
       },
-      "entries": [
-        {
-          "title": "feat(ai): bounded evidence-led investigation, scoped MCP server and cancellable analysis",
-          "sha": "6a8cd64261547522a358dfbf97eb3a4d3e20d268",
-          "pr": 15,
-          "shared": true
-        }
-      ]
+      "entries": []
     }
   }
 }

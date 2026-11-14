@@ -4,6 +4,26 @@ All notable changes to HeapLens are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.37] - 2026-11-14
+
+### VS Code extension 1.0.37
+
+Changes since 1.0.36 (source 90d1ad00514d).
+
+- Coordinated maintenance release; no new user-facing changes in this range.
+
+### IntelliJ plugin 0.1.19
+
+Changes since 0.1.18 (source 90d1ad00514d).
+
+- intellij: extend compatibility to IntelliJ IDEA 2026.3 ([#20](https://github.com/sachinkg12/heaplens/pull/20))
+
+### Standalone CLI 0.1.3
+
+Changes since 0.1.2 (source 90d1ad00514d).
+
+- Coordinated maintenance release; no new user-facing changes in this range.
+
 ## [1.0.36] - 2026-10-27
 
 ### VS Code extension 1.0.36
