@@ -44,7 +44,7 @@ test('stable aggregate gate handles skipped host jobs without hiding failures', 
 test('first IntelliJ candidate uses Apple Silicon and tests the exact bundled package',()=>{
   const job=jobs['test-intellij'];
   assert.match(job.if,/needs\.changes\.outputs\.intellij == 'true'/);
-  assert.equal(job['runs-on'],'macos-14');
+  assert.equal(job['runs-on'],'macos-15');
   assert.equal(job.env.DO_NOT_TRACK,'1');
   assert.match(runs(job),/process\.platform.*process\.arch/);
   assert.match(runs(job),/extract-built-package\.cjs/);
@@ -141,7 +141,7 @@ test('CLI publication runs only on exact release tags after every candidate, smo
   assert.deepEqual(cli.permissions, {contents:'read'});
   const gates = cli.jobs['release-checks'];
   assert.match(gates.if, /startsWith\(github\.ref, 'refs\/tags\/cli-v'\)/);
-  assert.equal(gates['runs-on'], 'macos-14');
+  assert.equal(gates['runs-on'], 'macos-15');
   assert.match(runs(gates), /cargo test --locked --release/);
   assert.match(runs(gates), /npm run test:boundaries/);
   const job = cli.jobs['publish-cli'];
@@ -153,7 +153,7 @@ test('CLI publication runs only on exact release tags after every candidate, smo
   for (const [name, other] of Object.entries(cli.jobs)) if (name !== 'publish-cli') assert.equal(other.permissions?.['id-token'], undefined, name + ' must not mint identity tokens');
   assert.equal(job.concurrency['cancel-in-progress'], false);
   assert.doesNotMatch(String(job.concurrency.group), /github\.ref/, 'publications serialize across tags, not per tag');
-  assert.equal(job['runs-on'], 'macos-14');
+  assert.equal(job['runs-on'], 'macos-15');
   const node = job.steps.find(step => step.uses?.startsWith('actions/setup-node@'));
   assert.match(String(node.with['node-version']), /^22\.\d+\.\d+$/);
   assert.equal(node.with['registry-url'], 'https://registry.npmjs.org');

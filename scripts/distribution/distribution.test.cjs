@@ -136,7 +136,7 @@ test('standalone workflow builds candidates with read-only credentials; only exa
   assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'push', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.push, { tags: ['cli-v*'] }); // Branch pushes never run it.
   assert.deepEqual(workflow.permissions, { contents: 'read' });
-  assert.equal(workflow.jobs['apple-silicon-candidate']['runs-on'], 'macos-14');
+  assert.equal(workflow.jobs['apple-silicon-candidate']['runs-on'], 'macos-15');
   assert.equal(workflow.jobs['apple-silicon-candidate'].env.DO_NOT_TRACK, '1');
   assert.equal(workflow.jobs['apple-silicon-candidate'].steps[0].with['persist-credentials'], false);
   const candidate = workflow.jobs['apple-silicon-candidate'], installed = workflow.jobs['installed-package-test'];
@@ -147,7 +147,7 @@ test('standalone workflow builds candidates with read-only credentials; only exa
   assert.ok(fetchIndex > runs.findIndex(run => /cargo build --locked/.test(run)), 'locked fetch follows the build');
   assert.ok(fetchIndex < runs.findIndex(run => /scripts\/distribution\/build\.cjs/.test(run)), 'locked fetch precedes offline packaging');
   assert.equal(installed.needs, 'apple-silicon-candidate');
-  assert.equal(installed['runs-on'], 'macos-14');
+  assert.equal(installed['runs-on'], 'macos-15');
   assert.deepEqual(installed.strategy.matrix.node, [22, 24]);
   assert.equal(installed.steps[0].with['persist-credentials'], false);
   assert.equal(installed.env.DO_NOT_TRACK, '1');
