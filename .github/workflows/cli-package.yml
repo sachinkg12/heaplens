@@ -26,7 +26,7 @@ permissions:
 
 jobs:
   apple-silicon-candidate:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     env:
       DO_NOT_TRACK: '1'
@@ -65,7 +65,7 @@ jobs:
 
   installed-package-test:
     needs: apple-silicon-candidate
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -99,7 +99,7 @@ jobs:
   # Pull requests and manual runs stop at the candidate and smoke jobs above with read-only permissions.
   release-checks:
     if: ${{ startsWith(github.ref, 'refs/tags/cli-v') }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       DO_NOT_TRACK: '1'
@@ -131,7 +131,7 @@ jobs:
   publish-cli:
     if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/cli-v') && needs.release-checks.result == 'success' && needs.apple-silicon-candidate.result == 'success' && needs.installed-package-test.result == 'success' }}
     needs: [release-checks, apple-silicon-candidate, installed-package-test]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     permissions:
       contents: write

@@ -100,7 +100,7 @@ jobs:
   test-intellij:
     needs: changes
     if: ${{ needs.changes.outputs.intellij == 'true' }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     env:
       DO_NOT_TRACK: '1'
@@ -198,11 +198,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             rust_target: aarch64-apple-darwin
             vsce_target: darwin-arm64
             binary: hprof-server
-          - os: macos-14
+          - os: macos-15
             rust_target: x86_64-apple-darwin
             vsce_target: darwin-x64
             binary: hprof-server
