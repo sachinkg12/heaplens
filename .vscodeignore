@@ -40,6 +40,7 @@ CONTRIBUTING.md
 media/screenshots/
 media/heaplens-usage-map.png
 media/heaplens-usage-map.svg
+media/heaplens-global-reach.png
 
 # JVM agent source (users build separately)
 jvm-agent/
