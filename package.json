@@ -2,7 +2,7 @@
   "name": "heaplens",
   "displayName": "HeapLens — Java & Android Heap Dump Analyzer",
   "description": "Analyze Java & Android heap dumps locally in VS Code: dominator trees, HeapQL, Memory or Disk storage, snapshot comparison and optional AI assistance. No Rust installation required.",
-  "version": "1.0.36",
+  "version": "1.0.37",
   "publisher": "guptasachinn",
   "license": "Apache-2.0",
   "icon": "icon.png",
