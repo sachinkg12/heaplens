@@ -70,6 +70,17 @@ test('macOS ARM64 delivery is declared in metadata, not inferred from the ZIP fi
   assert.doesNotMatch(build,/ignoredProblemsFile|externalPrefixes|FailureLevel\.NONE/);
 });
 
+test('IntelliJ compatibility includes build 263 and verifies the newest and oldest supported IDEs', () => {
+  const build = fs.readFileSync(path.join(root, 'intellij-plugin/build.gradle.kts'), 'utf8');
+  assert.match(build, /ideaVersion \{ sinceBuild = "261"; untilBuild = "263\.\*" \}/);
+  assert.match(build, /intellijIdea\("2026\.1"\)/);
+  assert.match(build, /ides \{\s*current\(\)\s*create\(IntelliJPlatformType\.IntellijIdea, "2026\.3"\)/);
+  const descriptor = fs.readFileSync(path.join(root, 'intellij-plugin/src/main/resources/META-INF/plugin.xml'), 'utf8');
+  assert.match(descriptor, /IntelliJ IDEA 2026\.1–2026\.3/);
+  const publisher = fs.readFileSync(path.join(root, 'scripts/ci/release-intellij.cjs'), 'utf8');
+  assert.match(publisher, /IntelliJ IDEA 2026\.1–2026\.3 on macOS Apple Silicon/);
+});
+
 test('IntelliJ CI tests the real engine using a generated, non-private fixture', () => {
   const job = jobs['test-intellij'];
   assert.ok(job, 'IntelliJ tests must run in CI');

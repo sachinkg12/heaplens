@@ -26,7 +26,7 @@ class PluginReleaseMetadataTest {
             assertTrue(IntellijTelemetry.packagedVersion().matches("[0-9]+\\.[0-9]+\\.[0-9]+"));
             var range = xml.getElementsByTagName("idea-version").item(0).getAttributes();
             assertEquals("261", range.getNamedItem("since-build").getNodeValue());
-            assertEquals("262.*", range.getNamedItem("until-build").getNodeValue());
+            assertEquals("263.*", range.getNamedItem("until-build").getNodeValue());
             String description = xml.getElementsByTagName("description").item(0).getTextContent();
             assertTrue(description.contains("off until you explicitly enable"));
             assertTrue(description.contains("entire approved project source file"));
