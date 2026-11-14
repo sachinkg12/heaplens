@@ -1,4 +1,5 @@
 import java.io.File
+import groovy.json.JsonSlurper
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask
@@ -31,15 +32,53 @@ dependencies {
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
+val nativeOs = when {
+    System.getProperty("os.name").startsWith("Mac") -> "darwin"
+    System.getProperty("os.name").startsWith("Windows") -> "win32"
+    System.getProperty("os.name") == "Linux" -> "linux"
+    else -> "unsupported"
+}
+val nativeArch = when (System.getProperty("os.arch")) {
+    "aarch64", "arm64" -> "arm64"
+    "amd64", "x86_64" -> "x64"
+    else -> "unsupported"
+}
+val serverTarget = providers.gradleProperty("heaplensServerTarget").orElse("$nativeOs-$nativeArch")
+@Suppress("UNCHECKED_CAST")
+val platformCatalog = JsonSlurper().parse(file("platforms.json")) as Map<String, Map<String, String>>
+val packagePlatform = requireNotNull(platformCatalog[serverTarget.get()]) {
+    "Unsupported IntelliJ package target: ${serverTarget.get()}"
+}
+val packagedPluginVersion = project.version.toString() + packagePlatform.getValue("versionSuffix")
+val platformDescriptor = layout.buildDirectory.file("generated/platform-descriptor/plugin.xml")
+val renderPlatformDescriptor by tasks.registering {
+    inputs.file("src/main/resources/META-INF/plugin.xml")
+    inputs.property("packageTarget", serverTarget)
+    outputs.file(platformDescriptor)
+    doLast {
+        val output = platformDescriptor.get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(file("src/main/resources/META-INF/plugin.xml").readText()
+            .replace("@heaplens.os@", packagePlatform.getValue("os"))
+            .replace("@heaplens.arch@", packagePlatform.getValue("arch"))
+            .replace("@heaplens.platform@", packagePlatform.getValue("label")))
+    }
+}
+tasks.patchPluginXml {
+    dependsOn(renderPlatformDescriptor)
+    inputFile.set(platformDescriptor)
+}
+
 intellijPlatform {
     pluginConfiguration {
         name = "HeapLens"
+        version.set(packagedPluginVersion)
         ideaVersion { sinceBuild = "261"; untilBuild = "263.*" }
     }
     buildSearchableOptions = false
     pluginVerification {
         // Marketplace constraints have no API classes. JetBrains documents this specific
-        // verifier mode; native byte checks and the Mac-only installed smoke are separate gates.
+        // verifier mode; native package execution is a separate gate on every supported OS.
         freeArgs = listOf("-ignore-os-arch")
         failureLevel = listOf(VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
             VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES,
@@ -64,24 +103,9 @@ providers.gradleProperty("heaplensIdePath").orNull?.let { installedIde ->
     }
 }
 
-val nativeOs = when {
-    System.getProperty("os.name").startsWith("Mac") -> "darwin"
-    System.getProperty("os.name").startsWith("Windows") -> "win32"
-    System.getProperty("os.name") == "Linux" -> "linux"
-    else -> "unsupported"
-}
-val nativeArch = when (System.getProperty("os.arch")) {
-    "aarch64", "arm64" -> "arm64"
-    "amd64", "x86_64" -> "x64"
-    else -> "unsupported"
-}
-val serverTarget = providers.gradleProperty("heaplensServerTarget").orElse("$nativeOs-$nativeArch")
-require(serverTarget.get() == "darwin-arm64") {
-    "The first Marketplace candidate is macOS ARM64 only; supply the matching darwin-arm64 server"
-}
 val serverSource = providers.gradleProperty("heaplensServerBinary")
     .orElse(providers.systemProperty("heaplens.test.server"))
-    .orElse("../hprof-analyzer/target/release/" + if (nativeOs == "win32") "hprof-server.exe" else "hprof-server")
+    .orElse("../hprof-analyzer/target/release/" + packagePlatform.getValue("binary"))
 val stagedServer = layout.buildDirectory.dir(serverTarget.map { "generated/native/$it" })
 val stagedNotices = layout.buildDirectory.dir("generated/notices")
 val stageNotices by tasks.registering(Exec::class) {
@@ -139,6 +163,7 @@ tasks.processResources {
     dependsOn(generateWebview, generateAiResources)
     from("../telemetry/contract.json") { into("heaplens-telemetry") }
     inputs.property("heaplensPluginVersion", project.version.toString())
+    inputs.property("heaplensPackageTarget", serverTarget)
     filesMatching("heaplens-telemetry/host-version.properties") {
         expand(mapOf("pluginVersion" to project.version.toString()))
     }
@@ -147,10 +172,12 @@ val testWebview by tasks.registering(Exec::class) {
     dependsOn(generateWebview)
     workingDir(projectDir)
     commandLine("node", "--test", "scripts/webview.test.cjs", "scripts/stage-server.test.cjs",
-        "scripts/dominator-adapter.test.cjs", "scripts/source-adapter.test.cjs")
+        "scripts/dominator-adapter.test.cjs", "scripts/source-adapter.test.cjs", "scripts/platforms.test.cjs")
 }
 tasks.test {
     dependsOn(testWebview)
+    systemProperty("heaplens.test.packageTarget", serverTarget.get())
+    systemProperty("heaplens.test.packageVersion", packagedPluginVersion)
     val ciMode = providers.systemProperty("heaplens.test.ci").orNull == "true"
     useJUnitPlatform { if (ciMode) excludeTags("local-fixture") }
     if (ciMode) {

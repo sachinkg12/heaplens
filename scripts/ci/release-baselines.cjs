@@ -5,11 +5,17 @@ const os = require('node:os');
 const path = require('node:path');
 const common = require('./release-common.cjs');
 const {HOSTS, RECORD, version} = require('./release-model.cjs');
+const platforms=require('../../intellij-plugin/scripts/platforms.cjs');
 function record(value, host) {
   if (value.schema !== 1 || value.host !== host || value.status !== (host === 'intellij' ? 'submitted' : 'published')) throw new Error('Invalid publication record');
   common.commitSha(value.commit);
   version(value.version);
   if (value.tag !== HOSTS[host].prefix + value.version) throw new Error('Publication record tag mismatch');
+  if(host==='intellij'&&value.variants!==undefined) {
+    if(!Array.isArray(value.variants)||value.variants.length!==platforms.targets.length||new Set(value.variants.map(x=>x.target)).size!==platforms.targets.length)throw Error('Incomplete platform publication record');
+    for(const entry of value.variants)if(entry.version!==platforms.variantVersion(value.version,entry.target)||!Number.isSafeInteger(entry.update_id)||entry.update_id<1)throw Error('Invalid platform publication record');
+    if(value.variants.find(x=>x.target==='darwin-arm64')?.update_id!==value.update_id)throw Error('Platform publication record identity mismatch');
+  }
   return {version:value.version, commit:value.commit, evidence:value.tag + '/' + RECORD};
 }
 function discover({host, repository, gh, publicUpdates = () => JSON.parse(common.run('curl', [
@@ -31,20 +37,22 @@ function discover({host, repository, gh, publicUpdates = () => JSON.parse(common
       if (host === 'intellij') {
         const updates = publicUpdates();
         if (!Array.isArray(updates)) throw new Error('Cannot verify public Marketplace approval');
-        if (!updates.some(update => update.version === value.version && update.id === value.update_id && update.approve === true &&
-          update.listed === true && update.hidden === false && !update.channel)) continue;
+        const required=value.variants||[{version:value.version,update_id:value.update_id}];
+        if (!required.every(entry=>updates.some(update => update.version === entry.version && update.id === entry.update_id && update.approve === true &&
+          update.listed === true && update.hidden === false && !update.channel))) continue;
       }
       return baseline;
     } finally { fs.rmSync(directory, {recursive:true, force:true}); }
   }
   throw new Error(`No completed publication record for ${host}. Supply --baseline-${host} SHA and --baseline-${host}-evidence TEXT once, after verifying the manually published source. A version-bump commit is not assumed to be that source.`);
 }
-function publishRecord({host, version:releaseVersion, commit, repository, directory, gh, updateId}) {
+function publishRecord({host, version:releaseVersion, commit, repository, directory, gh, updateId, variants}) {
   const tag = HOSTS[host].prefix + releaseVersion;
   const value = {schema:1, host, version:releaseVersion, commit, tag, status:host === 'intellij' ? 'submitted' : 'published'};
   if (host === 'intellij') {
     if (!Number.isSafeInteger(updateId) || updateId < 1) throw new Error('Marketplace did not identify the accepted update');
     value.update_id = updateId;
+    if(variants)value.variants=variants;
   }
   record(value, host);
   const file = path.join(directory, RECORD);

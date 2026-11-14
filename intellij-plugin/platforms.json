@@ -1,0 +1,6 @@
+{
+  "darwin-arm64": {"os":"mac","arch":"arm64","hostOs":"darwin","hostArch":"arm64","binary":"hprof-server","rust":"aarch64-apple-darwin","versionSuffix":"","label":"macOS Apple Silicon"},
+  "darwin-x64": {"os":"mac","arch":"x86_64","hostOs":"darwin","hostArch":"x64","binary":"hprof-server","rust":"x86_64-apple-darwin","versionSuffix":"-mac-x86_64","label":"macOS Intel x86-64"},
+  "linux-x64": {"os":"linux","arch":"x86_64","hostOs":"linux","hostArch":"x64","binary":"hprof-server","rust":"x86_64-unknown-linux-gnu","versionSuffix":"-linux-x86_64","label":"Linux x86-64"},
+  "win32-x64": {"os":"windows","arch":"x86_64","hostOs":"win32","hostArch":"x64","binary":"hprof-server.exe","rust":"x86_64-pc-windows-msvc","versionSuffix":"-windows-x86_64","label":"Windows x86-64"}
+}

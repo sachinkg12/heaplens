@@ -3,8 +3,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {execFileSync} = require('node:child_process');
+const {platform}=require('./platforms.cjs');
 function extract(distributions, target) {
-  if (target !== 'darwin-arm64') throw new Error('The first release package is macOS ARM64 only');
+  platform(target);
   const input=fs.lstatSync(distributions);
   if(!input.isDirectory() && !input.isFile())throw new Error('Expected a regular archive or distribution directory');
   const archives=input.isFile()?[path.basename(distributions)]:fs.readdirSync(distributions).filter(name=>name.endsWith(`-${target}.zip`));
