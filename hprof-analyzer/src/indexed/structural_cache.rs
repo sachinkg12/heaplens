@@ -203,7 +203,8 @@ pub(crate) fn load(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(stage.path(), std::fs::Permissions::from_mode(0o700))?;
     }
-    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)?;
+    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)
+        .context("Constructing disk node catalog")?;
     super::disk_edges::check(cancel)?;
     progress(super::progress::Observation::Stage("edges"));
     let (mut phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
@@ -212,12 +213,14 @@ pub(crate) fn load(
         stage.path(),
         bytes,
         cancel,
-    )?;
+    ).context("Constructing disk reference graph")?;
     progress(super::progress::Observation::Stage("index_publishing"));
-    receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)?);
+    receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)
+        .context("Freezing disk node catalog")?);
     // Drop the second owner before freezing, never clone object-sized candidates.
     phase2.waste_raw = Arc::new(crate::waste::WasteRawData::new());
-    super::cache_format::freeze_waste(&mut phase1, stage.path(), cancel)?;
+    super::cache_format::freeze_waste(&mut phase1, stage.path(), cancel)
+        .context("Freezing disk content catalog")?;
     phase2.waste_raw = phase1.waste_raw.clone();
     let mut files = Vec::new();
     for name in FILES {
@@ -245,7 +248,7 @@ pub(crate) fn load(
     drop(writer);
     super::disk_edges::check(cancel)?;
     // Validate the newly written files before making them a reusable entry.
-    validate(stage.path(), mapping.len(), &key, cancel)?;
+    validate(stage.path(), mapping.len(), &key, cancel).context("Verifying new disk index")?;
     super::disk_edges::check(cancel)?;
     match std::fs::rename(stage.path(), &directory) {
         Ok(()) => {
@@ -275,7 +278,7 @@ pub(crate) fn load(
                     },
                 ))
             } else {
-                Err(error.into())
+                Err(error).context("Publishing disk index directory")
             }
         }
     }
