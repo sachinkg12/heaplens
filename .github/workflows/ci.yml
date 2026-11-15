@@ -147,6 +147,9 @@ jobs:
       - name: Build the shared analysis server
         working-directory: hprof-analyzer
         run: cargo build --locked --release --bin hprof-server
+      - name: Verify native resource accounting and crash cleanup
+        working-directory: hprof-analyzer
+        run: cargo test --locked --lib indexed::resource_lease::tests
       - name: Fetch the locked dependency graph so the notices task can read it offline
         run: cargo fetch --locked --target ${{ matrix.rust_target }} --manifest-path hprof-analyzer/Cargo.toml
       - name: Build and test the exact native plugin package

@@ -53,6 +53,9 @@ class PluginReleaseMetadataTest {
             assertTrue(notices.contains(component));
     }
     @Test void brandIconLoadsThroughTheIdeIconLoader() {
+        // The full IDE activates this service at startup. Standalone headless
+        // Linux tests otherwise receive its 1px placeholder, not an SVG render.
+        com.intellij.openapi.util.IconLoader.activate();
         var icon = com.intellij.openapi.util.IconLoader.getIcon("/META-INF/pluginIcon.svg", getClass());
         assertEquals(40, icon.getIconWidth());
         assertEquals(40, icon.getIconHeight());
