@@ -53,6 +53,7 @@ val packagedPluginVersion = project.version.toString() + packagePlatform.getValu
 val platformDescriptor = layout.buildDirectory.file("generated/platform-descriptor/plugin.xml")
 val renderPlatformDescriptor by tasks.registering {
     inputs.file("src/main/resources/META-INF/plugin.xml")
+    inputs.file("platforms.json")
     inputs.property("packageTarget", serverTarget)
     outputs.file(platformDescriptor)
     doLast {

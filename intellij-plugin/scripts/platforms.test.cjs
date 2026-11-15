@@ -23,6 +23,7 @@ test('native tests refuse emulated or mismatched host configurations',()=>{
 test('Gradle and runtime share the target catalog instead of a Mac-only packaging gate',()=>{
   const build=fs.readFileSync(path.join(__dirname,'../build.gradle.kts'),'utf8');
   assert.match(build,/platforms\.json/);
+  assert.match(build,/inputs\.file\("platforms\.json"\)/);
   assert.doesNotMatch(build,/require\(serverTarget\.get\(\) == "darwin-arm64"\)/);
   const descriptor=fs.readFileSync(path.join(__dirname,'../src/main/resources/META-INF/plugin.xml'),'utf8');
   assert.match(descriptor,/@heaplens\.os@/);assert.match(descriptor,/@heaplens\.arch@/);
