@@ -3,6 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const {platform,targets,variantVersion,checkHost}=require('./platforms.cjs');
+const {metadataArguments}=require('./stage-notices.cjs');
+test('dependency notices select the requested native Rust graph rather than Apple Silicon',()=>{
+  for(const target of targets){const args=metadataArguments(target);assert.equal(args[args.indexOf('--filter-platform')+1],platform(target).rust);assert.ok(args.includes('--offline'));assert.ok(args.includes('--locked'));}
+  assert.throws(()=>metadataArguments('linux-arm64'),/Unsupported/);
+  const build=fs.readFileSync(path.join(__dirname,'../build.gradle.kts'),'utf8');
+  assert.match(build,/project\.version\.toString\(\), serverTarget\.get\(\)/);
+});
 test('each release target has an exact platform constraint and unambiguous version',()=>{
   assert.deepEqual(targets,['darwin-arm64','darwin-x64','linux-x64','win32-x64']);
   assert.equal(variantVersion('0.1.20','darwin-arm64'),'0.1.20');

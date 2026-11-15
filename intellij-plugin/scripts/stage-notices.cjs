@@ -5,8 +5,13 @@ const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 const {dependencyNotices} = require('../../scripts/distribution/licenses.cjs');
 const {readRegular, write} = require('../../scripts/distribution/files.cjs');
+const {platform}=require('./platforms.cjs');
 const root = path.resolve(__dirname, '../..');
 const output = path.resolve(__dirname, '../build/generated/notices');
+function metadataArguments(target) {
+  return ['metadata','--offline','--locked','--format-version','1','--filter-platform',
+    platform(target).rust,'--manifest-path',path.join(root,'hprof-analyzer/Cargo.toml')];
+}
 
 function stage(destination, metadata, version) {
   // Only replace this task's fixed generated-output directory, never an arbitrary CLI path.
@@ -30,9 +35,8 @@ function stage(destination, metadata, version) {
 if (require.main === module) {
   const destination = process.argv[2];
   if (!destination || path.resolve(destination) !== output) throw new Error('Unexpected notice output directory');
-  const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--offline', '--locked', '--format-version', '1',
-    '--filter-platform', 'aarch64-apple-darwin', '--manifest-path', path.join(root, 'hprof-analyzer/Cargo.toml')],
+  const metadata = JSON.parse(execFileSync('cargo', metadataArguments(process.argv[4]),
     {maxBuffer: 32 * 1024 * 1024}));
   stage(destination, metadata, process.argv[3]);
 }
-module.exports = {stage};
+module.exports = {stage,metadataArguments};

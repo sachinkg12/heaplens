@@ -116,8 +116,11 @@ val stageNotices by tasks.registering(Exec::class) {
     inputs.file("../hprof-analyzer/crates/jvm-hprof/Cargo.toml")
     inputs.file("../hprof-analyzer/crates/jvm-hprof/LICENSE.txt")
     inputs.property("pluginVersion", project.version.toString())
+    inputs.property("packageTarget", serverTarget)
+    inputs.file("platforms.json")
+    inputs.file("scripts/platforms.cjs")
     outputs.dir(stagedNotices)
-    commandLine("node", "scripts/stage-notices.cjs", stagedNotices.get().asFile.absolutePath, project.version.toString())
+    commandLine("node", "scripts/stage-notices.cjs", stagedNotices.get().asFile.absolutePath, project.version.toString(), serverTarget.get())
 }
 val stageServer by tasks.registering(Exec::class) {
     inputs.file(serverSource.map { file(it) })
