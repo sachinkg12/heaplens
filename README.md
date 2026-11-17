@@ -7,6 +7,7 @@
 [![Open VSX Downloads](https://img.shields.io/open-vsx/dt/guptasachinn/heaplens?label=Open%20VSX%20downloads)](https://open-vsx.org/extension/guptasachinn/heaplens)
 [![License](https://img.shields.io/github/license/sachinkg12/heaplens)](https://github.com/sachinkg12/heaplens/blob/main/LICENSE)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19121302-blue)](https://doi.org/10.5281/zenodo.19121302)
+[![Clones](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sachinkg12/heaplens/main/traffic/clones-badge.json)](https://github.com/sachinkg12/heaplens/graphs/traffic)
 
 [VS Code](https://marketplace.visualstudio.com/items?itemName=guptasachinn.heaplens) · [Open VSX](https://open-vsx.org/extension/guptasachinn/heaplens) · [IntelliJ IDEA](https://plugins.jetbrains.com/plugin/35004-heaplens) · [CLI & browser](https://sachinkg12.github.io/heaplens/docs/getting-started/standalone/) · [Documentation](https://sachinkg12.github.io/heaplens/)
 
