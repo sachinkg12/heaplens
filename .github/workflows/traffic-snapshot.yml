@@ -69,6 +69,27 @@ jobs:
           make_badge traffic/views-history.csv  "views"          2 traffic/views-badge.json   green
           make_badge traffic/views-history.csv  "unique visitors" 3 traffic/visitors-badge.json brightgreen
 
+      - name: Fetch VS Code Marketplace acquisitions
+        run: |
+          set -euo pipefail
+          # Public gallery query (no auth). flags=256 returns the statistics block.
+          curl -sS -X POST "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json;api-version=7.1-preview.1' \
+            -d '{"filters":[{"criteria":[{"filterType":7,"value":"guptasachinn.heaplens"}]}],"flags":256}' \
+            | jq '.results[0].extensions[0].statistics | map({(.statisticName): .value}) | add' \
+            > /tmp/vscode-stats.json
+          # The publisher hub's till-date "Total Acquisition" is not exposed
+          # directly; install + downloadCount reproduces it to within a few
+          # counts (the public statistics lag the hub slightly).
+          n=$(jq -r '((.install // 0) + (.downloadCount // 0)) | floor' /tmp/vscode-stats.json)
+          # Guard against a bad response wiping the badge with 0.
+          if [ "$n" -gt 0 ]; then
+            mv /tmp/vscode-stats.json traffic/vscode-stats-latest.json
+            printf '{"schemaVersion":1,"label":"%s","message":"%s","color":"%s"}\n' \
+              "VS Code acquisitions" "$n" "007ACC" > traffic/vscode-acquisition-badge.json
+          fi
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
