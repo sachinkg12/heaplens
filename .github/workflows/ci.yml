@@ -100,10 +100,28 @@ jobs:
   test-intellij:
     needs: changes
     if: ${{ needs.changes.outputs.intellij == 'true' }}
-    runs-on: macos-15
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: darwin-x64
+            rust_target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
       DO_NOT_TRACK: '1'
+      RUSTFLAGS: ${{ matrix.rustflags || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -125,47 +143,30 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             hprof-analyzer/target
-          key: intellij-engine-${{ runner.os }}-${{ hashFiles('hprof-analyzer/Cargo.toml', 'hprof-analyzer/crates/**/Cargo.toml') }}
+          key: intellij-engine-${{ matrix.target }}-${{ hashFiles('hprof-analyzer/Cargo.lock', 'hprof-analyzer/Cargo.toml', 'hprof-analyzer/crates/**/Cargo.toml') }}
       - name: Build the shared analysis server
         working-directory: hprof-analyzer
-        run: cargo build --release --bin hprof-server
+        run: cargo build --locked --release --bin hprof-server
+      - name: Verify the native shared engine including disk parity and resource cleanup
+        working-directory: hprof-analyzer
+        run: cargo test --locked --lib
       - name: Fetch the locked dependency graph so the notices task can read it offline
-        run: cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
-      - name: Require Apple Silicon runner
-        run: node -e "if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Apple Silicon runner required')"
-      - name: Build and test the exact Apple Silicon package
-        shell: bash
-        run: |
-          FIXTURE_DIR=$(mktemp -d "$RUNNER_TEMP/heaplens-ci.XXXXXX")
-          javac -d "$FIXTURE_DIR" hprof-analyzer/tests/fixtures/ClassRetainedCounterexample.java
-          java -Xmx128m -cp "$FIXTURE_DIR" ClassRetainedCounterexample "$FIXTURE_DIR/ci-smoke.hprof"
-          SERVER="$GITHUB_WORKSPACE/hprof-analyzer/target/release/hprof-server"
-          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon buildPlugin verifyPluginProjectConfiguration \
-            -PheaplensServerTarget=darwin-arm64 -PheaplensServerBinary="$SERVER"
-          PLUGIN_ROOT=$(node intellij-plugin/scripts/extract-built-package.cjs intellij-plugin/build/distributions darwin-arm64)
-          ./intellij-plugin/gradlew -p intellij-plugin --no-daemon test verifyPlugin \
-            -PheaplensServerTarget=darwin-arm64 -PheaplensServerBinary="$SERVER" \
-            -Dheaplens.test.ci=true \
-            -Dheaplens.test.server="$PLUGIN_ROOT/native/darwin-arm64/hprof-server" \
-            -Dheaplens.test.dump="$FIXTURE_DIR/ci-smoke.hprof" -Dheaplens.test.pluginRoot="$PLUGIN_ROOT"
-      - name: Record the candidate checksum next to the ZIP
-        working-directory: intellij-plugin/build/distributions
-        run: |
-          [ "$(ls *-darwin-arm64.zip | wc -l | tr -d ' ')" = 1 ] || { echo '::error::Expected exactly one Apple Silicon ZIP'; exit 1; }
-          shasum -a 256 *-darwin-arm64.zip > SHA256SUMS
-          cat SHA256SUMS
+        run: cargo fetch --locked --target ${{ matrix.rust_target }} --manifest-path hprof-analyzer/Cargo.toml
+      - name: Build and test the exact native plugin package
+        run: node intellij-plugin/scripts/ci-package.cjs ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: intellij-apple-silicon-candidate
+          name: intellij-${{ matrix.target }}-candidate
           path: |
-            intellij-plugin/build/distributions/*-darwin-arm64.zip
+            intellij-plugin/build/distributions/*-${{ matrix.target }}.zip
             intellij-plugin/build/distributions/SHA256SUMS
+            intellij-plugin/build/distributions/candidate.json
           if-no-files-found: error
           retention-days: 7
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: intellij-test-reports
+          name: intellij-${{ matrix.target }}-test-reports
           path: |
             intellij-plugin/build/reports/tests/
             intellij-plugin/build/test-results/
@@ -326,7 +327,7 @@ jobs:
           node-version: 20
       - uses: actions/download-artifact@v4
         with:
-          name: intellij-apple-silicon-candidate
+          pattern: intellij-*-candidate
           path: ${{ runner.temp }}/intellij-candidate
       - name: Publish the tested ZIP to the GitHub release and JetBrains Marketplace
         env:

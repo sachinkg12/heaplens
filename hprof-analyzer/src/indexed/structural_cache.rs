@@ -40,6 +40,45 @@ struct Manifest {
 mod tests {
     use super::*;
     #[test]
+    fn unmap_publish_and_remap_preserves_results_without_rebuilding_the_graph() {
+        use crate::indexed::{HeapAnalysis, IndexedAnalysisState};
+        let bytes = super::super::waste::tests::string_fixture();
+        let mut input = memmap2::MmapMut::map_anon(bytes.len()).unwrap();
+        input.copy_from_slice(&bytes);
+        let input = Arc::new(input.make_read_only().unwrap());
+        let cancel = AtomicBool::new(false);
+        let (one, two, _) = super::super::storage::load_structure(
+            input.clone(), &super::super::storage::StorageOptions::default(), &cancel,
+        ).unwrap();
+        let expected = IndexedAnalysisState::from_phases(one, two).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for status in ["built", "reused"] {
+            let mut stages = Vec::new();
+            let (one, two, report) = load_with_publication(
+                input.clone(), root.path(), 1024 * 1024, &cancel,
+                &mut |event| stages.push(event.payload()), true,
+            ).unwrap();
+            assert_eq!(report.cache_status, status);
+            assert!(!one.class_histogram.is_empty());
+            let actual = IndexedAnalysisState::from_phases(one, two).unwrap();
+            assert_eq!(actual.get_summary(), expected.get_summary());
+            assert_eq!(actual.get_class_histogram(), expected.get_class_histogram());
+            let query = "SELECT object_id, shallow_size, retained_size FROM instances ORDER BY object_id";
+            assert_eq!(actual.execute_query(query).unwrap().rows, expected.execute_query(query).unwrap().rows);
+            assert_eq!(actual.get_waste_analysis(), expected.get_waste_analysis());
+            if status == "built" {
+                assert_eq!(stages.iter().filter(|event| event["stage"] == "edges").count(), 1);
+            } else {
+                assert!(!stages.iter().any(|event| event["stage"] == "edges"));
+            }
+        }
+    }
+    #[test]
     fn manifest_receipts_require_independent_persisted_byte_verification() {
         let stage = tempfile::tempdir().unwrap();
         let cancel = AtomicBool::new(false);
@@ -167,6 +206,16 @@ pub(crate) fn load(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(super::progress::Observation<'_>),
 ) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
+    load_with_publication(mapping, root, bytes, cancel, progress, cfg!(windows))
+}
+fn load_with_publication(
+    mapping: Arc<memmap2::Mmap>,
+    root: &Path,
+    bytes: usize,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(super::progress::Observation<'_>),
+    release_mappings: bool,
+) -> Result<(Phase1Result, Phase2Result, StorageReport)> {
     private_directory(root)?;
     progress(super::progress::Observation::Stage("index_verifying"));
     let key = {
@@ -203,7 +252,8 @@ pub(crate) fn load(
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(stage.path(), std::fs::Permissions::from_mode(0o700))?;
     }
-    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)?;
+    let (mut phase1, deferred) = super::parse::parse_indexed_phase1_disk(mapping.clone(), stage.path(), bytes, cancel, progress)
+        .context("Constructing disk node catalog")?;
     super::disk_edges::check(cancel)?;
     progress(super::progress::Observation::Stage("edges"));
     let (mut phase2, mut receipts) = super::parse::parse_indexed_phase2_disk_recorded(
@@ -212,12 +262,14 @@ pub(crate) fn load(
         stage.path(),
         bytes,
         cancel,
-    )?;
+    ).context("Constructing disk reference graph")?;
     progress(super::progress::Observation::Stage("index_publishing"));
-    receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)?);
+    receipts.extend(super::cache_format::write(&mut phase1, stage.path(), cancel)
+        .context("Freezing disk node catalog")?);
     // Drop the second owner before freezing, never clone object-sized candidates.
     phase2.waste_raw = Arc::new(crate::waste::WasteRawData::new());
-    super::cache_format::freeze_waste(&mut phase1, stage.path(), cancel)?;
+    super::cache_format::freeze_waste(&mut phase1, stage.path(), cancel)
+        .context("Freezing disk content catalog")?;
     phase2.waste_raw = phase1.waste_raw.clone();
     let mut files = Vec::new();
     for name in FILES {
@@ -245,12 +297,29 @@ pub(crate) fn load(
     drop(writer);
     super::disk_edges::check(cancel)?;
     // Validate the newly written files before making them a reusable entry.
-    validate(stage.path(), mapping.len(), &key, cancel)?;
+    validate(stage.path(), mapping.len(), &key, cancel).context("Verifying new disk index")?;
     super::disk_edges::check(cancel)?;
+    // Windows cannot rename this directory while its files are mapped. Keep
+    // only the class-level shallow histogram, not another node/graph copy.
+    // The published files are verified and mapped again after all old views
+    // have been dropped. Unix retains the existing zero-remap fast path.
+    let histogram = std::mem::take(&mut phase1.class_histogram);
+    let phases = if release_mappings {
+        drop((phase1, phase2));
+        None
+    } else {
+        Some((phase1, phase2))
+    };
     match std::fs::rename(stage.path(), &directory) {
         Ok(()) => {
             #[cfg(unix)]
             File::open(root)?.sync_all()?;
+            let (mut phase1, phase2) = match phases {
+                Some(phases) => phases,
+                None => read(&directory, mapping, &key, cancel)
+                    .context("Mapping published disk index")?,
+            };
+            phase1.class_histogram = histogram;
             Ok((
                 phase1,
                 phase2,
@@ -262,6 +331,7 @@ pub(crate) fn load(
             ))
         }
         Err(error) => {
+            drop(phases);
             // A concurrent builder may have published the same complete entry.
             if directory.exists() {
                 let (phase1, phase2) = read(&directory, mapping, &key, cancel)?;
@@ -275,7 +345,7 @@ pub(crate) fn load(
                     },
                 ))
             } else {
-                Err(error.into())
+                Err(error).context("Publishing disk index directory")
             }
         }
     }

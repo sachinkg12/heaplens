@@ -42,6 +42,8 @@ class NativeServerTest {
         assertEquals(binary.toRealPath(), resolveMac());
         Path windows = create("win32-x64");
         assertEquals(windows.toRealPath(), NativeServer.bundled(root(), "Windows 11", "amd64"));
+        Path linux = create("linux-x64");
+        assertEquals(linux.toRealPath(), NativeServer.bundled(root(), "Linux", "amd64"));
     }
     @Test void doesNotFallBackToAnotherArchitectureOrRootExecutable() throws Exception {
         create("darwin-x64"); Files.writeString(root().resolve("hprof-server"), "not trusted");

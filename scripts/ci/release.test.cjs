@@ -110,16 +110,17 @@ test('GitHub releases are created once, completed on reruns and refuse conflicti
   assert.throws(() => common.ensureRelease({...base, gh: fake.gh}), /draft/);
   assert.throws(() => common.ensureRelease({...base, gh: fakeGh().gh, assets:['missing.bin']}), /not checksummed/);
 });
-function zipCandidate(t, version, {descriptorVersion = version, jarVersion = version} = {}) {
+function zipCandidate(t, version, {target='darwin-arm64',descriptorVersion = require('../../intellij-plugin/scripts/platforms.cjs').variantVersion(version,target), jarVersion = version} = {}) {
   const dir = temporary(t), stage = temporary(t);
-  const descriptor = `<idea-plugin><id>${intellij.XML_ID}</id><version>${descriptorVersion}</version></idea-plugin>`;
+  const selected=require('../../intellij-plugin/scripts/platforms.cjs').platform(target);
+  const descriptor = `<idea-plugin><id>${intellij.XML_ID}</id><version>${descriptorVersion}</version><dependencies><plugin id="com.intellij.modules.os.${selected.os}"/><plugin id="com.intellij.modules.arch.${selected.arch}"/></dependencies></idea-plugin>`;
   write(stage, 'META-INF/plugin.xml', descriptor);
   const jar = path.join(stage, 'plugin.jar');
   execFileSync('zip', ['-qr', jar, 'META-INF'], {cwd: stage});
   const tree = temporary(t);
   write(tree, `heaplens-intellij/lib/heaplens-intellij-${jarVersion}.jar`, fs.readFileSync(jar));
-  write(tree, 'heaplens-intellij/native/darwin-arm64/hprof-server', 'binary');
-  const name = `heaplens-intellij-${version}-darwin-arm64.zip`;
+  write(tree, `heaplens-intellij/native/${target}/${selected.binary}`, 'binary');
+  const name = `heaplens-intellij-${version}-${target}.zip`;
   execFileSync('zip', ['-qr', path.join(dir, name), 'heaplens-intellij'], {cwd: tree});
   checksums(dir, [name]);
   return {dir, name};
@@ -190,6 +191,68 @@ test('IntelliJ release refuses unmerged commits, mismatched versions and foreign
   await assert.rejects(intellij.release(base.env, {fetchImpl: market.fetchImpl, gh: fakeGh().gh, log(){}}), /Checksum mismatch/);
   await assert.rejects(intellij.release({...base.env, JETBRAINS_MARKETPLACE_TOKEN:''}, {fetchImpl: market.fetchImpl, gh: fakeGh().gh, log(){}}));
   assert.ok(!market.requests.some(request => /upload$/.test(request.url)));
+});
+function allIntellijEnvironment(t) {
+  const base=intellijEnvironment(t), root=temporary(t);
+  const platforms=require('../../intellij-plugin/scripts/platforms.cjs');
+  for(const target of platforms.targets) {
+    const archive=zipCandidate(t,'0.1.17',{target}),dir=path.join(root,`intellij-${target}-candidate`);
+    write(dir,archive.name,fs.readFileSync(path.join(archive.dir,archive.name)));checksums(dir,[archive.name]);
+    write(dir,'candidate.json',JSON.stringify({target,archive:archive.name,base_version:'0.1.17',descriptor_version:platforms.variantVersion('0.1.17',target),
+      sha256:common.readChecksums(dir)[archive.name],source_commit:base.env.GITHUB_SHA,native_tests:true,os:platforms.platform(target).hostOs,arch:platforms.platform(target).hostArch}));
+  }
+  return {...base,env:{...base.env,ARTIFACT_DIR:root}};
+}
+function platformRegistry() {
+  const state={assets:[],downloads:{}}, fake=fakeGh(state),updates=[], uploads=[];
+  let failWindows=false;
+  const gh=args=>{
+    if(args[0]==='release'&&args[1]==='upload')for(const file of args.slice(2)) {
+      if(fs.existsSync(file)&&fs.statSync(file).isFile()){
+        const name=path.basename(file),bytes=fs.readFileSync(file);state.downloads[name]=bytes.toString('utf8');
+        if(!state.assets.some(x=>x.name===name))state.assets.push({name,digest:'sha256:'+common.sha256(bytes)});
+      }
+    }
+    return fake.gh(args);
+  };
+  const fetchImpl=async(url,options={})=>{
+    if(/\/updates\?/.test(url))return {ok:true,json:async()=>updates};
+    assert.match(url,/\/updates\/upload$/);
+    const name=options.body.get('file').name;
+    if(failWindows&&name.endsWith('-win32-x64.zip'))return {ok:false,status:503};
+    uploads.push(name);
+    const platforms=require('../../intellij-plugin/scripts/platforms.cjs'),target=platforms.targets.find(x=>name.endsWith(`-${x}.zip`));
+    const value={id:100+updates.length,version:platforms.variantVersion('0.1.17',target)};updates.push(value);
+    return {ok:true,json:async()=>value};
+  };
+  return {gh,fetchImpl,updates,uploads,state,failWindows:()=>{failWindows=true;},recover:()=>{failWindows=false;}};
+}
+test('all IntelliJ platforms are preflighted and submitted with distinct receipts and one complete record',async t=>{
+  const {env}=allIntellijEnvironment(t),registry=platformRegistry();
+  assert.equal(await intellij.releaseAll(env,{...registry,log(){}}),'submitted-all-platforms');
+  assert.equal(registry.uploads.length,4);assert.equal(new Set(registry.updates.map(x=>x.version)).size,4);
+  const published=JSON.parse(registry.state.downloads['release-record.json']);
+  assert.equal(published.variants.length,4);assert.equal(published.version,'0.1.17');
+  assert.ok(registry.state.downloads['marketplace-receipt-win32-x64.json']);
+  assert.ok(registry.state.downloads['marketplace-receipt-linux-x64.json']);
+});
+test('partial platform publication resumes only the missing upload and never records early completion',async t=>{
+  const {env}=allIntellijEnvironment(t),registry=platformRegistry();registry.failWindows();
+  await assert.rejects(intellij.releaseAll(env,{...registry,log(){}}),/503/);
+  assert.equal(registry.uploads.length,3);assert.equal(registry.state.downloads['release-record.json'],undefined);
+  registry.recover();await intellij.releaseAll(env,{...registry,log(){}});
+  assert.equal(registry.uploads.length,4);assert.equal(registry.updates.length,4);
+  assert.equal(JSON.parse(registry.state.downloads['release-record.json']).variants.length,4);
+});
+test('a missing, corrupt or mistargeted native candidate prevents every upload',async t=>{
+  for(const problem of ['missing','corrupt','wrong-host','wrong-source']) {
+    const {env}=allIntellijEnvironment(t),registry=platformRegistry(),dir=path.join(env.ARTIFACT_DIR,'intellij-win32-x64-candidate');
+    if(problem==='missing')fs.renameSync(dir,dir+'-missing');
+    else if(problem==='corrupt')write(dir,'heaplens-intellij-0.1.17-win32-x64.zip','changed');
+    else {const file=path.join(dir,'candidate.json'),meta=JSON.parse(fs.readFileSync(file));if(problem==='wrong-host')meta.os='darwin';else meta.source_commit='b'.repeat(40);write(dir,'candidate.json',JSON.stringify(meta));}
+    await assert.rejects(intellij.releaseAll(env,{...registry,log(){}}));
+    assert.equal(registry.uploads.length,0);assert.equal(registry.state.release,undefined);
+  }
 });
 function cliCandidate(t, version, sha, overrides = {}) {
   const dir = temporary(t);

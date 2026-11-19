@@ -4,7 +4,7 @@
     <vendor url="https://github.com/sachinkg12/heaplens">HeapLens</vendor>
     <description><![CDATA[
     <p>Analyze Java heap dumps inside IntelliJ IDEA with HeapLens, an open-source tool with a bundled local Rust analysis server.</p>
-    <p><b>Supported platform:</b> macOS Apple Silicon (ARM64), IntelliJ IDEA 2026.1–2026.3 using its bundled JetBrains Runtime with JCEF. No separate Rust, Node.js or server installation is required.</p>
+    <p><b>Package platform:</b> @heaplens.platform@, IntelliJ IDEA 2026.1–2026.3 using its bundled JetBrains Runtime with JCEF. Each platform package includes its matching server. No separate Rust, Node.js or server installation is required.</p>
     <ul>
       <li>Eleven views: Overview, Histogram, Dominator Tree, Leak Suspects, Waste, Source, Query, Compare, Timeline, Monitor and AI Chat.</li>
       <li>Inspect objects and fields, follow referrers and GC-root paths, run HeapQL, and export reports locally.</li>
@@ -14,7 +14,7 @@
     </ul>
     <p><b>Optional AI:</b> configure your own provider and credentials. Chat approval is session-scoped; Explain and Fix with AI ask separately. Fix sends the entire approved project source file to the configured service and opens a temporary merge preview with guarded application and Undo/Redo. Proposals may be incorrect; review and test them. Completed chat is stored locally and can be cleared.</p>
     <p><b>Telemetry:</b> off until you explicitly enable Errors Only or Usage and Errors. No telemetry is collected or sent before approval. Cancel or No Telemetry keeps it off; choose Telemetry &gt; Off to withdraw permission. Preferences persist locally and are unsynced. Local diagnostic review does not upload the report. Telemetry excludes dump contents, source, query text and stable identifiers; network services may process IP addresses.</p>
-    <p>This release does not claim complete VS Code feature parity. Windows, Linux and Intel Mac packages are not included. MCP is not implemented in this plugin.</p>
+    <p>This release does not claim complete VS Code feature parity. ARM64 Windows/Linux packages are not included. MCP is not implemented in this plugin.</p>
     <p><a href="https://sachinkg12.github.io/heaplens/">Documentation</a> · <a href="https://sachinkg12.github.io/heaplens/docs/ai-integration/privacy/">AI data sharing</a> · <a href="https://sachinkg12.github.io/heaplens/docs/runbook/telemetry/">Telemetry policy</a> · <a href="https://github.com/sachinkg12/heaplens/issues">Support</a></p>
     ]]></description>
     <change-notes><![CDATA[
@@ -25,8 +25,8 @@
     ]]></change-notes>
     <depends>com.intellij.modules.platform</depends>
     <dependencies>
-        <plugin id="com.intellij.modules.os.mac"/>
-        <plugin id="com.intellij.modules.arch.arm64"/>
+        <plugin id="com.intellij.modules.os.@heaplens.os@"/>
+        <plugin id="com.intellij.modules.arch.@heaplens.arch@"/>
     </dependencies>
     <!-- JCEF is in core on 261; on 262 and later it has a separate plugin classloader. -->
     <depends optional="true" config-file="heaplens-jcef.xml">com.intellij.modules.jcef</depends>

@@ -2,9 +2,9 @@
 
 Historical remote workflow result, October 11, 2026: [CI/CD run 38182258035](https://github.com/sachinkg12/heaplens/actions/runs/38182258035) at commit `ea56dd6` completed successfully, including extension validation, boundary tests, Rust tests, IntelliJ candidate checks and all four VSIX builds. Automatic versioning and publication were skipped on that run; it predates the coordinated release train described below. Successful validation is not a new release or Marketplace approval.
 
-The IntelliJ candidate is **macOS Apple Silicon only**, with IntelliJ 2026.1–2026.2 metadata. `test-intellij` uses `macos-15`, rejects a non-ARM64 runner, builds the checkout's server and plugin ZIP, extracts that exact ZIP, runs required process/recovery tests and API verification, then uploads the candidate and reports. It makes no JetBrains upload, tag or Git push. The remote job passed in the run above; it does not establish native GUI acceptance or other-platform compatibility.
+The IntelliJ job has a native matrix for macOS Apple Silicon, macOS Intel, Linux x86-64 and Windows x86-64, with IntelliJ IDEA 2026.1–2026.3 metadata. Each row builds the checkout's server and plugin ZIP, extracts that exact ZIP, runs required process/storage/recovery tests and API verification, then uploads its own checksummed candidate and reports. The entry point rejects an OS/CPU mismatch. Windows uses the static CRT to avoid relying on a separately installed compiler runtime. These jobs do not upload to Marketplace, tag or push Git changes. The historical run above covers its earlier scope only.
 
-API verification uses JetBrains' documented `-ignore-os-arch` mode for virtual platform constraints only; genuine missing dependencies, invalid plugins and incompatible/internal/invalid-extension APIs remain blocking. OS/architecture descriptor tests, binary-byte checks and the native runner/package smoke enforce the Mac scope separately. A successful API verdict is not an installed native UI, delivery or privacy-compliance pass. Other IntelliJ platforms are deferred; the existing VS Code four-platform packaging matrix is unchanged.
+API verification uses JetBrains' documented `-ignore-os-arch` mode for virtual platform constraints only; genuine missing dependencies, invalid plugins and incompatible/internal/invalid-extension APIs remain blocking. OS/architecture descriptor tests, binary-byte checks and native runner/package execution enforce the selected platform separately. A successful API verdict is not an installed native UI, delivery or privacy-compliance pass. The existing VS Code packaging matrix and standalone CLI scope are unchanged.
 
 ## Ownership
 
@@ -127,11 +127,13 @@ cargo build --locked --release --manifest-path hprof-analyzer/Cargo.toml --bin h
 cargo fetch --locked --target aarch64-apple-darwin --manifest-path hprof-analyzer/Cargo.toml
 ~~~
 
-Run the package build and extracted-package tests on an Apple Silicon host. With `heaplens.test.ci=true`, explicit fixture/server/package inputs are mandatory; real-engine checks must not silently skip. The test executable comes from the extracted candidate, not an unrelated developer override. Current counts belong to the reports from each identified run, not to a fixed number in this guide.
+Run `node intellij-plugin/scripts/ci-package.cjs TARGET` on the matching native host after building its server and fetching the locked dependency graph for that target. Targets and Rust triples are declared in `intellij-plugin/platforms.json`. With `heaplens.test.ci=true`, explicit fixture/server/package inputs are mandatory; real-engine checks must not silently skip. The executable comes from the extracted candidate, not an unrelated developer override. Current counts belong to each identified run, not a fixed number in this guide.
 
 Address-specific and layout-matrix checks carry the `local-fixture` tag and are intentionally excluded from CI mode. The CI profile uses its generated public fixture instead. Neither mode is a substitute for native IntelliJ UI testing or the full performance corpus.
 
-The IntelliJ job uploads the candidate ZIP and test/verifier reports, not heap dumps. The remote Apple Silicon package/process/API run is distinct from native GUI testing. IntelliJ Windows/Linux packages and Marketplace publication are not established by it.
+Each IntelliJ matrix row uploads its ZIP, checksum, native-test metadata and test/verifier reports, not heap dumps. Native process/API checks are distinct from interactive GUI acceptance. Candidate construction does not establish Marketplace availability.
+
+The publisher requires all four candidates from the exact tagged commit before any upload. Each archive declares its OS/CPU in the descriptor. Apple Silicon keeps the base version for update continuity; Intel Mac, Linux and Windows use the base version plus `-mac-x86_64`, `-linux-x86_64` or `-windows-x86_64`. The release tag and Gradle project version stay at the base version. Per-platform receipts bind retries to the uploaded bytes and Marketplace update ID. A complete publication record is written only after every platform is submitted; a rerun resumes missing uploads without replacing existing ones. Automatic release-baseline discovery waits until every recorded variant is approved and listed.
 
 ## Historical evidence from September 29
 

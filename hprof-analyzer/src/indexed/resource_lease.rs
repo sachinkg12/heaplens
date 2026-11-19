@@ -118,9 +118,12 @@ impl Lease {
         let mut file = tempfile::Builder::new()
             .prefix("lease-")
             .tempfile_in(root)?;
-        file.as_file().lock()?;
         file.write_all(&plan.bytes.to_le_bytes())?;
         file.flush()?;
+        // The coordinator protects creation. Once complete, keep a shared
+        // lifetime lock: scanners must be able to read this immutable record.
+        // Windows exclusive locks deny reads through other file handles.
+        file.as_file().lock_shared()?;
         log::info!("Resource admission: estimated {} MiB; {} MiB budget headroom (cooperative estimate, not an RSS limit)",
             plan.bytes.div_ceil(MIB), available / MIB);
         // Gate drops only after the new locked, complete lease is visible.
@@ -210,6 +213,8 @@ mod tests {
             available: 1000,
         };
         let one = Lease::in_directory(Plan { bytes: 400 }, root.path(), limits).unwrap();
+        let two = Lease::in_directory(Plan { bytes: 300 }, root.path(), limits).unwrap();
+        drop(two);
         let retained = one.clone();
         drop(one);
         assert!(Lease::in_directory(Plan { bytes: 400 }, root.path(), limits).is_err());
@@ -293,6 +298,15 @@ mod tests {
             .lines()
             .map_while(std::result::Result::ok)
             .any(|s| s.contains("LEASE_READY"));
+        let accepted = Lease::in_directory(
+            Plan { bytes: 300 },
+            root.path(),
+            Limits {
+                total: 1000,
+                available: 1000,
+            },
+        )
+        .is_ok();
         let rejected = Lease::in_directory(
             Plan { bytes: 400 },
             root.path(),
@@ -301,10 +315,10 @@ mod tests {
                 available: 1000,
             },
         )
-        .is_err();
+        .is_err_and(|error| error.downcast_ref::<ResourceError>().is_some());
         let _ = child.kill();
         child.wait().unwrap();
-        assert!(ready && rejected);
+        assert!(ready && accepted && rejected);
         Lease::in_directory(
             Plan { bytes: 700 },
             root.path(),

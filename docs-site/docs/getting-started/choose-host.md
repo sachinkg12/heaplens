@@ -12,11 +12,11 @@ Package versions and publication steps are separate for each host. The release w
 | Host | Distribution | Current scope |
 | --- | --- | --- |
 | VS Code / compatible editors | Marketplace, Open VSX and platform-specific VSIX packages | macOS ARM64/x64, Windows x64, Linux x64 targets; 1.0.34 introduces the new analysis/storage controls |
-| IntelliJ | [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/35004-heaplens) and separately versioned release ZIPs | macOS Apple Silicon, IntelliJ IDEA 2026.1–2026.2; new controls require a matching updated plugin package |
+| IntelliJ | [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/35004-heaplens) and separately versioned release ZIPs | Build targets: macOS Apple Silicon/Intel, Linux x86-64 and Windows x86-64; IDEA 2026.1–2026.3. Check the listing/release assets for actually published targets |
 | Terminal/browser | Implemented portable/npm/Homebrew candidate packaging | Current candidate: macOS Apple Silicon; packaged npm/browser needs native ARM64 Node 22+ |
 | MCP clients | Trusted native `hprof-server --mcp` plus client configuration | Depends on server target and client validation |
 
-The VS Code main/tag workflow builds and publishes its selected targets after checks. IntelliJ CI prepares a ZIP but does not upload it to Marketplace; standalone candidate CI prepares archives/formulas but does not publish an npm package or tap. npm is cross-platform but an ARM64-only native payload is not. Verify [release assets](https://github.com/sachinkg12/heaplens/releases) and each host's listing.
+CI builds and tests selected packages; publication requires deliberate release tags and successful release checks. A repository merge or an unpublished platform build is not a Marketplace update. npm is cross-platform but an ARM64-only native payload is not. Verify [release assets](https://github.com/sachinkg12/heaplens/releases) and each host's listing.
 
 ## What stays shared?
 
