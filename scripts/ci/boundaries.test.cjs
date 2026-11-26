@@ -41,29 +41,33 @@ test('stable aggregate gate handles skipped host jobs without hiding failures', 
   assert.match(runs(jobs.checks), /scripts\/ci\/check-results\.cjs/);
 });
 
-test('first IntelliJ candidate uses Apple Silicon and tests the exact bundled package',()=>{
+test('IntelliJ candidates execute on every matching native runner and test exact packages',()=>{
   const job=jobs['test-intellij'];
   assert.match(job.if,/needs\.changes\.outputs\.intellij == 'true'/);
-  assert.equal(job['runs-on'],'macos-15');
+  assert.equal(job['runs-on'],'${{ matrix.os }}');
+  assert.equal(job.strategy['fail-fast'],false);
+  const catalog=require('../../intellij-plugin/platforms.json');
+  assert.deepEqual(job.strategy.matrix.include.map(x=>x.target),Object.keys(catalog));
+  assert.deepEqual(job.strategy.matrix.include.map(x=>x.os),['macos-15','macos-15-intel','ubuntu-22.04','windows-2022']);
+  for(const row of job.strategy.matrix.include)assert.equal(row.rust_target,catalog[row.target].rust);
   assert.equal(job.env.DO_NOT_TRACK,'1');
-  assert.match(runs(job),/process\.platform.*process\.arch/);
-  assert.match(runs(job),/extract-built-package\.cjs/);
-  assert.match(runs(job),/heaplens\.test\.server=.*PLUGIN_ROOT\/native\/darwin-arm64/);
-  assert.match(runs(job),/heaplens\.test\.pluginRoot=/);
-  assert.match(runs(job),/heaplens\.test\.ci=true/);
-  assert.match(runs(job),/test verifyPlugin/);
-  assert.ok(job.steps.some(step=>step.uses?.startsWith('actions/upload-artifact@') && step.with.name==='intellij-apple-silicon-candidate'));
+  assert.match(runs(job),/node intellij-plugin\/scripts\/ci-package\.cjs \$\{\{ matrix\.target \}\}/);
+  const native=fs.readFileSync(path.join(root,'intellij-plugin/scripts/ci-package.cjs'),'utf8');
+  for(const gate of ['checkHost(target)','extract(','-Dheaplens.test.server=','-Dheaplens.test.pluginRoot=','-Dheaplens.test.ci=true',"'test','verifyPlugin'"])
+    assert.ok(native.includes(gate),gate);
+  assert.ok(job.steps.some(step=>step.uses?.startsWith('actions/upload-artifact@') && step.with.name==='intellij-${{ matrix.target }}-candidate'));
   assert.doesNotMatch(runs(job),/publishPlugin|git push|git tag/);
   assert.equal(jobs['build-intellij-native'],undefined);
   assert.equal(jobs['build-intellij-universal'],undefined);
 });
 
-test('macOS ARM64 delivery is declared in metadata, not inferred from the ZIP filename',()=>{
+test('platform delivery is declared in metadata, not inferred from the ZIP filename',()=>{
   const descriptor=fs.readFileSync(path.join(root,'intellij-plugin/src/main/resources/META-INF/plugin.xml'),'utf8');
-  assert.match(descriptor,/<dependencies>\s*<plugin id="com\.intellij\.modules\.os\.mac"\/>\s*<plugin id="com\.intellij\.modules\.arch\.arm64"\/>\s*<\/dependencies>/);
+  assert.match(descriptor,/<dependencies>\s*<plugin id="com\.intellij\.modules\.os\.@heaplens\.os@"\/>\s*<plugin id="com\.intellij\.modules\.arch\.@heaplens\.arch@"\/>\s*<\/dependencies>/);
   const build=fs.readFileSync(path.join(root,'intellij-plugin/build.gradle.kts'),'utf8');
   assert.match(build,/sinceBuild = "261"/);
-  assert.match(build,/require\(serverTarget\.get\(\) == "darwin-arm64"\)/);
+  assert.match(build,/platforms\.json/);
+  assert.match(build,/version\.set\(packagedPluginVersion\)/);
   assert.match(build,/freeArgs = listOf\("-ignore-os-arch"\)/);
   for(const gate of ['COMPATIBILITY_PROBLEMS','INTERNAL_API_USAGES','OVERRIDE_ONLY_API_USAGES','NON_EXTENDABLE_API_USAGES','MISSING_DEPENDENCIES','INVALID_PLUGIN'])
     assert.match(build,new RegExp('FailureLevel\\.'+gate));
@@ -85,15 +89,16 @@ test('IntelliJ CI tests the real engine using a generated, non-private fixture',
   const job = jobs['test-intellij'];
   assert.ok(job, 'IntelliJ tests must run in CI');
   assert.match(job.if, /needs\.changes\.outputs\.intellij == 'true'/);
-  assert.match(runs(job), /ClassRetainedCounterexample/);
-  assert.match(runs(job), /cargo build --release --bin hprof-server/);
+  const native=fs.readFileSync(path.join(root,'intellij-plugin/scripts/ci-package.cjs'),'utf8');
+  assert.match(native, /ClassRetainedCounterexample/);
+  assert.match(runs(job), /cargo build --locked --release --bin hprof-server/);
   const stepRuns = job.steps.map(step => step.run || "");
-  const fetchIndex = stepRuns.findIndex(run => /cargo fetch --locked --target aarch64-apple-darwin/.test(run));
-  assert.ok(fetchIndex > stepRuns.findIndex(run => /cargo build --release --bin hprof-server/.test(run)), "fetch the locked graph after the server build");
-  assert.ok(fetchIndex < stepRuns.findIndex(run => /buildPlugin/.test(run)), "fetch the locked graph before the notices task reads it offline");
-  assert.match(runs(job), /heaplens\.test\.ci=true/);
-  assert.match(runs(job), /heaplens\.test\.server=/);
-  assert.match(runs(job), /heaplens\.test\.dump=/);
+  const fetchIndex = stepRuns.findIndex(run => /cargo fetch --locked --target/.test(run));
+  assert.ok(fetchIndex > stepRuns.findIndex(run => /cargo build --locked --release --bin hprof-server/.test(run)), "fetch the locked graph after the server build");
+  assert.ok(fetchIndex < stepRuns.findIndex(run => /ci-package\.cjs/.test(run)), "fetch the locked graph before the notices task reads it offline");
+  assert.match(native, /heaplens\.test\.ci=true/);
+  assert.match(native, /heaplens\.test\.server=/);
+  assert.match(native, /heaplens\.test\.dump=/);
   assert.doesNotMatch(runs(job), /\/Users\/|publishPlugin/);
   assert.ok(job.steps.some(step => step.uses?.startsWith('actions/setup-java@') && String(step.with['java-version']) === '21'));
 });
@@ -129,7 +134,7 @@ test('IntelliJ publication uploads only the tested artifact behind the aggregate
   assert.deepEqual(job.permissions, {contents:'write'});
   assert.equal(job.concurrency['cancel-in-progress'], false);
   assert.doesNotMatch(String(job.concurrency.group), /github\.ref/, 'publications serialize across tags, not per tag');
-  assert.ok(job.steps.some(step => step.uses?.startsWith('actions/download-artifact@') && step.with.name === 'intellij-apple-silicon-candidate'));
+  assert.ok(job.steps.some(step => step.uses?.startsWith('actions/download-artifact@') && step.with.pattern === 'intellij-*-candidate' && step.with['merge-multiple']!==true));
   assert.ok(job.steps.every(step => !step.uses?.startsWith('gradle/') && !step.uses?.startsWith('actions/setup-java@')));
   assert.doesNotMatch(runs(job), /gradlew|cargo |npm ci|git push|git tag/);
   assert.match(runs(job), /git fetch --no-tags origin main/);
@@ -138,9 +143,9 @@ test('IntelliJ publication uploads only the tested artifact behind the aggregate
   assert.equal(publishStep.env.JETBRAINS_MARKETPLACE_TOKEN, '${{ secrets.JETBRAINS_MARKETPLACE_TOKEN }}');
   assert.equal(publishStep.env.GH_TOKEN, '${{ github.token }}');
   assert.ok(jobs.changes.outputs.publish_intellij, 'routing must expose publish_intellij');
-  const checksum = jobs['test-intellij'].steps.find(step => /shasum -a 256/.test(step.run || ''));
-  assert.ok(checksum, 'the tested ZIP must be checksummed by the job that tested it');
-  const upload = jobs['test-intellij'].steps.find(step => step.with?.name === 'intellij-apple-silicon-candidate');
+  const checksum = jobs['test-intellij'].steps.find(step => /ci-package\.cjs/.test(step.run || ''));
+  assert.ok(checksum, 'the native packaging entry point must record checksums after its tests');
+  const upload = jobs['test-intellij'].steps.find(step => step.with?.name === 'intellij-${{ matrix.target }}-candidate');
   assert.match(upload.with.path, /SHA256SUMS/);
   assert.ok(jobs['test-intellij'].steps.indexOf(checksum) < jobs['test-intellij'].steps.indexOf(upload));
 });

@@ -22,7 +22,7 @@ class PluginReleaseMetadataTest {
             var xml = factory.newDocumentBuilder().parse(stream);
             assertEquals("HeapLens", xml.getElementsByTagName("name").item(0).getTextContent());
             assertEquals("com.heaplens.analyzer", xml.getElementsByTagName("id").item(0).getTextContent());
-            assertEquals(IntellijTelemetry.packagedVersion(), xml.getElementsByTagName("version").item(0).getTextContent());
+            assertEquals(System.getProperty("heaplens.test.packageVersion", IntellijTelemetry.packagedVersion()), xml.getElementsByTagName("version").item(0).getTextContent());
             assertTrue(IntellijTelemetry.packagedVersion().matches("[0-9]+\\.[0-9]+\\.[0-9]+"));
             var range = xml.getElementsByTagName("idea-version").item(0).getAttributes();
             assertEquals("261", range.getNamedItem("since-build").getNodeValue());
@@ -33,8 +33,12 @@ class PluginReleaseMetadataTest {
             assertFalse(description.contains("Not a published"));
             assertFalse(description.contains("Local development preview"));
             assertTrue(xml.getElementsByTagName("change-notes").getLength() == 1);
-            assertTrue(resource("/META-INF/plugin.xml").contains("com.intellij.modules.os.mac"));
-            assertTrue(resource("/META-INF/plugin.xml").contains("com.intellij.modules.arch.arm64"));
+            String target = System.getProperty("heaplens.test.packageTarget", "darwin-arm64");
+            String os = switch (target) { case "linux-x64" -> "linux"; case "win32-x64" -> "windows"; default -> "mac"; };
+            String arch = target.equals("darwin-arm64") ? "arm64" : "x86_64";
+            assertTrue(resource("/META-INF/plugin.xml").contains("com.intellij.modules.os." + os + "\""));
+            assertTrue(resource("/META-INF/plugin.xml").contains("com.intellij.modules.arch." + arch + "\""));
+            assertFalse(resource("/META-INF/plugin.xml").contains("@heaplens."));
         }
     }
     @Test void iconIsFortyPixelSelfContainedVectorAndNoticesArePresent() throws Exception {
@@ -49,6 +53,9 @@ class PluginReleaseMetadataTest {
             assertTrue(notices.contains(component));
     }
     @Test void brandIconLoadsThroughTheIdeIconLoader() {
+        // The full IDE activates this service at startup. Standalone headless
+        // Linux tests otherwise receive its 1px placeholder, not an SVG render.
+        com.intellij.openapi.util.IconLoader.activate();
         var icon = com.intellij.openapi.util.IconLoader.getIcon("/META-INF/pluginIcon.svg", getClass());
         assertEquals(40, icon.getIconWidth());
         assertEquals(40, icon.getIconHeight());

@@ -153,6 +153,22 @@ test('automatic baselines use completed records and skip pending or hidden Intel
     assert.throws(()=>baselines.discover({...input,publicUpdates:()=>[{...update,...change}]}), /No completed publication record/);
   assert.throws(()=>baselines.discover({...input,publicUpdates:()=>({})}), /verify public Marketplace/);
 });
+test('a multi-platform baseline requires approval of every recorded native variant',t=>{
+  const r=repository(t),platforms=require('../../intellij-plugin/scripts/platforms.cjs');
+  const variants=platforms.targets.map((target,index)=>({target,version:platforms.variantVersion('0.1.0',target),update_id:99+index}));
+  const payload={schema:1,host:'intellij',version:'0.1.0',commit:r.base,tag:'intellij-v0.1.0',status:'submitted',update_id:99,variants};
+  const gh=args=>{
+    if(args[0]==='release'&&args[1]==='list')return JSON.stringify([{tagName:payload.tag,isDraft:false,isPrerelease:false}]);
+    if(args[0]==='api')return JSON.stringify({assets:[{name:model.RECORD}]});
+    fs.writeFileSync(path.join(args[args.indexOf('--dir')+1],model.RECORD),JSON.stringify(payload));return '';
+  };
+  const updates=variants.map(x=>({id:x.update_id,version:x.version,approve:true,listed:true,hidden:false,channel:''}));
+  const input={host:'intellij',repository:'owner/repo',gh};
+  assert.equal(baselines.discover({...input,publicUpdates:()=>updates}).commit,r.base);
+  assert.throws(()=>baselines.discover({...input,publicUpdates:()=>updates.slice(0,-1)}),/No completed/);
+  assert.throws(()=>baselines.discover({...input,publicUpdates:()=>updates.map((x,i)=>i===3?{...x,approve:false}:x)}),/No completed/);
+  assert.throws(()=>baselines.record({...payload,variants:variants.slice(0,-1)},'intellij'),/Incomplete/);
+});
 test('normal PRs allow unchanged released versions, tag reruns allow existing tags, and stale notes fail release validation', t => {
   const r = repository(t); r.setup(); const prepared = r.commit('Prepare coordinated release');
   r.git(['tag','v1.0.2',prepared]); r.git(['tag','intellij-v0.1.1',prepared]); r.git(['tag','cli-v0.1.1',prepared]);

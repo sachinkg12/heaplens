@@ -2,18 +2,20 @@
 title: IntelliJ setup
 ---
 
-Install HeapLens from its [JetBrains Marketplace listing](https://plugins.jetbrains.com/plugin/35004-heaplens), or use a trusted release ZIP for manual installation. The plugin targets **macOS Apple Silicon and IntelliJ IDEA 2026.1–2026.2**. IntelliJ plugin versions are independent of VS Code versions; select the version and compatible IDE range shown for your package.
+Install HeapLens from its [JetBrains Marketplace listing](https://plugins.jetbrains.com/plugin/35004-heaplens), or use a trusted release ZIP for manual installation. Platform-specific builds target **macOS Apple Silicon, macOS Intel, Linux x86-64 and Windows x86-64**, with **IntelliJ IDEA 2026.1–2026.3**. A build target does not imply a published Marketplace update: select only a package actually listed for your OS/CPU and compatible IDE range. IntelliJ plugin versions are independent of VS Code versions.
 
 In **Settings → Plugins → Marketplace**, search for HeapLens and confirm its publisher. If you are testing a newer ZIP, follow the manual steps below. A VS Code release or repository push does not automatically upload or approve an IntelliJ update.
 
 ## Install from disk
 
-1. Check the package's macOS Apple Silicon target and compatible IDE range. The current package supports IntelliJ IDEA 2026.1–2026.2.
+1. Check the ZIP's OS/CPU target and IntelliJ IDEA range. Do not install a Mac archive on Windows/Linux or an ARM64 archive on an Intel Mac.
 2. In **Settings → Plugins**, use **Install Plugin from Disk** in the gear menu and select the ZIP.
 3. Restart if requested, open the source project, and open a completed `.hprof`.
 4. Verify Overview, a HeapQL query, and a project-source action before a large dump.
 
 A release ZIP bundles its server. **Select analysis server** is a trusted-binary override/development aid, not required for ordinary installation. Use an IDE with JCEF for the embedded interface; project Java source navigation also needs the appropriate Java support.
+
+The Apple Silicon descriptor keeps the base plugin version. Intel Mac, Linux and Windows descriptors add `-mac-x86_64`, `-linux-x86_64` or `-windows-x86_64` to that same base version so Marketplace updates are distinct. Each archive includes the matching local executable and platform constraints. ARM64 Windows/Linux packages are not provided. Start with a small capture to check opening, queries, storage and cleanup; larger captures still require adequate memory and disk space.
 
 ## Reference storage
 
